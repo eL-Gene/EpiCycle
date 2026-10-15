@@ -1,0 +1,1064 @@
+{
+ "wide/plain/idle": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "bdcbc9939cded5e9a94dcd8b44aed97f38b235ab",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/plain/ticked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "20aaefc583d754a53031ad04f6640016aebe7ba9",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/plain/selected": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "1ae8b7fe953f617c019bd1de549369102d06f5c2",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/plain/locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "1adba85edf3abfda3705f0367332d591f79781fa",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/plain/eye_locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "88dca946d80528ccca3cd08877e2df38c8b5e91d",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/plain/thumb": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "5b9b8e00ecc5292e495da0591d3b941c822a3173",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/voxels/idle": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "7af3a89e69cf50f724c305ab08090e49768538ba",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/voxels/ticked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "dc7932e05f06e960e54c2e9c9adff3fd8f8d8a29",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/voxels/selected": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "6d5db534d4cdc36dc450b8a4eaeef9009c8a6af1",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/voxels/locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "358549c9fc3d5d14ccfe14b26d8c0bf332284352",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/voxels/eye_locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "85d9693b3ed2ac1cd420fc8a5c8d3d64def43d01",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/voxels/thumb": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "ea9e9badcd04266eab37696b1e7c5237d4641b5f",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/chips/idle": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "bdcbc9939cded5e9a94dcd8b44aed97f38b235ab",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/chips/ticked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "20aaefc583d754a53031ad04f6640016aebe7ba9",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/chips/selected": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "1ae8b7fe953f617c019bd1de549369102d06f5c2",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/chips/locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "1adba85edf3abfda3705f0367332d591f79781fa",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/chips/eye_locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "88dca946d80528ccca3cd08877e2df38c8b5e91d",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/chips/thumb": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "5b9b8e00ecc5292e495da0591d3b941c822a3173",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/greyed/idle": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "5730edaff0e3569ce935919951e90cec86d40d72",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/greyed/ticked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "715c083d1af51df1caf15d6a49dcf4ada75af021",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/greyed/selected": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "f647dd29f33dfbff99eb5978cb03f0e98d4d5996",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/greyed/locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "6d6f40a2aa1114118f5901096625ea329a69ca72",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/greyed/eye_locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "42fa5e800dc5cea8157b8c03dd4dbce94ee1248c",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/greyed/thumb": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "4239899fa345882a03e77dedee61ebc1ba5614b3",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/long/idle": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "e3a06e533b77e15585f1bb64efe53745c2048079",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/long/ticked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "8414045cb9ce6ea8f9911ec5796ba0e12ab33f23",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/long/selected": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "5d417f08958e46f70fc0952cc064783769eaf099",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/long/locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "4ae566eccd9a685737d5646e2415453deaa1a62c",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/long/eye_locked": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "586d411f4d1bb0d27d634e1527a62a96fe4ec9a8",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "wide/long/thumb": {
+  "size": [
+   564,
+   136
+  ],
+  "sha1": "444b810dfa9bf4414a2d0f00619ef776cf70d01f",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "menu": null,
+   "l1": null
+  }
+ },
+ "narrow/plain/idle": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "6a270a06b456942b06c67208500c592b81306952",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/plain/ticked": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "902552de890a6bebb1a0a48461ceb55be08e80ac",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/plain/selected": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "e1f455176ef627ebf8c38336b5100dfcb5c9b617",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/plain/locked": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "a94d92410defdff525173d68ab9196b71390047e",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/plain/eye_locked": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "e5bc98d256eeb7da7943d25abd3aad4a2c5c535a",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/plain/thumb": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "6a270a06b456942b06c67208500c592b81306952",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/voxels/idle": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "5ef414363190738e5d047312d5702d3ea98b47e8",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/voxels/ticked": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "d8b45f0234582860dd2c250a5686fc7d2d5f6b08",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/voxels/selected": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "08eaa2681a87574d59001d43927c037d64263ce7",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/voxels/locked": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "e3982ebe6ee0ecaed2f577e973d731dd79fe1f03",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/voxels/eye_locked": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "4c666c28150f4cbea02649e541fa16c3ba00aeb8",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/voxels/thumb": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "5ef414363190738e5d047312d5702d3ea98b47e8",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/chips/idle": {
+  "size": [
+   216,
+   100
+  ],
+  "sha1": "9fe72021fe2dfcde8d7740b59328cb8b1ca779b8",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null,
+   "chip0": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it."
+  }
+ },
+ "narrow/chips/ticked": {
+  "size": [
+   216,
+   100
+  ],
+  "sha1": "e759e49f164dba7fd31e5970c86e17955b232ad2",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null,
+   "chip0": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it."
+  }
+ },
+ "narrow/chips/selected": {
+  "size": [
+   216,
+   100
+  ],
+  "sha1": "447d89dd2e22ab3c85974ac327abfa396b03b0c6",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null,
+   "chip0": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it."
+  }
+ },
+ "narrow/chips/locked": {
+  "size": [
+   216,
+   100
+  ],
+  "sha1": "a148bd8b16a72c9bed7c37969b2b6ea646e3fb9a",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null,
+   "chip0": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it."
+  }
+ },
+ "narrow/chips/eye_locked": {
+  "size": [
+   216,
+   100
+  ],
+  "sha1": "f0d4cc51e6212e7ce331435429c2014bcf7ce67d",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null,
+   "chip0": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it."
+  }
+ },
+ "narrow/chips/thumb": {
+  "size": [
+   216,
+   100
+  ],
+  "sha1": "9fe72021fe2dfcde8d7740b59328cb8b1ca779b8",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null,
+   "chip0": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it."
+  }
+ },
+ "narrow/greyed/idle": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "cf1ab98e32eec46304b4439a6c6ecebcb269611a",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/greyed/ticked": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "0bbcfdf44d799f2de13a8a3a363120f1549811ba",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/greyed/selected": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "904a551f4496fb7658b1afb9f5c39ae8bd3f2e7e",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/greyed/locked": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "cf1ab98e32eec46304b4439a6c6ecebcb269611a",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/greyed/eye_locked": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "33bbf5da3adae3552e5b6ca660164be36db293b4",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/greyed/thumb": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "cf1ab98e32eec46304b4439a6c6ecebcb269611a",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/long/idle": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "2a0271f57ad611e88c86868b429756d941b25aa0",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/long/ticked": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "3bbd95a47442913b3312df6b865a7d194b71124a",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/long/selected": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "116694d400c6b12974305d2770b53a5679214fb2",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/long/locked": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "71717162bbba8c2c61421fd6bfa4efef1e33eff9",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/long/eye_locked": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "13db4ba43f811854a4c451cd91c19530ce1100f6",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "narrow/long/thumb": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "2a0271f57ad611e88c86868b429756d941b25aa0",
+  "tips": {
+   "tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "eye": "Show or hide this stack in the viewer.",
+   "l1": null
+  }
+ },
+ "measure/plain/idle": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "b12a2cf7bb3dde2baddac967436b8647a0f9d95d",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/plain/ticked": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "b12a2cf7bb3dde2baddac967436b8647a0f9d95d",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/plain/selected": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "a468c462862dcd0c7c4da5f9b9a7ce7281132114",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/plain/locked": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "7c75bec478108d5a1211c790a8e3c13cc6a81b76",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/plain/eye_locked": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "b12a2cf7bb3dde2baddac967436b8647a0f9d95d",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/plain/thumb": {
+  "size": [
+   216,
+   51
+  ],
+  "sha1": "b12a2cf7bb3dde2baddac967436b8647a0f9d95d",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/voxels/idle": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "5e9a04133257d460e9f9ac0046bc54c7b6a2f57c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/voxels/ticked": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "5e9a04133257d460e9f9ac0046bc54c7b6a2f57c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/voxels/selected": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "38dee56c78a16d9d1cc655ceb424d38e2bfedb33",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/voxels/locked": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "b4e90ffaad1e45a3203fb9db5bb8f2463a8878c3",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/voxels/eye_locked": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "5e9a04133257d460e9f9ac0046bc54c7b6a2f57c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/voxels/thumb": {
+  "size": [
+   216,
+   66
+  ],
+  "sha1": "5e9a04133257d460e9f9ac0046bc54c7b6a2f57c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/chips/idle": {
+  "size": [
+   216,
+   87
+  ],
+  "sha1": "c33d9d943dbc758b840c82705caa04f658df364c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first.",
+   "chip0": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/chips/ticked": {
+  "size": [
+   216,
+   87
+  ],
+  "sha1": "c33d9d943dbc758b840c82705caa04f658df364c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first.",
+   "chip0": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/chips/selected": {
+  "size": [
+   216,
+   87
+  ],
+  "sha1": "7a2b6aa96dcb233e3c59211a3c971e639564d1a0",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first.",
+   "chip0": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/chips/locked": {
+  "size": [
+   216,
+   87
+  ],
+  "sha1": "16c9b0158ed3affd99e10d4da146ee5e9a5bacd1",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first.",
+   "chip0": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/chips/eye_locked": {
+  "size": [
+   216,
+   87
+  ],
+  "sha1": "c33d9d943dbc758b840c82705caa04f658df364c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first.",
+   "chip0": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/chips/thumb": {
+  "size": [
+   216,
+   87
+  ],
+  "sha1": "c33d9d943dbc758b840c82705caa04f658df364c",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first.",
+   "chip0": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/greyed/idle": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "73b395691d70ddcc0a9bb1b9b84a4f4b85a352fa",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/greyed/ticked": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "73b395691d70ddcc0a9bb1b9b84a4f4b85a352fa",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/greyed/selected": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "08ed8e50228d507cbb4ca884756bd955db9d9d3f",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/greyed/locked": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "e19940a8c953322ed8f36e3c4e617f87344a6df0",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/greyed/eye_locked": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "73b395691d70ddcc0a9bb1b9b84a4f4b85a352fa",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/greyed/thumb": {
+  "size": [
+   216,
+   79
+  ],
+  "sha1": "73b395691d70ddcc0a9bb1b9b84a4f4b85a352fa",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/long/idle": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "4d7f5473dfe8e3a4ae4ec34e87012c0c3f6384bd",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/long/ticked": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "4d7f5473dfe8e3a4ae4ec34e87012c0c3f6384bd",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/long/selected": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "bb3ac1d215f169e12d2c9976b0e7a755d1eda84e",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/long/locked": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "e53df6eac279110e24b79a0e5f0613af68cc6109",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/long/eye_locked": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "4d7f5473dfe8e3a4ae4ec34e87012c0c3f6384bd",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ },
+ "measure/long/thumb": {
+  "size": [
+   216,
+   64
+  ],
+  "sha1": "4d7f5473dfe8e3a4ae4ec34e87012c0c3f6384bd",
+  "tips": {
+   "l1": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first."
+  }
+ }
+}

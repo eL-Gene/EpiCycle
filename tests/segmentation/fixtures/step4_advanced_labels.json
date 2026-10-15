@@ -1,0 +1,177 @@
+{
+ "origin": "copied from the Step 4 design document, section 3.2.1, 2026-10-13",
+ "data": {
+  "batch_size_sb": [
+   "Batch size (slices at once)",
+   "batch_size"
+  ],
+  "method_combo": [
+   "How 2D becomes 3D",
+   "method"
+  ],
+  "n_cpu_sb": [
+   "CPU cores",
+   "n_cpu"
+  ],
+  "ps_smooth_probs_cb": [
+   "Smooth the cell maps",
+   "pre_smooth_probs"
+  ],
+  "ps_smooth_flows_cb": [
+   "Smooth the flows",
+   "pre_smooth_flows"
+  ],
+  "ps_sigma_perp_sb": [
+   "Blur across slices",
+   "pre_smooth_sigma_perp"
+  ],
+  "ps_sigma_inplane_sb": [
+   "Blur within a slice",
+   "pre_smooth_sigma_inplane"
+  ],
+  "ps_mask_thresh_sb": [
+   "Ignore flows below",
+   "flow_mask_threshold"
+  ],
+  "ps_soft_weight_cb": [
+   "Weigh flows by cell probability",
+   "flow_soft_weighting"
+  ],
+  "gd_decay_sb": [
+   "Step fade",
+   "gradient_decay"
+  ],
+  "gd_iters_sb": [
+   "Steps",
+   "n_iter"
+  ],
+  "gd_momenta_sb": [
+   "Momentum",
+   "momenta"
+  ],
+  "gd_renorm_cb": [
+   "Rescale the flows at each step",
+   "renorm_gradient"
+  ],
+  "gd_tile_z_sb": [
+   "Piece depth",
+   "tile_shape[0]"
+  ],
+  "gd_tile_y_sb": [
+   "Piece height",
+   "tile_shape[1]"
+  ],
+  "gd_tile_x_sb": [
+   "Piece width",
+   "tile_shape[2]"
+  ],
+  "gd_tile_overlap_sb": [
+   "Piece overlap",
+   "tile_overlap_ratio"
+  ],
+  "ccp_ksize_sb": [
+   "Neighbourhood size",
+   "ksize"
+  ],
+  "ccp_alpha_sb": [
+   "Balance between views",
+   "alpha"
+  ],
+  "ccp_smooth_sigma_sb": [
+   "Smooth the joined mask",
+   "smooth_sigma"
+  ],
+  "ccp_threshold_level_sb": [
+   "Threshold level",
+   "threshold_level"
+  ],
+  "ccp_threshold_n_levels_sb": [
+   "Number of levels",
+   "threshold_n_levels"
+  ],
+  "ccp_prob_thresh_sb": [
+   "Fixed cell threshold",
+   "prob_thresh"
+  ],
+  "ccp_min_prob_thresh_sb": [
+   "Lowest cell threshold",
+   "min_prob_thresh"
+  ],
+  "ccp_apply_one_d_p_cb": [
+   "Round the threshold down to 0.1",
+   "apply_one_d_p_thresh"
+  ],
+  "post_small_obj_sb": [
+   "Remove specks smaller than",
+   "remove_small_objects"
+  ],
+  "post_fill_cb": [
+   "Fill holes",
+   "binary_fill_holes"
+  ],
+  "post_closing_sb": [
+   "Close gaps",
+   "binary_closing"
+  ],
+  "post_dilation_sb": [
+   "Grow the mask",
+   "binary_dilation"
+  ],
+  "post_extra_erode_sb": [
+   "Shrink the mask",
+   "extra_erode"
+  ],
+  "ccg_ksize_sb": [
+   "Neighbourhood size",
+   "ksize"
+  ],
+  "ccg_alpha_sb": [
+   "Balance between views",
+   "alpha"
+  ],
+  "ccg_smooth_sigma_sb": [
+   "Smooth the 2D flows first",
+   "smooth_sigma"
+  ],
+  "ccg_post_sigma_sb": [
+   "Smooth the joined flows",
+   "post_sigma"
+  ],
+  "cc_min_area_sb": [
+   "Smallest cluster",
+   "min_area"
+  ],
+  "cc_thresh_factor_sb": [
+   "Density cut",
+   "thresh_factor"
+  ],
+  "cc_smooth_sigma_sb": [
+   "Density blur",
+   "smooth_sigma"
+  ],
+  "sf_min_size_sb": [
+   "Smallest cell",
+   "min_size"
+  ],
+  "sf_max_size_sb": [
+   "Largest cell",
+   "max_size"
+  ],
+  "sf_max_size_factor_sb": [
+   "Largest vs typical",
+   "max_size_factor"
+  ],
+  "sf_do_stats_cb": [
+   "Drop cells far from the typical size",
+   "do_stats_filter"
+  ],
+  "do_mp_cb": [
+   "Use several cores",
+   "do_mp"
+  ],
+  "skip_postprocess_cb": [
+   "Skip the size limits",
+   "skip_postprocess"
+  ]
+ }
+}

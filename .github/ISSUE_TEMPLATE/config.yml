@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or how-to
+    url: https://github.com/eL-Gene/EpiCycle/issues/new
+    about: Open a plain issue. Say which step and attach a screenshot if it helps.

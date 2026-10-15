@@ -1,0 +1,9 @@
+name: napari-epicycle
+contributions:
+  commands:
+    - id: napari-epicycle.main_widget
+      title: EpiCycle Main Plugin
+      python_name: napari_epicycle._widget:EpiCycleMainWidget
+  widgets:
+    - command: napari-epicycle.main_widget
+      display_name: EpiCycle Plugin

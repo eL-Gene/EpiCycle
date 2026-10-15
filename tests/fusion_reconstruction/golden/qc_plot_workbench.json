@@ -1,0 +1,6766 @@
+{
+ "tree_built": {
+  "class": "QCPlotWidget",
+  "object_name": "",
+  "hidden": true,
+  "tooltip": "",
+  "style": "",
+  "isEnabled": true,
+  "children": [
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "Scatter",
+     "PCA",
+     "UMAP",
+     "t-SNE",
+     "Violin"
+    ],
+    "current": 0,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Drag a loop around cells to select them. Click without dragging to select one cell.",
+    "style": "QPushButton, QCheckBox {  background: rgba(255,255,255,0.05); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 24px; max-height: 24px;}QPushButton:checked, QCheckBox:checked {  background: rgba(106,191,105,0.25); color: #ffffff;  border-color: rgba(106,191,105,0.50);}QPushButton:disabled, QCheckBox:disabled { color: #666666; }QCheckBox { spacing: 0px; }QCheckBox::indicator { width: 0px; height: 0px; border: none;  background: none; image: none; margin: 0px; }",
+    "text": "Lasso",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Deselect all cells. Marks are not changed.",
+    "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #bbbbbb; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 22px; max-height: 22px;}QPushButton:disabled { color: #666666; }",
+    "text": "✕ Clear",
+    "isCheckable": false,
+    "isChecked": false,
+    "isEnabled": false,
+    "children": []
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Draw contour lines where cells are packed densely.",
+    "style": "QPushButton, QCheckBox {  background: rgba(255,255,255,0.05); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 24px; max-height: 24px;}QPushButton:checked, QCheckBox:checked {  background: rgba(106,191,105,0.25); color: #ffffff;  border-color: rgba(106,191,105,0.50);}QPushButton:disabled, QCheckBox:disabled { color: #666666; }QCheckBox { spacing: 0px; }QCheckBox::indicator { width: 0px; height: 0px; border: none;  background: none; image: none; margin: 0px; }",
+    "text": "Density",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QCheckBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Show cells removed in earlier edits as hollow grey points. They cannot be selected.",
+    "style": "QPushButton, QCheckBox {  background: rgba(255,255,255,0.05); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 24px; max-height: 24px;}QPushButton:checked, QCheckBox:checked {  background: rgba(106,191,105,0.25); color: #ffffff;  border-color: rgba(106,191,105,0.50);}QPushButton:disabled, QCheckBox:disabled { color: #666666; }QCheckBox { spacing: 0px; }QCheckBox::indicator { width: 0px; height: 0px; border: none;  background: none; image: none; margin: 0px; }",
+    "text": "Removed",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "color: #999; font-size: 9px;",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "PlotWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QWidget",
+      "object_name": "qt_scrollarea_hcontainer",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QScrollBar",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     },
+     {
+      "class": "QWidget",
+      "object_name": "qt_scrollarea_vcontainer",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QScrollBar",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     },
+     {
+      "class": "QWidget",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999; font-size: 9px; padding: 2px 4px;",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "_NotifyingLabel",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "Scatter",
+      "isCheckable": true,
+      "isChecked": true,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "PCA",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "UMAP",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "t-SNE",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "Violin",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "X",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [],
+      "current": -1,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Y",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [],
+      "current": -1,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Colour the points by a tier, a group, border cells or any measured feature.",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Colour by",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Colour the points by a tier, a group, border cells or any measured feature.",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [],
+      "current": -1,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       },
+       {
+        "class": "QLineEdit",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "text": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "How feature values map to colours: Linear, Log, or Rank (even spread, the default).",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Scale",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "How feature values map to colours: Linear, Log, or Rank (even spread, the default).",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [
+       "Linear",
+       "Log",
+       "Rank"
+      ],
+      "current": 2,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "The colour scale used for a feature.",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Colours",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "The colour scale used for a feature.",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [
+       "Viridis",
+       "Plasma",
+       "Inferno",
+       "Magma",
+       "Turbo",
+       "Coolwarm"
+      ],
+      "current": 0,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "color: #bbbbbb; font-size: 12px;",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "_GradientLegend",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 11px;",
+      "text": "",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 11px;",
+      "text": "",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "_GradientBar",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 11px;",
+      "text": "",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #888888; font-size: 11px;",
+      "text": "",
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   }
+  ]
+ },
+ "styles": {
+  "_WB_COMBO_STYLE": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+  "_WB_LABEL_STYLE": "color: #bbbbbb; font-size: 12px;",
+  "_WB_SEG_STYLE": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+  "_WB_TOGGLE_STYLE": "QPushButton, QCheckBox {  background: rgba(255,255,255,0.05); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 24px; max-height: 24px;}QPushButton:checked, QCheckBox:checked {  background: rgba(106,191,105,0.25); color: #ffffff;  border-color: rgba(106,191,105,0.50);}QPushButton:disabled, QCheckBox:disabled { color: #666666; }QCheckBox { spacing: 0px; }QCheckBox::indicator { width: 0px; height: 0px; border: none;  background: none; image: none; margin: 0px; }",
+  "_WB_CLEAR_STYLE": "QPushButton {  background: rgba(255,255,255,0.04); color: #bbbbbb; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 22px; max-height: 22px;}QPushButton:disabled { color: #666666; }",
+  "_WB_BG": "#23242b"
+ },
+ "consts": {
+  "WB_TEXT_KEYS": [
+   "help",
+   "UMAP_EMPTY",
+   "TSNE_EMPTY",
+   "MAP_BUSY_EMPTY",
+   "VIOLIN_GROUPS",
+   "MAP_AXES"
+  ],
+  "WB_HELP_KEYS": [
+   "Plot type",
+   "Lasso",
+   "Density",
+   "Removed",
+   "Clear",
+   "Colour by",
+   "Scale",
+   "Colours"
+  ],
+  "WB_TIER_BUCKETS": [
+   "good",
+   "bad",
+   "unmarked"
+  ],
+  "WB_PLOT_MIN_H": 150,
+  "WB_PLOT_MAX_H": 560,
+  "bucket_of": {
+   "good": "good",
+   "bad": "bad",
+   "garbage": "bad",
+   "review": "unmarked",
+   "curated": "unmarked",
+   "": "unmarked",
+   "null": "unmarked"
+  }
+ },
+ "class_signals": [
+  "category_selected",
+  "labels_selected",
+  "tier_drag_finished",
+  "tier_thresholds_changed",
+  "viewer_color_requested"
+ ],
+ "instance_signals": [
+  "stats_changed"
+ ],
+ "history_checked_built": false,
+ "history_checked_loaded": false,
+ "colour_items": [
+  "QC status",
+  "QC tier",
+  "Cluster",
+  "Border cell",
+  "area",
+  "solidity",
+  "qc_score",
+  "cluster_id"
+ ],
+ "per_type": {
+  "Scatter": {
+   "stats": "55 labels  +5 ghost",
+   "legend": "",
+   "plot_texts": [],
+   "axes_note": ""
+  },
+  "PCA": {
+   "stats": "55 labels  +5 ghost",
+   "legend": "",
+   "plot_texts": [],
+   "axes_note": ""
+  },
+  "UMAP": {
+   "stats": "55 labels  +5 ghost",
+   "legend": "",
+   "plot_texts": [
+    "No UMAP yet.\nPress Compute UMAP on the Map tab. It takes about 45 s for 3,000 cells."
+   ],
+   "axes_note": ""
+  },
+  "t-SNE": {
+   "stats": "55 labels  +5 ghost",
+   "legend": "",
+   "plot_texts": [
+    "No t-SNE yet.\nPress Compute t-SNE on the Map tab. It takes about 20 s for 3,000 cells."
+   ],
+   "axes_note": ""
+  },
+  "Violin": {
+   "stats": "55 labels  +5 ghost",
+   "legend": "",
+   "plot_texts": [],
+   "axes_note": "area by QC status"
+  }
+ },
+ "colour_states": {
+  "QC tier": {
+   "legend": "<span style=\"color:#888888;\">QC tier:</span> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a>&nbsp;<span style=\"color:#888888;\">10</span> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a>&nbsp;<span style=\"color:#888888;\">19</span> &nbsp; <a href=\"cat://qc_tier/unmarked\" style=\"color:rgb(139,144,154); font-weight:normal; text-decoration:none;\">●&nbsp;unmarked</a>&nbsp;<span style=\"color:#888888;\">26</span>",
+   "legend_hidden": false,
+   "gradient_hidden": true,
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+   ],
+   "rgba": [
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.3137,
+     0.7843,
+     0.4706,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     1.0,
+     0.4706,
+     0.1569,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ],
+    [
+     0.5451,
+     0.5647,
+     0.6039,
+     0.85
+    ]
+   ],
+   "scatter": [
+    {
+     "z": 0.0,
+     "n": 55,
+     "size": 7.0,
+     "symbol": "o",
+     "brush": [
+      80,
+      200,
+      120,
+      216
+     ],
+     "pen": [
+      255,
+      255,
+      255,
+      30,
+      0.5,
+      1
+     ],
+     "brushes": [
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       80,
+       200,
+       120,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       255,
+       120,
+       40,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ],
+      [
+       139,
+       144,
+       154,
+       216
+      ]
+     ]
+    }
+   ]
+  },
+  "Cluster": {
+   "legend": "<span style=\"color:#888888;\">Cluster:</span> &nbsp; <a href=\"cat://cluster_id/-1\" style=\"color:rgb(100,100,100); font-weight:normal; text-decoration:none;\">●&nbsp;noise</a>&nbsp;<span style=\"color:#888888;\">11</span> &nbsp; <a href=\"cat://cluster_id/0\" style=\"color:rgb(30,119,181); font-weight:normal; text-decoration:none;\">●&nbsp;G1</a>&nbsp;<span style=\"color:#888888;\">11</span> &nbsp; <a href=\"cat://cluster_id/1\" style=\"color:rgb(255,127,12); font-weight:normal; text-decoration:none;\">●&nbsp;G2</a>&nbsp;<span style=\"color:#888888;\">10</span> &nbsp; <a href=\"cat://cluster_id/2\" style=\"color:rgb(43,160,43); font-weight:normal; text-decoration:none;\">●&nbsp;G3</a>&nbsp;<span style=\"color:#888888;\">12</span> &nbsp; <a href=\"cat://cluster_id/3\" style=\"color:rgb(214,38,40); font-weight:normal; text-decoration:none;\">●&nbsp;G4</a>&nbsp;<span style=\"color:#888888;\">11</span>",
+   "legend_hidden": false,
+   "gradient_hidden": true,
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+   ],
+   "rgba": [
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ],
+    [
+     0.4,
+     0.4,
+     0.4,
+     0.5
+    ],
+    [
+     0.12,
+     0.47,
+     0.71,
+     0.85
+    ],
+    [
+     1.0,
+     0.5,
+     0.05,
+     0.85
+    ],
+    [
+     0.17,
+     0.63,
+     0.17,
+     0.85
+    ],
+    [
+     0.84,
+     0.15,
+     0.16,
+     0.85
+    ]
+   ],
+   "scatter": [
+    {
+     "z": 0.0,
+     "n": 55,
+     "size": 7.0,
+     "symbol": "o",
+     "brush": [
+      102,
+      102,
+      102,
+      127
+     ],
+     "pen": [
+      255,
+      255,
+      255,
+      30,
+      0.5,
+      1
+     ],
+     "brushes": [
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ],
+      [
+       102,
+       102,
+       102,
+       127
+      ],
+      [
+       30,
+       119,
+       181,
+       216
+      ],
+      [
+       255,
+       127,
+       12,
+       216
+      ],
+      [
+       43,
+       160,
+       43,
+       216
+      ],
+      [
+       214,
+       38,
+       40,
+       216
+      ]
+     ]
+    }
+   ]
+  },
+  "QC status": {
+   "legend": "",
+   "legend_hidden": false,
+   "gradient_hidden": true,
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+   ],
+   "rgba": [
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ],
+    [
+     0.549,
+     0.5882,
+     0.6667,
+     0.7
+    ]
+   ],
+   "scatter": [
+    {
+     "z": 0.0,
+     "n": 55,
+     "size": 7.0,
+     "symbol": "o",
+     "brush": [
+      140,
+      150,
+      170,
+      178
+     ],
+     "pen": [
+      255,
+      255,
+      255,
+      30,
+      0.5,
+      1
+     ],
+     "brushes": [
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ],
+      [
+       140,
+       150,
+       170,
+       178
+      ]
+     ]
+    }
+   ]
+  },
+  "Border cell": {
+   "legend": "<span style=\"color:#888888;\">Border cell:</span> &nbsp; <a href=\"cat://is_border_cell/0\" style=\"color:rgb(100,180,255); font-weight:normal; text-decoration:none;\">●&nbsp;Interior</a>&nbsp;<span style=\"color:#888888;\">46</span> &nbsp; <a href=\"cat://is_border_cell/1\" style=\"color:rgb(255,100,100); font-weight:normal; text-decoration:none;\">●&nbsp;Border</a>&nbsp;<span style=\"color:#888888;\">9</span>",
+   "legend_hidden": false,
+   "gradient_hidden": true,
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+   ],
+   "rgba": [
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     1.0,
+     0.3922,
+     0.3922,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ],
+    [
+     0.3922,
+     0.7059,
+     1.0,
+     0.85
+    ]
+   ],
+   "scatter": [
+    {
+     "z": 0.0,
+     "n": 55,
+     "size": 7.0,
+     "symbol": "o",
+     "brush": [
+      255,
+      100,
+      100,
+      216
+     ],
+     "pen": [
+      255,
+      255,
+      255,
+      30,
+      0.5,
+      1
+     ],
+     "brushes": [
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       255,
+       100,
+       100,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ],
+      [
+       100,
+       180,
+       255,
+       216
+      ]
+     ]
+    }
+   ]
+  },
+  "area/Linear": {
+   "legend": "<span style=\"color:rgb(68,1,83)\">█</span><span style=\"color:rgb(58,82,138)\">█</span><span style=\"color:rgb(32,145,139)\">█</span><span style=\"color:rgb(94,201,97)\">█</span><span style=\"color:rgb(252,231,36)\">█</span>  area",
+   "legend_hidden": true,
+   "gradient_hidden": false,
+   "gradient": [
+    "area",
+    "104",
+    "3,034",
+    "Linear"
+   ],
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+   ],
+   "rgba": [
+    [
+     0.2556,
+     0.1044,
+     0.3972,
+     0.85
+    ],
+    [
+     0.5449,
+     0.822,
+     0.3165,
+     0.85
+    ],
+    [
+     0.1451,
+     0.5301,
+     0.5484,
+     0.85
+    ],
+    [
+     0.3966,
+     0.7942,
+     0.3734,
+     0.85
+    ],
+    [
+     0.1925,
+     0.6272,
+     0.5054,
+     0.85
+    ],
+    [
+     0.1546,
+     0.5925,
+     0.5314,
+     0.85
+    ],
+    [
+     0.2563,
+     0.0987,
+     0.3933,
+     0.85
+    ],
+    [
+     0.2182,
+     0.3531,
+     0.5455,
+     0.85
+    ],
+    [
+     0.1534,
+     0.5914,
+     0.5322,
+     0.85
+    ],
+    [
+     0.3349,
+     0.7577,
+     0.4075,
+     0.85
+    ],
+    [
+     0.6075,
+     0.8338,
+     0.2925,
+     0.85
+    ],
+    [
+     0.1698,
+     0.4702,
+     0.5474,
+     0.85
+    ],
+    [
+     0.2572,
+     0.0905,
+     0.3877,
+     0.85
+    ],
+    [
+     0.2097,
+     0.3736,
+     0.5458,
+     0.85
+    ],
+    [
+     0.8855,
+     0.886,
+     0.1858,
+     0.85
+    ],
+    [
+     0.1392,
+     0.5444,
+     0.5486,
+     0.85
+    ],
+    [
+     0.9423,
+     0.8967,
+     0.1641,
+     0.85
+    ],
+    [
+     0.2634,
+     0.0355,
+     0.3504,
+     0.85
+    ],
+    [
+     0.2553,
+     0.6847,
+     0.4622,
+     0.85
+    ],
+    [
+     0.992,
+     0.906,
+     0.145,
+     0.85
+    ],
+    [
+     0.2323,
+     0.3109,
+     0.5374,
+     0.85
+    ],
+    [
+     0.2026,
+     0.6364,
+     0.4984,
+     0.85
+    ],
+    [
+     0.8843,
+     0.8858,
+     0.1863,
+     0.85
+    ],
+    [
+     0.247,
+     0.1806,
+     0.449,
+     0.85
+    ],
+    [
+     0.1772,
+     0.6132,
+     0.5159,
+     0.85
+    ],
+    [
+     0.4674,
+     0.8075,
+     0.3463,
+     0.85
+    ],
+    [
+     0.3245,
+     0.7482,
+     0.4146,
+     0.85
+    ],
+    [
+     0.1325,
+     0.5606,
+     0.5489,
+     0.85
+    ],
+    [
+     0.2361,
+     0.2767,
+     0.5143,
+     0.85
+    ],
+    [
+     0.1442,
+     0.5829,
+     0.5386,
+     0.85
+    ],
+    [
+     0.1306,
+     0.5705,
+     0.5479,
+     0.85
+    ],
+    [
+     0.1763,
+     0.4546,
+     0.5471,
+     0.85
+    ],
+    [
+     0.6972,
+     0.8506,
+     0.2581,
+     0.85
+    ],
+    [
+     0.5153,
+     0.8165,
+     0.3279,
+     0.85
+    ],
+    [
+     0.1986,
+     0.4005,
+     0.5463,
+     0.85
+    ],
+    [
+     0.227,
+     0.6588,
+     0.4816,
+     0.85
+    ],
+    [
+     0.2149,
+     0.361,
+     0.5456,
+     0.85
+    ],
+    [
+     0.1818,
+     0.4411,
+     0.5469,
+     0.85
+    ],
+    [
+     0.3128,
+     0.7375,
+     0.4226,
+     0.85
+    ],
+    [
+     0.1743,
+     0.4592,
+     0.5472,
+     0.85
+    ],
+    [
+     0.1362,
+     0.5516,
+     0.5487,
+     0.85
+    ],
+    [
+     0.3857,
+     0.7921,
+     0.3776,
+     0.85
+    ],
+    [
+     0.156,
+     0.5036,
+     0.5479,
+     0.85
+    ],
+    [
+     0.2398,
+     0.244,
+     0.492,
+     0.85
+    ],
+    [
+     0.443,
+     0.8029,
+     0.3556,
+     0.85
+    ],
+    [
+     0.152,
+     0.5134,
+     0.5481,
+     0.85
+    ],
+    [
+     0.1502,
+     0.5176,
+     0.5482,
+     0.85
+    ],
+    [
+     0.2895,
+     0.7161,
+     0.4387,
+     0.85
+    ],
+    [
+     0.1767,
+     0.6127,
+     0.5162,
+     0.85
+    ],
+    [
+     0.1552,
+     0.5056,
+     0.548,
+     0.85
+    ],
+    [
+     0.267,
+     0.004,
+     0.329,
+     0.85
+    ],
+    [
+     0.2532,
+     0.1258,
+     0.4117,
+     0.85
+    ],
+    [
+     0.3654,
+     0.7857,
+     0.3865,
+     0.85
+    ],
+    [
+     0.1781,
+     0.6141,
+     0.5152,
+     0.85
+    ],
+    [
+     0.352,
+     0.7734,
+     0.3957,
+     0.85
+    ]
+   ]
+  },
+  "area/Log": {
+   "legend": "<span style=\"color:rgb(68,1,83)\">█</span><span style=\"color:rgb(58,82,138)\">█</span><span style=\"color:rgb(32,145,139)\">█</span><span style=\"color:rgb(94,201,97)\">█</span><span style=\"color:rgb(252,231,36)\">█</span>  area",
+   "legend_hidden": true,
+   "gradient_hidden": false,
+   "gradient": [
+    "area",
+    "104",
+    "3,034",
+    "Log"
+   ],
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+   ],
+   "rgba": [
+    [
+     0.1932,
+     0.4136,
+     0.5465,
+     0.85
+    ],
+    [
+     0.85,
+     0.8793,
+     0.1995,
+     0.85
+    ],
+    [
+     0.4431,
+     0.8029,
+     0.3556,
+     0.85
+    ],
+    [
+     0.7962,
+     0.8692,
+     0.2201,
+     0.85
+    ],
+    [
+     0.5868,
+     0.8299,
+     0.3004,
+     0.85
+    ],
+    [
+     0.5363,
+     0.8204,
+     0.3198,
+     0.85
+    ],
+    [
+     0.198,
+     0.4018,
+     0.5463,
+     0.85
+    ],
+    [
+     0.269,
+     0.6973,
+     0.4528,
+     0.85
+    ],
+    [
+     0.5346,
+     0.8201,
+     0.3205,
+     0.85
+    ],
+    [
+     0.7512,
+     0.8608,
+     0.2374,
+     0.85
+    ],
+    [
+     0.8716,
+     0.8834,
+     0.1912,
+     0.85
+    ],
+    [
+     0.3601,
+     0.7809,
+     0.3901,
+     0.85
+    ],
+    [
+     0.2053,
+     0.3842,
+     0.546,
+     0.85
+    ],
+    [
+     0.2872,
+     0.714,
+     0.4403,
+     0.85
+    ],
+    [
+     0.9605,
+     0.9001,
+     0.1571,
+     0.85
+    ],
+    [
+     0.4645,
+     0.8069,
+     0.3474,
+     0.85
+    ],
+    [
+     0.9775,
+     0.9033,
+     0.1506,
+     0.85
+    ],
+    [
+     0.2449,
+     0.1994,
+     0.4617,
+     0.85
+    ],
+    [
+     0.6638,
+     0.8444,
+     0.2709,
+     0.85
+    ],
+    [
+     0.992,
+     0.906,
+     0.145,
+     0.85
+    ],
+    [
+     0.2301,
+     0.6617,
+     0.4795,
+     0.85
+    ],
+    [
+     0.5998,
+     0.8323,
+     0.2955,
+     0.85
+    ],
+    [
+     0.9602,
+     0.9,
+     0.1572,
+     0.85
+    ],
+    [
+     0.1422,
+     0.5371,
+     0.5485,
+     0.85
+    ],
+    [
+     0.5668,
+     0.8262,
+     0.3081,
+     0.85
+    ],
+    [
+     0.8224,
+     0.8741,
+     0.2101,
+     0.85
+    ],
+    [
+     0.7404,
+     0.8588,
+     0.2415,
+     0.85
+    ],
+    [
+     0.4881,
+     0.8114,
+     0.3383,
+     0.85
+    ],
+    [
+     0.2009,
+     0.6349,
+     0.4996,
+     0.85
+    ],
+    [
+     0.5217,
+     0.8177,
+     0.3254,
+     0.85
+    ],
+    [
+     0.5024,
+     0.8141,
+     0.3328,
+     0.85
+    ],
+    [
+     0.3495,
+     0.7711,
+     0.3974,
+     0.85
+    ],
+    [
+     0.9015,
+     0.889,
+     0.1797,
+     0.85
+    ],
+    [
+     0.8396,
+     0.8774,
+     0.2035,
+     0.85
+    ],
+    [
+     0.3094,
+     0.7344,
+     0.425,
+     0.85
+    ],
+    [
+     0.6301,
+     0.838,
+     0.2838,
+     0.85
+    ],
+    [
+     0.2761,
+     0.7039,
+     0.4478,
+     0.85
+    ],
+    [
+     0.34,
+     0.7625,
+     0.4039,
+     0.85
+    ],
+    [
+     0.728,
+     0.8564,
+     0.2463,
+     0.85
+    ],
+    [
+     0.3527,
+     0.7741,
+     0.3952,
+     0.85
+    ],
+    [
+     0.4751,
+     0.8089,
+     0.3433,
+     0.85
+    ],
+    [
+     0.7921,
+     0.8685,
+     0.2217,
+     0.85
+    ],
+    [
+     0.4017,
+     0.7951,
+     0.3715,
+     0.85
+    ],
+    [
+     0.1698,
+     0.6064,
+     0.5209,
+     0.85
+    ],
+    [
+     0.8135,
+     0.8725,
+     0.2135,
+     0.85
+    ],
+    [
+     0.4172,
+     0.7981,
+     0.3655,
+     0.85
+    ],
+    [
+     0.4239,
+     0.7993,
+     0.3629,
+     0.85
+    ],
+    [
+     0.7026,
+     0.8517,
+     0.256,
+     0.85
+    ],
+    [
+     0.5662,
+     0.826,
+     0.3084,
+     0.85
+    ],
+    [
+     0.4049,
+     0.7957,
+     0.3702,
+     0.85
+    ],
+    [
+     0.267,
+     0.004,
+     0.329,
+     0.85
+    ],
+    [
+     0.1766,
+     0.4537,
+     0.5471,
+     0.85
+    ],
+    [
+     0.7822,
+     0.8666,
+     0.2255,
+     0.85
+    ],
+    [
+     0.5681,
+     0.8264,
+     0.3076,
+     0.85
+    ],
+    [
+     0.7688,
+     0.8641,
+     0.2306,
+     0.85
+    ]
+   ]
+  },
+  "area/Rank": {
+   "legend": "<span style=\"color:rgb(68,1,83)\">█</span><span style=\"color:rgb(58,82,138)\">█</span><span style=\"color:rgb(32,145,139)\">█</span><span style=\"color:rgb(94,201,97)\">█</span><span style=\"color:rgb(252,231,36)\">█</span>  area",
+   "legend_hidden": true,
+   "gradient_hidden": false,
+   "gradient": [
+    "area",
+    "104",
+    "3,034",
+    "Rank"
+   ],
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+   ],
+   "rgba": [
+    [
+     0.2539,
+     0.1196,
+     0.4075,
+     0.85
+    ],
+    [
+     0.7201,
+     0.8549,
+     0.2493,
+     0.85
+    ],
+    [
+     0.1624,
+     0.4882,
+     0.5477,
+     0.85
+    ],
+    [
+     0.5389,
+     0.8209,
+     0.3188,
+     0.85
+    ],
+    [
+     0.2425,
+     0.673,
+     0.471,
+     0.85
+    ],
+    [
+     0.1726,
+     0.609,
+     0.519,
+     0.85
+    ],
+    [
+     0.2565,
+     0.0965,
+     0.3918,
+     0.85
+    ],
+    [
+     0.2382,
+     0.2584,
+     0.5018,
+     0.85
+    ],
+    [
+     0.1552,
+     0.593,
+     0.531,
+     0.85
+    ],
+    [
+     0.3646,
+     0.785,
+     0.387,
+     0.85
+    ],
+    [
+     0.7655,
+     0.8635,
+     0.2319,
+     0.85
+    ],
+    [
+     0.1995,
+     0.3983,
+     0.5462,
+     0.85
+    ],
+    [
+     0.2591,
+     0.0734,
+     0.3761,
+     0.85
+    ],
+    [
+     0.233,
+     0.3047,
+     0.5332,
+     0.85
+    ],
+    [
+     0.9014,
+     0.889,
+     0.1798,
+     0.85
+    ],
+    [
+     0.155,
+     0.5061,
+     0.548,
+     0.85
+    ],
+    [
+     0.9467,
+     0.8975,
+     0.1624,
+     0.85
+    ],
+    [
+     0.2618,
+     0.0503,
+     0.3604,
+     0.85
+    ],
+    [
+     0.2948,
+     0.721,
+     0.435,
+     0.85
+    ],
+    [
+     0.992,
+     0.906,
+     0.145,
+     0.85
+    ],
+    [
+     0.2408,
+     0.2353,
+     0.4861,
+     0.85
+    ],
+    [
+     0.2599,
+     0.689,
+     0.459,
+     0.85
+    ],
+    [
+     0.8561,
+     0.8805,
+     0.1971,
+     0.85
+    ],
+    [
+     0.2487,
+     0.1659,
+     0.439,
+     0.85
+    ],
+    [
+     0.2075,
+     0.641,
+     0.495,
+     0.85
+    ],
+    [
+     0.6295,
+     0.8379,
+     0.2841,
+     0.85
+    ],
+    [
+     0.3472,
+     0.769,
+     0.399,
+     0.85
+    ],
+    [
+     0.1401,
+     0.5421,
+     0.5486,
+     0.85
+    ],
+    [
+     0.2434,
+     0.2121,
+     0.4704,
+     0.85
+    ],
+    [
+     0.1377,
+     0.577,
+     0.543,
+     0.85
+    ],
+    [
+     0.1327,
+     0.56,
+     0.5489,
+     0.85
+    ],
+    [
+     0.2143,
+     0.3624,
+     0.5457,
+     0.85
+    ],
+    [
+     0.8108,
+     0.872,
+     0.2145,
+     0.85
+    ],
+    [
+     0.6748,
+     0.8464,
+     0.2667,
+     0.85
+    ],
+    [
+     0.2291,
+     0.3265,
+     0.5451,
+     0.85
+    ],
+    [
+     0.2774,
+     0.705,
+     0.447,
+     0.85
+    ],
+    [
+     0.2356,
+     0.2815,
+     0.5175,
+     0.85
+    ],
+    [
+     0.2217,
+     0.3445,
+     0.5454,
+     0.85
+    ],
+    [
+     0.3297,
+     0.753,
+     0.411,
+     0.85
+    ],
+    [
+     0.2069,
+     0.3804,
+     0.5459,
+     0.85
+    ],
+    [
+     0.1475,
+     0.5241,
+     0.5483,
+     0.85
+    ],
+    [
+     0.4936,
+     0.8124,
+     0.3362,
+     0.85
+    ],
+    [
+     0.1921,
+     0.4163,
+     0.5465,
+     0.85
+    ],
+    [
+     0.2461,
+     0.189,
+     0.4547,
+     0.85
+    ],
+    [
+     0.5842,
+     0.8294,
+     0.3014,
+     0.85
+    ],
+    [
+     0.1772,
+     0.4522,
+     0.5471,
+     0.85
+    ],
+    [
+     0.1698,
+     0.4702,
+     0.5474,
+     0.85
+    ],
+    [
+     0.3123,
+     0.737,
+     0.423,
+     0.85
+    ],
+    [
+     0.1901,
+     0.625,
+     0.507,
+     0.85
+    ],
+    [
+     0.1846,
+     0.4343,
+     0.5468,
+     0.85
+    ],
+    [
+     0.2644,
+     0.0271,
+     0.3447,
+     0.85
+    ],
+    [
+     0.2513,
+     0.1428,
+     0.4233,
+     0.85
+    ],
+    [
+     0.4483,
+     0.8039,
+     0.3536,
+     0.85
+    ],
+    [
+     0.225,
+     0.657,
+     0.483,
+     0.85
+    ],
+    [
+     0.403,
+     0.7954,
+     0.371,
+     0.85
+    ]
+   ]
+  }
+ },
+ "ghosts_on": {
+  "legend": "<span style=\"color:#888888;\">QC tier:</span> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a>&nbsp;<span style=\"color:#888888;\">10</span> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a>&nbsp;<span style=\"color:#888888;\">19</span> &nbsp; <a href=\"cat://qc_tier/unmarked\" style=\"color:rgb(139,144,154); font-weight:normal; text-decoration:none;\">●&nbsp;unmarked</a>&nbsp;<span style=\"color:#888888;\">26</span>",
+  "scatter": [
+   {
+    "z": 0.0,
+    "n": 55,
+    "size": 7.0,
+    "symbol": "o",
+    "brush": [
+     80,
+     200,
+     120,
+     216
+    ],
+    "pen": [
+     255,
+     255,
+     255,
+     30,
+     0.5,
+     1
+    ],
+    "brushes": [
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ],
+     [
+      139,
+      144,
+      154,
+      216
+     ]
+    ]
+   },
+   {
+    "z": 0.0,
+    "n": 5,
+    "size": 10.0,
+    "symbol": "x",
+    "brush": [
+     140,
+     140,
+     160,
+     130
+    ],
+    "pen": [
+     200,
+     200,
+     200,
+     100,
+     1.0,
+     1
+    ],
+    "brushes": [
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   }
+  ]
+ },
+ "pick": {
+  "stats": "55 labels  +5 ghost",
+  "selected": [
+   2,
+   3,
+   8,
+   9,
+   14,
+   15,
+   20,
+   21,
+   26,
+   27,
+   32,
+   38,
+   39,
+   44,
+   45,
+   50,
+   51,
+   56,
+   57
+  ],
+  "legend": "<span style=\"color:#888888;\">QC tier:</span> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a>&nbsp;<span style=\"color:#888888;\">10</span> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:bold; text-decoration:underline;\">●&nbsp;bad</a>&nbsp;<span style=\"color:#888888;\">19</span> &nbsp; <a href=\"cat://qc_tier/unmarked\" style=\"color:rgb(139,144,154); font-weight:normal; text-decoration:none;\">●&nbsp;unmarked</a>&nbsp;<span style=\"color:#888888;\">26</span>",
+  "clear_enabled": true,
+  "after_switch_selected": [
+   2,
+   3,
+   8,
+   9,
+   14,
+   15,
+   20,
+   21,
+   26,
+   27,
+   32,
+   38,
+   39,
+   44,
+   45,
+   50,
+   51,
+   56,
+   57
+  ],
+  "after_switch_categories": [
+   "qc_tier/bad"
+  ],
+  "unmarked_selected": [
+   4,
+   6,
+   10,
+   11,
+   12,
+   16,
+   18,
+   22,
+   23,
+   24,
+   28,
+   29,
+   30,
+   34,
+   35,
+   36,
+   40,
+   42,
+   46,
+   47,
+   52,
+   53,
+   54,
+   58,
+   59,
+   60
+  ]
+ },
+ "stats_seen_count": 25,
+ "tree_loaded": {
+  "class": "QCPlotWidget",
+  "object_name": "",
+  "hidden": true,
+  "tooltip": "",
+  "style": "",
+  "isEnabled": true,
+  "children": [
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "Scatter",
+     "PCA",
+     "UMAP",
+     "t-SNE",
+     "Violin"
+    ],
+    "current": 0,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Drag a loop around cells to select them. Click without dragging to select one cell.",
+    "style": "QPushButton, QCheckBox {  background: rgba(255,255,255,0.05); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 24px; max-height: 24px;}QPushButton:checked, QCheckBox:checked {  background: rgba(106,191,105,0.25); color: #ffffff;  border-color: rgba(106,191,105,0.50);}QPushButton:disabled, QCheckBox:disabled { color: #666666; }QCheckBox { spacing: 0px; }QCheckBox::indicator { width: 0px; height: 0px; border: none;  background: none; image: none; margin: 0px; }",
+    "text": "Lasso",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Deselect all cells. Marks are not changed.",
+    "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #bbbbbb; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 22px; max-height: 22px;}QPushButton:disabled { color: #666666; }",
+    "text": "✕ Clear",
+    "isCheckable": false,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Draw contour lines where cells are packed densely.",
+    "style": "QPushButton, QCheckBox {  background: rgba(255,255,255,0.05); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 24px; max-height: 24px;}QPushButton:checked, QCheckBox:checked {  background: rgba(106,191,105,0.25); color: #ffffff;  border-color: rgba(106,191,105,0.50);}QPushButton:disabled, QCheckBox:disabled { color: #666666; }QCheckBox { spacing: 0px; }QCheckBox::indicator { width: 0px; height: 0px; border: none;  background: none; image: none; margin: 0px; }",
+    "text": "Density",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QCheckBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Show cells removed in earlier edits as hollow grey points. They cannot be selected.",
+    "style": "QPushButton, QCheckBox {  background: rgba(255,255,255,0.05); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 4px;  padding: 0px 8px; min-height: 24px; max-height: 24px;}QPushButton:checked, QCheckBox:checked {  background: rgba(106,191,105,0.25); color: #ffffff;  border-color: rgba(106,191,105,0.50);}QPushButton:disabled, QCheckBox:disabled { color: #666666; }QCheckBox { spacing: 0px; }QCheckBox::indicator { width: 0px; height: 0px; border: none;  background: none; image: none; margin: 0px; }",
+    "text": "Removed",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "color: #999; font-size: 9px;",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "PlotWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QWidget",
+      "object_name": "qt_scrollarea_hcontainer",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QScrollBar",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     },
+     {
+      "class": "QWidget",
+      "object_name": "qt_scrollarea_vcontainer",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QScrollBar",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     },
+     {
+      "class": "QWidget",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999; font-size: 9px; padding: 2px 4px;",
+    "text": "<span style=\"color:#888888;\">QC tier:</span> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a>&nbsp;<span style=\"color:#888888;\">10</span> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a>&nbsp;<span style=\"color:#888888;\">19</span> &nbsp; <a href=\"cat://qc_tier/unmarked\" style=\"color:rgb(139,144,154); font-weight:bold; text-decoration:underline;\">●&nbsp;unmarked</a>&nbsp;<span style=\"color:#888888;\">26</span>",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "_NotifyingLabel",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "text": "55 labels  +5 ghost",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "Scatter",
+      "isCheckable": true,
+      "isChecked": true,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "PCA",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "UMAP",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "t-SNE",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QPushButton",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Choose how to lay out the cells: two features, the PCA map, the UMAP or t-SNE map, or a violin per group.",
+      "style": "QPushButton {  background: rgba(255,255,255,0.04); color: #cccccc; font-size: 11px;  border: 1px solid rgba(255,255,255,0.10); border-radius: 0px;  padding: 0px 9px; min-height: 24px; max-height: 24px;}QPushButton:hover { background: rgba(255,255,255,0.08); }QPushButton:checked {  background: rgba(106,191,105,0.28); color: #ffffff; font-weight: bold;}",
+      "text": "Violin",
+      "isCheckable": true,
+      "isChecked": false,
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "X",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [
+       "area",
+       "solidity",
+       "qc_score",
+       "cluster_id"
+      ],
+      "current": 0,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Y",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [
+       "area",
+       "solidity",
+       "qc_score",
+       "cluster_id"
+      ],
+      "current": 1,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Colour the points by a tier, a group, border cells or any measured feature.",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Colour by",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "Colour the points by a tier, a group, border cells or any measured feature.",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [
+       "QC status",
+       "QC tier",
+       "Cluster",
+       "Border cell",
+       "area",
+       "solidity",
+       "qc_score",
+       "cluster_id"
+      ],
+      "current": 1,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       },
+       {
+        "class": "QLineEdit",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "text": "QC tier",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "How feature values map to colours: Linear, Log, or Rank (even spread, the default).",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Scale",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "How feature values map to colours: Linear, Log, or Rank (even spread, the default).",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [
+       "Linear",
+       "Log",
+       "Rank"
+      ],
+      "current": 2,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QWidget",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "The colour scale used for a feature.",
+      "style": "color: #bbbbbb; font-size: 12px;",
+      "text": "Colours",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QComboBox",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "The colour scale used for a feature.",
+      "style": "QComboBox {  font-size: 11px; padding: 2px 6px; min-height: 20px;  background: rgba(255,255,255,0.04); color: #dddddd;  border: 1px solid rgba(255,255,255,0.10); border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox:disabled { color: #666666; background: rgba(255,255,255,0.02); }QComboBox QAbstractItemView {  background: #2b2d35; color: #dddddd;  selection-background-color: rgba(106,191,105,0.25);}",
+      "items": [
+       "Viridis",
+       "Plasma",
+       "Inferno",
+       "Magma",
+       "Turbo",
+       "Coolwarm"
+      ],
+      "current": 0,
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QFrame",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QListView",
+          "object_name": "",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_viewport",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_hcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           },
+           {
+            "class": "QWidget",
+            "object_name": "qt_scrollarea_vcontainer",
+            "hidden": true,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": [
+             {
+              "class": "QScrollBar",
+              "object_name": "",
+              "hidden": false,
+              "tooltip": "",
+              "style": "",
+              "isEnabled": true,
+              "children": []
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "color: #bbbbbb; font-size: 12px;",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "_GradientLegend",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 11px;",
+      "text": "area",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 11px;",
+      "text": "104",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "_GradientBar",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #bbbbbb; font-size: 11px;",
+      "text": "3,034",
+      "isEnabled": true,
+      "children": []
+     },
+     {
+      "class": "QLabel",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "color: #888888; font-size: 11px;",
+      "text": "Rank",
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   }
+  ]
+ }
+}

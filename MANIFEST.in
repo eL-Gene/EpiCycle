@@ -1,0 +1,8 @@
+include napari_epicycle/napari.yaml
+recursive-include napari_epicycle *.svg *.png *.yaml
+include requirements-lock.txt
+include LICENSE README.md CONTRIBUTING.md
+# The help guides: setup.py's build_py copies them into the wheel, so a wheel
+# built FROM the sdist (python -m build, pip install <sdist>) needs them here.
+graft docs/guides
+include THIRD_PARTY_NOTICES.md CITATION.cff environment.yml

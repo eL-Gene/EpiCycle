@@ -1,0 +1,1185 @@
+{
+ "_step4_text": {
+  "FLOW_TITLE": "Stacks → predict → reconstruct → measure & tidy → export",
+  "FLOW_SUBTITLE": "Run your trained model on whole stacks, then measure the cells.",
+  "SECTION_SESSION": "Session",
+  "SECTION_SEGMENT": "Segment",
+  "SECTION_MEASURE": "Measure & tidy",
+  "SECTION_DIAGNOSTICS": "Diagnostics",
+  "SESSION_WORKSPACE_TITLE": "Workspace",
+  "SESSION_WORKSPACE_DESC": "The project folder every step reads and writes. Shared with Steps 1–3.",
+  "SESSION_WORKSPACE_PLACEHOLDER": "Select workspace directory...",
+  "BROWSE_BTN": "Browse",
+  "SESSION_STACKS_TITLE": "Stacks",
+  "SESSION_STACKS_DESC": "Stacks you prepared in Step 1 are listed here. Ticked stacks are the ones Segment runs on.",
+  "STACKS_NONE": "No stacks yet.",
+  "STACKS_COUNT": "{n} stacks · {k} with voxel size · ",
+  "STACKS_IN_VOXELS": "{m} in voxels",
+  "STACKS_EMPTY_1": "Stacks you prepared in Step 1 appear here.",
+  "STACKS_EMPTY_2": "You have not prepared any yet — or add a folder of .tif stacks.",
+  "ADD_FOLDER_BTN": "Add a folder…",
+  "SET_SPACING_BTN": "Set spacing…",
+  "SET_SPACING_NEEDS_STACK": "Set spacing needs at least one stack.",
+  "SET_SPACING_NEEDS_TICK": "Tick a stack, or use a row’s ⋯ menu.",
+  "TICKED_COUNT": "{n} ticked",
+  "PIPELINE_TITLE": "Pipeline status",
+  "PIPELINE_DESC": "Stack counts in this run.",
+  "PIPELINE_COUNTS": "Unprocessed · Predicted · Reconstructed · Measured · Finalized",
+  "PIPELINE_COUNT_LABELS": [
+   [
+    "unprocessed",
+    "Unprocessed:"
+   ],
+   [
+    "predicted",
+    "Predicted:"
+   ],
+   [
+    "reconstructed",
+    "Reconstructed:"
+   ],
+   [
+    "qc_extracted",
+    "Measured:"
+   ],
+   [
+    "finalized",
+    "Finalized:"
+   ]
+  ],
+  "PIPELINE_FAILED_LABEL": "Failed:",
+  "SESSION_MODEL_POINTER": "The model is chosen in Segment, above its stack list.",
+  "ROW_SPACING_STEP1": "{z} × {y} × {x} µm (from Step 1)",
+  "ROW_SPACING_FILE": "{z} × {y} × {x} µm (from the file)",
+  "ROW_SPACING_USER": "{z} × {y} × {x} µm (set by you)",
+  "ROW_SPACING_NONE": "voxels",
+  "ROW_WIDE_LINE2": "{axes} · {c} ch · {spacing}",
+  "ROW_WARN_CHANNELS": "Channels don’t fit this model: it needs {n}, this stack has {k}.",
+  "ROW_WARN_NO_SPACING": "No voxel size — numbers will be in voxels. Set spacing…",
+  "ROW_WARN_NO_SPACING_SHORT": "No voxel size — runs in voxels.",
+  "ROW_WARN_SAME_NAME": "Another stack already has this name.",
+  "ROW_WARN_NO_AXES": "Its axis order could not be read, so it cannot run.",
+  "ROW_WARN_CHANGED_SINCE_PREDICT": "The stack file changed since it was predicted.",
+  "THUMB_PLACEHOLDER": "",
+  "MENU_CLEAR_PREDICTIONS": "Clear 2D predictions…",
+  "MENU_SET_SPACING": "Set spacing…",
+  "MENU_CLEAR_PREDICTIONS_HAS_3D": "Clear 2D predictions (it has a 3D result)",
+  "CLEAR_PRED_TITLE": "Clear 2D predictions",
+  "CLEAR_PRED_CONFIRM": "Delete the 2D predictions of {stack}? It goes back to unprocessed and needs Predict again.",
+  "CLEAR_PRED_BTN": "Delete",
+  "CANCEL_BTN": "Cancel",
+  "SPACING_DIALOG_TITLE": "Set spacing",
+  "SPACING_DIALOG_DESC": "The voxel size, the Z direction and the axis order of {n} stacks.",
+  "SPACING_DIALOG_DESC_ONE": "The voxel size, the Z direction and the axis order of {stack}.",
+  "SPACING_Z_LABEL": "Z (µm):",
+  "SPACING_Y_LABEL": "Y (µm):",
+  "SPACING_X_LABEL": "X (µm):",
+  "SPACING_ZORIENT_LABEL": "Z orientation:",
+  "SPACING_ZORIENT_ITEMS": [
+   "Basal-down (default)",
+   "Basal-up (inverted)"
+  ],
+  "SPACING_AXES_LABEL": "Axes:",
+  "SPACING_AXES_AUTO": "As detected",
+  "SPACING_OK_BTN": "OK",
+  "SPACING_CHANGE_TITLE": "Voxel size changes",
+  "SPACING_CHANGE_CONFIRM": "Changing this makes {what} out of date for {n} stacks. They will need {action} again.",
+  "SPACING_WHAT_MEASURE": [
+   "the measurements",
+   "Measure"
+  ],
+  "SPACING_WHAT_PREDICT": [
+   "the 2D predictions",
+   "Predict"
+  ],
+  "SPACING_WHAT_BOTH": [
+   "the measurements and the 2D predictions",
+   "Predict and Measure"
+  ],
+  "SPACING_APPLY_BTN": "Change it",
+  "SPACING_SAVE_FAILED": "The voxel size could not be saved. The log in Diagnostics says why.",
+  "RUN_ROW_LABEL": "Run:",
+  "NEW_RUN_BTN": "New Run",
+  "MANAGE_RUNS_BTN": "Manage",
+  "RUN_ROW_AFTER_RELEASE": "Named runs come after the release.",
+  "SEG_MODEL_TITLE": "Model",
+  "SEG_MODEL_DESC": "The model that finds the cells.",
+  "SEG_ACTIVE_LABEL": "Active:",
+  "MODEL_CHANGE_BTN": "Change…",
+  "SEG_MODEL_TRAINED_ON": "Trained on {n} channels: {names}.",
+  "SEG_MODEL_TRAINED_UNKNOWN": "The channels this model was trained on are not recorded.",
+  "MODEL_MISSING": "The active model’s files are missing. Pick it again with Change…",
+  "SEG_MODEL_CHANNEL": "{name} ({index})",
+  "SEG_MODEL_ROLE_MEMBRANE": "membrane",
+  "SEG_MODEL_ROLE_NUCLEI": "nuclei",
+  "SEG_PICK_CHANNEL": "Pick the membrane channel.",
+  "SEG_NONE_RUNNABLE": "No ticked stack can run with this model.",
+  "SEG_NOTHING_TICKED": "Tick a stack to run.",
+  "SEG_NOTHING_TO_RECONSTRUCT": "Predict the ticked stacks first.",
+  "VIEW_NO_RESULT": "The highlighted stack has no result to show yet.",
+  "SEG_TICKED_SKIPPED": "{n} ticked · {k} cannot run",
+  "SEG_STACKS_TITLE": "Stacks",
+  "SEG_STACKS_DESC": "Ticked stacks are the ones Predict and Reconstruct run on — the same ticks as in Session.",
+  "ROW_SHAPE": "{Z}×{Y}×{X} · {c} ch",
+  "ROW_SHAPE_CELLS": " · {n} cells",
+  "ROW_MADE_BY": "made by {model}",
+  "ROW_2D_BY": "2D by {model}",
+  "ROW_NOT_ACTIVE_MODEL": "made by {model} — not the active model",
+  "ROW_2D_NOT_ACTIVE": "2D by {model} — not the active model",
+  "ROW_MADE_BY_UNKNOWN": "made before models were recorded",
+  "ROW_UNSAVED": "Edited, not saved",
+  "ROW_RUNNING_VIEW": " · {VIEW} {c} / {t}",
+  "ROW_2D_STALE": "2D made with other axes: Predict again",
+  "ROW_2D_BY_UNKNOWN": "2D made before models were recorded",
+  "ROW_LAST_RUN_FAILED": "The last {stage} failed; the earlier result is kept.",
+  "ROW_STAGE_WORDS": {
+   "predict": "Predict",
+   "reconstruct": "Reconstruct"
+  },
+  "SEG_TICKED_LINE": "{n} ticked",
+  "SEG_TICKED_VOXELS": "{stack} runs in voxels",
+  "SEG_TICKED_VOXELS_MANY": "{m} stacks run in voxels",
+  "SEG_TICKED_JOIN": " · ",
+  "STACKS_RUNNING_HINT": "You can still click rows and use View on finished stacks.",
+  "SEG_SETTINGS_TITLE": "Settings",
+  "SEG_SETTINGS_DESC": "Start from the settings your Step 3 run used, or from a standard set.",
+  "SEG_START_FROM_LABEL": "Start from:",
+  "SEG_PRESET_STEP3": "Step 3 run “{run}”",
+  "SEG_PRESET_EPICYCLE": "EpiCycle defaults",
+  "SEG_PRESET_USEG3D": "u-Segment3D defaults (without its flow filter)",
+  "SEG_PRESET_CUSTOM": "Custom",
+  "SEG_INFERENCE_TITLE": "Inference settings",
+  "SEG_MEMBRANE_LABEL": "Membrane channel:",
+  "SEG_NUCLEI_LABEL": "Nuclei channel:",
+  "SEG_CHANNEL_ITEM": "{i}: {name}",
+  "SEG_CHANNEL_ITEM_ROLE": "{i}: {name} ({role})",
+  "SEG_CHANNEL_ITEM_ROLE_ONLY": "{i}: {role} (model)",
+  "SEG_CHANNEL_NONE": "none",
+  "SEG_CHANNEL_NAME": "ch{i}",
+  "SEG_CELL_WIDTH_LABEL": "Typical cell width:",
+  "SEG_CELL_WIDTH_AUTO": "Auto",
+  "SEG_CELL_WIDTH_SUFFIX": " µm",
+  "SEG_CELL_WIDTH_PX": "≈ {px} pixels at {um} µm per pixel",
+  "SEG_NORMALIZE_LABEL": "Even out brightness",
+  "SEG_RESCALE_LABEL": "Rescale",
+  "SEG_ADVANCED_TITLE": "Advanced",
+  "SEG_METHOD_DIRECT": "Direct",
+  "SEG_JOIN_TITLE": "Joining slices into cells",
+  "SEG_JOIN_DESC": "u-Segment3D, the engine that builds the 3D cells. Each group keeps its own help lines.",
+  "SEG_SIZE_DESC": "Cells outside this size range are dropped by the final clean-up after the 3D build, which runs only while “Skip the size limits” is unticked.",
+  "SEG_SIZE_OFF_NOTE": "Size limits are off while this is ticked.",
+  "SEG_MAX_SIZE_NONE": "no limit",
+  "SEG_PROB_THRESH_AUTO": "Auto",
+  "PREDICT_BTN": "Predict Selected",
+  "RECONSTRUCT_BTN": "Reconstruct Selected",
+  "CANCEL_RUN_BTN": "Cancel",
+  "VIEW_BTN": "View",
+  "STEP4_SEG_IDLE": "Ready · {n} stacks ticked",
+  "STEP4_POSTPROCESSING": "Postprocessing {stack}...  [{t}]",
+  "RECON_PARTIAL_CACHE": "{stack}: the 2D predictions are incomplete. Predict it again first.",
+  "RECON_STALE_CACHE": "{stack}: the 2D predictions were made with other axes. Predict it again first.",
+  "RECON_SOURCE_CHANGED": "{stack}: the stack file changed since it was predicted. Predict it again first.",
+  "RECON_OVERWRITES_TITLE": "Reconstruct again",
+  "RECON_OVERWRITES_CONFIRM": "{stack} is {status}. Reconstructing it again deletes its current cells, measurements, marks and exported 3D meshes, and starts from new cells.",
+  "RECON_OVERWRITES_BTN": "Reconstruct",
+  "PREDICT_OVER_3D_TITLE": "Predict again",
+  "PREDICT_OVER_3D_CONFIRM": "{stack} already has 3D cells. Predicting again replaces its 2D outlines; the 3D cells stay until you Reconstruct.",
+  "PREDICT_OVER_3D_BTN": "Predict",
+  "LOG_PREDICT_STACK_DONE": "{stack}: 2D predictions, {s} slices × 3 views ({t} s)",
+  "LOG_RECON_START": "Reconstructing {n} selected stacks",
+  "LOG_RECON_STACK_DONE": "  Done: {n} cells, saved to labels_3d.tif",
+  "LOG_EXPORT_EXCLUDED": " ({n} deleted/border excluded)",
+  "LOG_EXPORT_NAN": " ({k} cols NaN-filled)",
+  "LOG_PREDICT_START": "Predicting {n} selected stacks · model {model}",
+  "LOG_WIDTH_IN_PIXELS": "{stack}: no voxel size; cell width taken as {px} px.",
+  "LOG_STACK_SKIPPED": "[predict] {stack} skipped: {why}",
+  "LOG_NO_AXES": "its axis order could not be read",
+  "LOG_PRESET_SKIPPED": "[start from] {name} kept its value: the saved one would not apply",
+  "LOG_START_FROM_NOT_RESTORED": "[start from] '{preset}' could not be restored; the settings are EpiCycle's defaults",
+  "PS_FLOWS_OFF_NOTE": "The two fields above are used only with Smooth the flows.",
+  "LOG_RUNS_IN_VOXELS": "[predict] {stack} runs in voxels",
+  "LOG_NO_CACHE": "[WARN] No prediction cache for {stack} — run Predict first.",
+  "LOG_STACKS_LISTED": "[session] {n} stacks listed",
+  "LOG_MODEL_SET": "[model] active model: {model}",
+  "LOG_PRESET_APPLIED": "[settings] start from: {preset}",
+  "LOG_SPACING_SET": "[spacing] {stack}: {spacing}",
+  "LOG_FOLDER_ADDED": "[session] folder added: {folder}",
+  "LOG_CANCEL_REQUESTED": "[run] cancel requested",
+  "MT_PREVIEW_FAILED": "{stack} could not be shown. The log in Diagnostics says why.",
+  "STEP4_LOCK_PREDICT": "Predicting — Cancel stops it after the current stack. The workspace, the ticks, the model, the settings, Measure & tidy and the other steps are locked.",
+  "STEP4_LOCK_RECONSTRUCT": "Reconstructing — Cancel stops it after the current stack. The workspace, the ticks, the model, the settings, Measure & tidy and the other steps are locked.",
+  "STEP4_LOCK_MEASURE": "Measuring — wait for it to finish. The stack list, the edits, Save, Finalize, Export and the other steps are locked.",
+  "STEP4_LOCK_SMOOTH": "Smoothing {stack}. Wait for it to finish. The stack list, the edits, Save, Finalize, Export and the other steps are locked.",
+  "STEP4_LOCK_SAVE": "Saving {stack}. Wait for it to finish. The stack list, the edits, Save, Finalize, Export and the other steps are locked.",
+  "STEP4_LOCK_LOAD": "Loading {stack}. Wait for it to finish. The stack list, the edits, Save, Finalize, Export and the other steps are locked.",
+  "STEP4_LOCK_EXPORT": "Exporting. Wait for it to finish. The stack list, the edits, Save, Finalize, Export and the other steps are locked.",
+  "WB_LOCKED": "A Step 4 job is running ({job}). Marking and maps wait until it ends.",
+  "LOCK_WORKSPACE_REFUSED": "A Step 4 job is running; the workspace was not changed.",
+  "STEP_EXIT_TITLE": "Unsaved Changes",
+  "STEP_EXIT_BODY": "You have unsaved changes (deletions, smoothing, marks or hand edits) that will be lost if you leave without saving.\n\nSave changes now?",
+  "STEP_EXIT_SAVE_BTN": "Save & Leave",
+  "STEP_EXIT_LEAVE_BTN": "Leave Without Saving",
+  "STEP_EXIT_SAVE_FAILED_TITLE": "Still in Step 4",
+  "STEP_EXIT_SAVE_FAILED_SHORT": "Saving {stack} failed; still in Step 4.",
+  "STEP_EXIT_SAVE_FAILED": "Saving {stack} failed, so you are still in Step 4. Your edits are kept; the log in Diagnostics says why.",
+  "EXPORT_COLS_SHARED": "• {n} shared columns across all stacks",
+  "EXPORT_COLS_NOT_SHARED": "• ⚠ {n} columns not shared by all stacks",
+  "EXPORT_COLS_MISSING_FROM": "    {col} — missing from: {stacks}",
+  "EXPORT_COLS_RULE": "\nMerge uses intersection (shared columns only).\nMissing values filled with NaN.",
+  "EXPORT_COLS_SHARED_ONLY": "Shared columns only (drop stack-specific)",
+  "EXPORT_COLS_EXPORT_BTN": "Export",
+  "FEATURE_REFERENCE_TITLE": "What is measured?",
+  "LOCK_ACTION_REFUSED": "[lock] {action} refused: a Step 4 job is running",
+  "LOCK_MENU_REFUSED": "A Step 4 job is running; the stack menu waits until it ends.",
+  "MT_STACKS_DESC": "Click a stack to load it. Only reconstructed stacks are listed.",
+  "MT_NOT_RECONSTRUCTED": "{stack} is not reconstructed yet; it appears here after Reconstruct.",
+  "MT_NOT_RECONSTRUCTED_MANY": "{m} stacks are not reconstructed yet; they appear here after Reconstruct.",
+  "MT_STACK_PILL_UNSAVED": "Unsaved edits · measurements stale",
+  "MT_STACK_PILL_UNSAVED_FRESH": "Unsaved edits",
+  "MT_STACK_PILL_STALE": "Measurements stale",
+  "MT_STACK_PILL_SAVED": "Saved",
+  "MT_STACK_PILL_MEASURING": "Measuring…",
+  "MT_STACK_PILL_UNSAVED_MARKS": "Unsaved marks",
+  "MT_SPACING_CHANGED": "Voxel size changed since the last Measure.",
+  "MT_STACK_LINE": "{Z}×{Y}×{X} · {n} cells · µm {z} × {y} × {x} ({source})",
+  "MT_STACK_LINE_VOXELS": "{Z}×{Y}×{X} · {n} cells · in voxels",
+  "MT_NOTHING_LOADED": "No stack loaded.",
+  "MT_CHIP_MEASURE": "{hh:mm} · {n} cells",
+  "MT_CHIP_MEASURE_STALE": "stale · {hh:mm} · {n} cells",
+  "MT_CHIP_NEVER": "not measured",
+  "MT_CHIP_REVIEW": "{g} good · {b} bad · {u} unmarked",
+  "MT_CHIP_TIDY": "{hh:mm} · {k} thin kept",
+  "MT_CHIP_NOT_SMOOTHED": "not smoothed",
+  "MT_CHIP_FIX_LATER": "after the release",
+  "MEASURE_DESC": "Measure every cell — size, shape, brightness, neighbours — in real units.",
+  "MEASURE_BTN_FIRST": "Measure cells…",
+  "MEASURE_BTN_AGAIN": "Measure again…",
+  "MEASURE_BTN_RUNNING": "Measuring…",
+  "REVIEW_DESC": "Cells you mark good or bad in the Workbench are counted here.",
+  "TIDY_DESC": "Round off jagged outlines. A cell too thin to survive is kept as it was.",
+  "FIX_DESC": "Opens the 3D curator on this stack. After the release.",
+  "MT_ADV_HINT": "smoothing in µm · Reset",
+  "TIDY_TOPOLOGY_LABEL": "Keep each cell in one piece",
+  "FINISH_DESC": "Finalize saves this stack and marks it done, so Export takes it. It locks nothing.",
+  "FINALIZE_NEEDS": "Save and re-measure first.",
+  "FINALIZE_NEEDS_MEASURE": "Measure this stack first.",
+  "BUSY_MEASURING": "Measuring · {pct}%",
+  "BUSY_MEASURE_STAGE": "{stage} · cell {i} of {n} · about {t} left",
+  "BUSY_MEASURE_STAGE_ONLY": "{stage} · about {t} left",
+  "BUSY_MEASURE_ETA": "about {t} left",
+  "QC_BAR_IDLE": "Done",
+  "MT_LOADED": "Loaded {stack}: {shape}, {n} labels",
+  "MT_SMOOTHED": "Smoothed {n} cells ({v} voxels changed, not saved). Save keeps them.",
+  "MT_SMOOTHED_THIN": "{k} cells were too thin to smooth and were kept as they were.",
+  "LOG_SMOOTH_METHOD": "Smoothing uses the Batch Refine method: a wider crop, one snapshot, thin cells kept. Results differ voxel for voxel from smoothing before this version.",
+  "MT_TIERS_KEPT": "{k} marks kept.",
+  "MT_DELETED": "Removed {n} cells ({m} left, not saved). Save keeps it.",
+  "MT_UNDONE": "Undid the last {what}.",
+  "MT_UNDO_EMPTY": "Nothing to undo.",
+  "MT_UNDO_AFTER_PAINT": "Undo is off: cells were painted by hand after the smoothing.",
+  "REMOVE_CONFIRM": "Remove {n} bad cells from {stack}? Undo can bring them back until you Save.",
+  "RESET_CONFIRM": "Reset {stack} to the cells Reconstruct made? Your edits, measurements and exported 3D meshes for it are deleted.",
+  "REMEASURE_FINALIZED_CONFIRM": "{stack} is finalized. Measuring again takes it out of Export until you Finalize it again.",
+  "LOAD_UNSAVED_TITLE": "Unsaved edits",
+  "LOAD_UNSAVED_BODY": "{stack} has edits that are not saved.",
+  "SAVE_NO_STACK": "Load a stack to save it.",
+  "RESET_NO_BACKUP": "There is no original result to go back to for {stack}.",
+  "DIAG_LOG_DESC": "Segmentation run events and output status.",
+  "MT_STACKS_TITLE": "Stacks",
+  "MT_MEASURE_TITLE": "Measure",
+  "MT_REVIEW_TITLE": "Review",
+  "MT_TIDY_TITLE": "Tidy",
+  "MT_FIX_TITLE": "Fix by hand",
+  "MT_ADV_TITLE": "Advanced",
+  "FINISH_TITLE": "Finish this stack",
+  "OPEN_WORKBENCH_BTN": "Open Workbench",
+  "WHAT_MEASURED_BTN": "What is measured?",
+  "REMOVE_BAD_BTN": "Remove bad cells",
+  "UNDO_BTN": "Undo",
+  "SMOOTH_OUTLINES_BTN": "Smooth outlines",
+  "FIX_BY_HAND_BTN": "Fix by hand in 3D…",
+  "SAVE_BTN": "Save",
+  "FINALIZE_BTN": "Finalize",
+  "EXPORT_OPEN_BTN": "Export…",
+  "RESET_BTN": "Reset",
+  "SMOOTH_STRENGTHS": [
+   "Light",
+   "Medium",
+   "Strong"
+  ],
+  "SMOOTH_STRENGTH_CUSTOM": "Custom",
+  "TIDY_SIGMA_Z_LABEL": "Up and down (σ z)",
+  "TIDY_SIGMA_XY_LABEL": "Across (σ xy)",
+  "SIGMA_SUFFIX_UM": " µm",
+  "SIGMA_SUFFIX_VOX": " voxels",
+  "MT_CHANNELS_TITLE": "Channels to measure",
+  "MT_CHANNELS_DESC": "Tick the channels whose brightness is measured; the names head the brightness columns of the table.",
+  "MT_CHANNEL_TICK": "Measure",
+  "MT_CHANNELS_AXES": "Axes:",
+  "MT_CHANNELS_AXES_UNKNOWN": "(read when a stack loads)",
+  "MT_SOURCE_WORDS": {
+   "step1": "from Step 1",
+   "file": "from the file",
+   "user": "set by you"
+  },
+  "MT_STACK_LINE_VOXELS_HEAD": "{Z}×{Y}×{X} · {n} cells · ",
+  "MT_STACK_LINE_VOXELS_TAIL": "in voxels",
+  "UNDO_WHAT_REMOVE": "Remove bad cells",
+  "UNDO_WHAT_SMOOTH": "Smooth outlines",
+  "MT_MEASURED": "Measured {n} cells of {stack}.",
+  "MT_SAVED": "Saved {stack}.",
+  "MT_FINALIZED": "Finalized {stack}.",
+  "MT_RESET_DONE": "Reset {stack} to the cells Reconstruct made ({n} cells).",
+  "MT_NO_BAD": "No cell is marked bad.",
+  "MT_MESH_RUNNING": "Exporting meshes · {i} of {n}",
+  "REMOVE_TITLE": "Remove bad cells",
+  "REMOVE_CONFIRM_BTN": "Remove",
+  "RESET_TITLE": "Reset",
+  "RESET_CONFIRM_BTN": "Reset",
+  "REMEASURE_TITLE": "Measure again",
+  "REMEASURE_BTN": "Measure",
+  "SAVE_TITLE": "Save",
+  "SAVE_CONFIRM": "Write {stack}’s cells, measurements, marks and maps to disk?",
+  "SAVE_TAKES_OUT_OF_EXPORT": " This takes it out of Export until it is finalized again.",
+  "FINALIZE_TITLE": "Finalize",
+  "FINALIZE_CONFIRM": "Save {stack} and mark it finalized, so Export takes it?",
+  "LOAD_UNSAVED_SAVE": "Save",
+  "LOAD_UNSAVED_DISCARD": "Discard",
+  "LOAD_UNSAVED_STAY": "Stay",
+  "MESH_SAVE_FIRST_TITLE": "Unsaved edits",
+  "MESH_SAVE_FIRST": "{stack} has edits that are not saved. The meshes are made from the saved cells, so it is saved first.",
+  "MESH_SAVE_FIRST_BTN": "Save and export",
+  "EXPORT_CLOSE_BTN": "Close",
+  "EXPORT_MESHES_BTN": "Export 3D meshes…",
+  "EXPORT_FILE_TITLE": "Export features",
+  "EXPORT_DEFAULT_NAME": "features_{date}_{n}stacks.csv",
+  "EXPORT_WINDOW_TITLE": "Export — the end of Step 4",
+  "EXPORT_DESC": "Workspace-wide: works on every finalized stack, whichever stack is loaded.",
+  "EXPORT_FINALIZED_COUNT": "{k} of {n} stacks can go into Export features:",
+  "EXPORT_BLOCK": "Finalize a stack first.",
+  "EXPORT_ROW_WHY_FINALIZE": "finalize it first",
+  "EXPORT_ROW_WHY_MEASURE": "measure and finalize it first",
+  "EXPORT_ROW_WHY_EDITED": "edited after Finalize: measure and finalize it again",
+  "EXPORT_ROW_UNITS_VOXELS": "in voxels, not µm",
+  "EXPORT_ROW_UNSAVED": "its unsaved edits are not in the table",
+  "EXPORT_ROW_LEGACY": "finalized before its files were recorded",
+  "EXPORT_ROW_UNITS_UNKNOWN": "measured before units were recorded: measure and finalize it again",
+  "EXPORT_ROW_WHY_REFINALIZE": "changed after Finalize: finalize it again",
+  "EXPORT_ROWS_CHANGED": "The list changed; check the ticks and export again.",
+  "EXPORT_NONE_TICKED": "Tick a stack to export.",
+  "EXPORT_RUNNING": "Exporting… the window’s buttons wait until it ends.",
+  "EXPORT_FEATURES_BTN": "Export features ({k} stacks)",
+  "EXPORT_FEATURES_DONE": "Exported {k} stacks ({n} cells) to {file}",
+  "EXPORT_FEATURES_WHAT": "One table of every active cell; removed and border cells are left out, and a column names the stack and the model.",
+  "EXPORT_LAST": "Last exported {hh:mm} · {k} stacks · {file}",
+  "EXPORT_MESH_TARGET": "the loaded stack, {stack}",
+  "EXPORT_MESH_NONE": "Load a stack in Measure & tidy first.",
+  "EXPORT_MESH_WHAT": "Saves first if there are unsaved edits, then writes one surface file per cell to {folder}.",
+  "EXPORT_MESH_DONE": "Exported {n} meshes to {stack}/",
+  "EXPORT_MESH_DONE_SKIPPED": "Exported {n} meshes to {stack}/ ({k} cells under 10 voxels: no mesh)",
+  "LOG_MESH_SKIPPED": "[export] no mesh for {k} cells under 10 voxels: {ids}",
+  "EXPORT_BTN_LINE": "Opens the export window: features from every finalized stack, 3D meshes for the loaded stack.",
+  "STATE_RESTORED_FROM_BACKUP": "Step 4's saved state could not be read. It was kept as {file}, and Step 4 started from its last backup.",
+  "STATE_STARTED_EMPTY": "Step 4's saved state could not be read. It was kept as {file}, and Step 4 started with no stacks.",
+  "STATE_RESTORED_FROM_LEGACY": "Step 4's saved state could not be read. It was kept as {file}, and Step 4 started from the older state file.",
+  "STATE_LEGACY_UNREADABLE": "The old Step 4 state file could not be read and was left as it is.",
+  "STATE_LEGACY_NEWER": "An older EpiCycle wrote Step 4 results after this one moved to its new state file. Those results are not shown here.",
+  "STATE_REROOTED": "[state] this workspace was copied from {old}: {n} stored paths now point into this workspace",
+  "DELETE_OUTSIDE_REFUSED": "[WARN] not deleted, outside this workspace: {path}",
+  "STATE_MOVED_TO_ROOT": "[state] step4_state.json now lives at the workspace root; the old copy was kept as artifacts/step4/{file}",
+  "STATE_SAVE_BLOCKED": "Step 4 cannot save: its state file could not be set aside. Close other programs using it, then reopen the workspace.",
+  "STATE_RECONCILED": "Updated {n} stacks to match the files on disk.",
+  "STATE_SAVE_FAILED": "Step 4 could not save its state. The log in Diagnostics says why.",
+  "STATE_UNREADABLE_ON_ADOPT": "Step 4's saved state could not be read. It will be set aside the first time you work in Step 4.",
+  "MT_MEASURE_FAILED": "Measuring {stack} failed. The log in Diagnostics says why.",
+  "MT_SMOOTH_FAILED": "Smoothing {stack} failed. Nothing was changed. The log in Diagnostics says why.",
+  "MT_LOAD_FAILED": "{stack} could not be loaded. The log in Diagnostics says why.",
+  "MT_SAVE_FAILED": "Saving {stack} failed. Nothing was overwritten. The log in Diagnostics says why.",
+  "MT_RESET_FAILED": "Resetting {stack} failed. Nothing was changed. The log in Diagnostics says why.",
+  "EXPORT_FAILED": "The feature export failed. The log in Diagnostics says why.",
+  "EXPORT_MESH_FAILED": "The mesh export failed. The log in Diagnostics says why.",
+  "STEP4_HELP_LINES": {
+   "run_picker_combo": "The run these results belong to. This release has one run, Default; named runs, each with its own model, come later.",
+   "new_run_btn": "Named runs come after the release.",
+   "manage_runs_btn": "Named runs come after the release.",
+   "model_change_btn": "Pick the model to run — your Step 2 and Step 3 models, Cellpose’s built-in ones, or a file.",
+   "row_tick": "Ticked stacks are the ones Predict Selected and Reconstruct Selected run on; the two lists share the ticks.",
+   "row_chip": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it.",
+   "row_eye": "Show or hide this stack in the viewer.",
+   "start_from_combo": "Fill the settings below from your Step 3 run or from a standard set; you can still change any of them.",
+   "chan1_combo": "The channel the model reads as the cell membrane. A loaded or previewed stack shows its layer names here.",
+   "chan2_combo": "The channel the model reads as the nuclei, or none. A loaded or previewed stack shows its layer names here.",
+   "cell_width_um_sb": "About how wide one cell is, in micrometres; the model looks for cells near this size.",
+   "normalize_cb": "Stretch each slice’s brightness before the model sees it.",
+   "rescale_cb": "Used only when no cell width is set: when ticked, the image is passed to the model at its own scale; when unticked, the model resizes it by its own trained cell size. The factor used is recorded with the result.",
+   "batch_size_sb": "How many slices go to the graphics card together; lower it if the card runs out of memory.",
+   "method_combo": "The way the three views are joined into 3D cells. Only Direct is offered.",
+   "n_cpu_sb": "How many processor cores the 3D build uses.",
+   "ps_smooth_probs_cb": "Blur each view's cell-probability map before the views are joined, so cells do not step from slice to slice.",
+   "ps_smooth_flows_cb": "Blur each view's flows before the views are joined.",
+   "ps_sigma_perp_sb": "How far the blur reaches across the slices of each view; higher removes stripes between slices.",
+   "ps_sigma_inplane_sb": "How far the blur reaches within a slice; keep it low to keep detail.",
+   "ps_mask_thresh_sb": "Flows where the cell probability is below this are set to zero. Used only with Smooth the flows.",
+   "ps_soft_weight_cb": "Scale the smoothed flows by how likely each voxel is inside a cell. Used only with Smooth the flows.",
+   "gd_decay_sb": "How fast each step shrinks as voxels follow the flows; higher suits long, thin cells.",
+   "gd_iters_sb": "How many steps each voxel takes along the flows.",
+   "gd_momenta_sb": "How much of the previous step each step keeps (0 to 1). Rarely changed.",
+   "gd_renorm_cb": "Set the flows back to unit length at every step.",
+   "gd_tile_z_sb": "The depth of the pieces the volume is cut into for several cores. Used only with Use several cores.",
+   "gd_tile_y_sb": "The height of those pieces. Used only with Use several cores.",
+   "gd_tile_x_sb": "The width of those pieces. Used only with Use several cores.",
+   "gd_tile_overlap_sb": "How much neighbouring pieces overlap, as a fraction. Used only with Use several cores.",
+   "do_mp_cb": "Cut the volume into pieces and follow the flows on several cores at once.",
+   "ccp_ksize_sb": "How many neighbouring voxels are pooled when the three views' probabilities are joined into 3D.",
+   "ccp_alpha_sb": "A small count added before pooling so no single view dominates; higher evens the views out more.",
+   "ccp_smooth_sigma_sb": "Blur the joined 3D cell mask before it is cut.",
+   "ccp_threshold_level_sb": "Which automatic cut level decides whether a voxel is a cell; 0 is the lowest, and it must be below Number of levels minus 1.",
+   "ccp_threshold_n_levels_sb": "How many bands the automatic threshold splits the probabilities into; there is one fewer level to choose from.",
+   "ccp_prob_thresh_sb": "Set the cell-or-not cut by hand, from 0 to 1. Auto uses the two levels above.",
+   "ccp_min_prob_thresh_sb": "The automatic cut never goes below this.",
+   "ccp_apply_one_d_p_cb": "Round the automatic cut down to one decimal place.",
+   "post_small_obj_sb": "Pieces of the 3D mask with fewer voxels than this are removed.",
+   "post_fill_cb": "Fill holes inside the 3D mask.",
+   "post_closing_sb": "Close small gaps in the mask; the number is the size of the tool in voxels.",
+   "post_dilation_sb": "Grow the mask outwards by this many voxels.",
+   "post_extra_erode_sb": "Shrink the mask by this many voxels after the steps above.",
+   "ccg_ksize_sb": "How many neighbouring voxels are pooled when the three views' flows are joined into 3D.",
+   "ccg_alpha_sb": "A small count added before pooling so no single view dominates.",
+   "ccg_smooth_sigma_sb": "Blur each view's flows before they are joined.",
+   "ccg_post_sigma_sb": "Blur the 3D flows after they are joined.",
+   "cc_min_area_sb": "Clusters of fewer voxels than this are not made into cells.",
+   "cc_thresh_factor_sb": "Where points count as crowded: the average density plus this many spreads.",
+   "cc_smooth_sigma_sb": "How much the point density is blurred before clusters are found.",
+   "skip_postprocess_cb": "When ticked (the default), the final clean-up after the 3D build does not run, so the size limits below drop nothing. Untick it to apply them.",
+   "sf_min_size_sb": "Cells with fewer voxels than this are dropped.",
+   "sf_max_size_sb": "Cells with more voxels than this are dropped.",
+   "sf_max_size_factor_sb": "With the tick below: a cell larger than the average size plus this many spreads is dropped.",
+   "sf_do_stats_cb": "Drop cells much larger than the typical cell, by the rule above.",
+   "predict_btn": "Make the 2D outlines, slice by slice in all three views, for every ticked stack; the slow part, on the graphics card.",
+   "reconstruct_btn": "Join each ticked stack’s 2D outlines into 3D cells; needs Predict first, and uses the 2D outlines already made.",
+   "cancel_btn": "Stop after the stack being worked on; finished stacks are kept.",
+   "view_btn": "Show the highlighted stack’s result in the viewer (the highlighted row, not the ticks); works while a run is going.",
+   "mt_row_click": "Load this stack to measure and tidy it; if the loaded stack has unsaved edits you are asked first.",
+   "save_tiers_btn": "Write this stack’s cells and measurements to disk; after this, Undo cannot go back further.",
+   "finalize_btn": "Finalize saves this stack and marks it done, so Export takes it. It locks nothing.",
+   "export_btn": "Opens the export window: features from every finalized stack, 3D meshes for the loaded stack.",
+   "export_row_tick": "Finalized stacks that go into Export features; a stack that cannot go says why.",
+   "export_features_btn": "Write one table of every cell from the finalized stacks, ready for your notebooks.",
+   "export_meshes_btn": "Save each cell of the loaded stack as a 3D surface file for rendering or printing.",
+   "browse_workdir_btn": "Choose the project folder. Every step reads and writes it.",
+   "add_folder_btn": "Add every .tif stack in a folder to the list.",
+   "set_spacing_btn": "Set the voxel size, the Z direction and the axis order of the ticked stacks.",
+   "extract_features_btn": "Measure every cell of the loaded stack. The Workbench opens when it is done.",
+   "open_analysis_btn": "Open the Workbench to look at the cells and mark them good or bad.",
+   "feature_reference_btn": "List every measurement and what it means.",
+   "delete_bad_btn": "Remove the cells marked bad. Undo can bring them back until you Save.",
+   "undo_btn": "Take back the last Remove or Smooth, until you Save. The maps are not brought back: compute them again.",
+   "smooth_strength_combo": "How strongly to round off the outlines.",
+   "smooth_all_btn": "Smooth every cell’s outline. A cell too thin to survive is kept as it was.",
+   "fix_by_hand_btn": "Fix cells by hand in 3D. This comes after the release.",
+   "smooth_sigma_z_sb": "How far the smoothing reaches, up and down / across.",
+   "smooth_sigma_xy_sb": "How far the smoothing reaches, up and down / across.",
+   "smooth_preserve_topology_cb": "Keep each cell in one piece: if smoothing would split a cell, it is reconnected.",
+   "reset_original_btn": "Put back the cells Reconstruct made. Your edits, measurements and exported 3D meshes are deleted."
+  },
+  "STEP4_ADVANCED_LABELS": {
+   "batch_size_sb": [
+    "Batch size (slices at once)",
+    "batch_size"
+   ],
+   "method_combo": [
+    "How 2D becomes 3D",
+    "method"
+   ],
+   "n_cpu_sb": [
+    "CPU cores",
+    "n_cpu"
+   ],
+   "ps_smooth_probs_cb": [
+    "Smooth the cell maps",
+    "pre_smooth_probs"
+   ],
+   "ps_smooth_flows_cb": [
+    "Smooth the flows",
+    "pre_smooth_flows"
+   ],
+   "ps_sigma_perp_sb": [
+    "Blur across slices",
+    "pre_smooth_sigma_perp"
+   ],
+   "ps_sigma_inplane_sb": [
+    "Blur within a slice",
+    "pre_smooth_sigma_inplane"
+   ],
+   "ps_mask_thresh_sb": [
+    "Ignore flows below",
+    "flow_mask_threshold"
+   ],
+   "ps_soft_weight_cb": [
+    "Weigh flows by cell probability",
+    "flow_soft_weighting"
+   ],
+   "gd_decay_sb": [
+    "Step fade",
+    "gradient_decay"
+   ],
+   "gd_iters_sb": [
+    "Steps",
+    "n_iter"
+   ],
+   "gd_momenta_sb": [
+    "Momentum",
+    "momenta"
+   ],
+   "gd_renorm_cb": [
+    "Rescale the flows at each step",
+    "renorm_gradient"
+   ],
+   "gd_tile_z_sb": [
+    "Piece depth",
+    "tile_shape[0]"
+   ],
+   "gd_tile_y_sb": [
+    "Piece height",
+    "tile_shape[1]"
+   ],
+   "gd_tile_x_sb": [
+    "Piece width",
+    "tile_shape[2]"
+   ],
+   "gd_tile_overlap_sb": [
+    "Piece overlap",
+    "tile_overlap_ratio"
+   ],
+   "do_mp_cb": [
+    "Use several cores",
+    "do_mp"
+   ],
+   "ccp_ksize_sb": [
+    "Neighbourhood size",
+    "ksize"
+   ],
+   "ccp_alpha_sb": [
+    "Balance between views",
+    "alpha"
+   ],
+   "ccp_smooth_sigma_sb": [
+    "Smooth the joined mask",
+    "smooth_sigma"
+   ],
+   "ccp_threshold_level_sb": [
+    "Threshold level",
+    "threshold_level"
+   ],
+   "ccp_threshold_n_levels_sb": [
+    "Number of levels",
+    "threshold_n_levels"
+   ],
+   "ccp_prob_thresh_sb": [
+    "Fixed cell threshold",
+    "prob_thresh"
+   ],
+   "ccp_min_prob_thresh_sb": [
+    "Lowest cell threshold",
+    "min_prob_thresh"
+   ],
+   "ccp_apply_one_d_p_cb": [
+    "Round the threshold down to 0.1",
+    "apply_one_d_p_thresh"
+   ],
+   "post_small_obj_sb": [
+    "Remove specks smaller than",
+    "remove_small_objects"
+   ],
+   "post_fill_cb": [
+    "Fill holes",
+    "binary_fill_holes"
+   ],
+   "post_closing_sb": [
+    "Close gaps",
+    "binary_closing"
+   ],
+   "post_dilation_sb": [
+    "Grow the mask",
+    "binary_dilation"
+   ],
+   "post_extra_erode_sb": [
+    "Shrink the mask",
+    "extra_erode"
+   ],
+   "ccg_ksize_sb": [
+    "Neighbourhood size",
+    "ksize"
+   ],
+   "ccg_alpha_sb": [
+    "Balance between views",
+    "alpha"
+   ],
+   "ccg_smooth_sigma_sb": [
+    "Smooth the 2D flows first",
+    "smooth_sigma"
+   ],
+   "ccg_post_sigma_sb": [
+    "Smooth the joined flows",
+    "post_sigma"
+   ],
+   "cc_min_area_sb": [
+    "Smallest cluster",
+    "min_area"
+   ],
+   "cc_thresh_factor_sb": [
+    "Density cut",
+    "thresh_factor"
+   ],
+   "cc_smooth_sigma_sb": [
+    "Density blur",
+    "smooth_sigma"
+   ],
+   "skip_postprocess_cb": [
+    "Skip the size limits",
+    "skip_postprocess"
+   ],
+   "sf_min_size_sb": [
+    "Smallest cell",
+    "min_size"
+   ],
+   "sf_max_size_sb": [
+    "Largest cell",
+    "max_size"
+   ],
+   "sf_max_size_factor_sb": [
+    "Largest vs typical",
+    "max_size_factor"
+   ],
+   "sf_do_stats_cb": [
+    "Drop cells far from the typical size",
+    "do_stats_filter"
+   ]
+  },
+  "STEP4_ADVANCED_GROUPS": [
+   [
+    "Smooth before joining",
+    "pre_smoothing",
+    [
+     "ps_smooth_probs_cb",
+     "ps_smooth_flows_cb",
+     "ps_sigma_perp_sb",
+     "ps_sigma_inplane_sb",
+     "ps_mask_thresh_sb",
+     "ps_soft_weight_cb"
+    ]
+   ],
+   [
+    "Follow the flows",
+    "gradient_descent",
+    [
+     "gd_decay_sb",
+     "gd_iters_sb",
+     "gd_momenta_sb",
+     "gd_renorm_cb",
+     "do_mp_cb",
+     "gd_tile_z_sb",
+     "gd_tile_y_sb",
+     "gd_tile_x_sb",
+     "gd_tile_overlap_sb"
+    ]
+   ],
+   [
+    "Combine the probabilities",
+    "combine_cell_probs",
+    [
+     "ccp_ksize_sb",
+     "ccp_alpha_sb",
+     "ccp_smooth_sigma_sb",
+     "ccp_threshold_level_sb",
+     "ccp_threshold_n_levels_sb",
+     "ccp_prob_thresh_sb",
+     "ccp_min_prob_thresh_sb",
+     "ccp_apply_one_d_p_cb"
+    ]
+   ],
+   [
+    "Clean the mask",
+    "postprocess_binary",
+    [
+     "post_small_obj_sb",
+     "post_fill_cb",
+     "post_closing_sb",
+     "post_dilation_sb",
+     "post_extra_erode_sb"
+    ]
+   ],
+   [
+    "Combine the flows",
+    "combine_cell_gradients",
+    [
+     "ccg_ksize_sb",
+     "ccg_alpha_sb",
+     "ccg_smooth_sigma_sb",
+     "ccg_post_sigma_sb"
+    ]
+   ],
+   [
+    "Group into cells",
+    "connected_component",
+    [
+     "cc_min_area_sb",
+     "cc_thresh_factor_sb",
+     "cc_smooth_sigma_sb"
+    ]
+   ],
+   [
+    "Size limits",
+    "size_filters",
+    [
+     "skip_postprocess_cb",
+     "sf_min_size_sb",
+     "sf_max_size_sb",
+     "sf_max_size_factor_sb",
+     "sf_do_stats_cb"
+    ]
+   ]
+  ],
+  "STEP4_HIDDEN_KNOBS": [
+   "flow_thresh_sb",
+   "cellprob_sb"
+  ],
+  "count_phrase": {
+   "__callable__": "count_phrase"
+  },
+  "seg_idle_line": {
+   "__callable__": "seg_idle_line"
+  },
+  "state_reconciled_line": {
+   "__callable__": "state_reconciled_line"
+  },
+  "fmt_count": {
+   "__callable__": "fmt_count"
+  },
+  "_IRREGULAR": {
+   "mesh": "meshes"
+  },
+  "say": {
+   "__callable__": "say"
+  }
+ },
+ "_step4_models": {
+  "Path": {
+   "__class__": "Path"
+  },
+  "Any": {
+   "__class__": "Any"
+  },
+  "Dict": {
+   "__callable__": "Dict"
+  },
+  "Optional": {
+   "__callable__": "Optional"
+  },
+  "Tuple": {
+   "__callable__": "Tuple"
+  },
+  "VIEWS": [
+   "xy",
+   "xz",
+   "yz"
+  ],
+  "CACHE_KINDS": [
+   "flows",
+   "probs",
+   "masks"
+  ],
+  "SPACING_SOURCES": [
+   "step1",
+   "file",
+   "user"
+  ],
+  "read_step1_state": {
+   "__callable__": "read_step1_state"
+  },
+  "_real": {
+   "__callable__": "_real"
+  },
+  "_positive": {
+   "__callable__": "_positive"
+  },
+  "same_spacing": {
+   "__callable__": "same_spacing"
+  },
+  "_read_voxel_spacing": {
+   "__callable__": "_read_voxel_spacing"
+  },
+  "_rel_to": {
+   "__callable__": "_rel_to"
+  },
+  "resolve_stack_spacing": {
+   "__callable__": "resolve_stack_spacing"
+  },
+  "_label": {
+   "__callable__": "_label"
+  },
+  "model_snapshot": {
+   "__callable__": "model_snapshot"
+  },
+  "same_model": {
+   "__callable__": "same_model"
+  },
+  "file_fingerprint": {
+   "__callable__": "file_fingerprint"
+  },
+  "finalized_fingerprint": {
+   "__callable__": "finalized_fingerprint"
+  },
+  "cache_array_path": {
+   "__callable__": "cache_array_path"
+  },
+  "legacy_cache_array_path": {
+   "__callable__": "legacy_cache_array_path"
+  },
+  "cache_meta_path": {
+   "__callable__": "cache_meta_path"
+  },
+  "read_cache_meta": {
+   "__callable__": "read_cache_meta"
+  },
+  "find_prediction_cache": {
+   "__callable__": "find_prediction_cache"
+  },
+  "RESULT_KEYS": [
+   "labels_path",
+   "prob_path",
+   "original_labels_path",
+   "made_with",
+   "n_cells"
+  ],
+  "_missing": {
+   "__callable__": "_missing"
+  },
+  "prediction_slice_count": {
+   "__callable__": "prediction_slice_count"
+  },
+  "reconcile_records": {
+   "__callable__": "reconcile_records"
+  },
+  "MODEL_COLOR_NONE": "#888",
+  "MODEL_COLOR_FILE": "#4caf50",
+  "MODEL_COLOR_PRETRAINED": "#42a5f5",
+  "MODEL_COLOR_PAIR": "#d4a843",
+  "label_for": {
+   "__callable__": "label_for"
+  },
+  "_side_label": {
+   "__callable__": "_side_label"
+  },
+  "model_indicator": {
+   "__callable__": "model_indicator"
+  },
+  "model_short_label": {
+   "__callable__": "model_short_label"
+  },
+  "model_files_missing": {
+   "__callable__": "model_files_missing"
+  },
+  "_training_config_files": {
+   "__callable__": "_training_config_files"
+  },
+  "read_trained_channels": {
+   "__callable__": "read_trained_channels"
+  },
+  "trained_channel_indices": {
+   "__callable__": "trained_channel_indices"
+  },
+  "trained_channels_text": {
+   "__callable__": "trained_channels_text"
+  },
+  "channels_needed": {
+   "__callable__": "channels_needed"
+  },
+  "step4_model_rows": {
+   "__callable__": "step4_model_rows"
+  },
+  "snapshot_from_row": {
+   "__callable__": "snapshot_from_row"
+  },
+  "_detect_axes": {
+   "__callable__": "_detect_axes"
+  },
+  "resolve_stack_axes": {
+   "__callable__": "resolve_stack_axes"
+  },
+  "zyx_shape": {
+   "__callable__": "zyx_shape"
+  },
+  "stack_axes": {
+   "__callable__": "stack_axes"
+  },
+  "stack_channels": {
+   "__callable__": "stack_channels"
+  },
+  "xy_um": {
+   "__callable__": "xy_um"
+  },
+  "cell_width_px": {
+   "__callable__": "cell_width_px"
+  },
+  "STEP4_PRESET_EPICYCLE": {
+   "cell_width_um_sb": 0.0,
+   "normalize_cb": true,
+   "rescale_cb": true,
+   "batch_size_sb": 128,
+   "n_cpu_sb": 6,
+   "skip_postprocess_cb": true,
+   "ps_smooth_probs_cb": false,
+   "ps_smooth_flows_cb": false,
+   "ps_sigma_perp_sb": 3.0,
+   "ps_sigma_inplane_sb": 1.0,
+   "ps_mask_thresh_sb": 0.2,
+   "ps_soft_weight_cb": true,
+   "gd_decay_sb": 0.001,
+   "gd_iters_sb": 25,
+   "gd_momenta_sb": 0.98,
+   "do_mp_cb": true,
+   "gd_renorm_cb": true,
+   "gd_tile_z_sb": 128,
+   "gd_tile_y_sb": 256,
+   "gd_tile_x_sb": 256,
+   "gd_tile_overlap_sb": 0.25,
+   "ccp_ksize_sb": 25,
+   "ccp_alpha_sb": 0.5,
+   "ccp_smooth_sigma_sb": 0.8,
+   "ccp_threshold_level_sb": 1,
+   "ccp_threshold_n_levels_sb": 3,
+   "ccp_prob_thresh_sb": -1.0,
+   "ccp_min_prob_thresh_sb": 0.0,
+   "ccp_apply_one_d_p_cb": true,
+   "post_closing_sb": 1,
+   "post_dilation_sb": 1,
+   "post_fill_cb": true,
+   "post_small_obj_sb": 10000,
+   "post_extra_erode_sb": 0,
+   "ccg_ksize_sb": 25,
+   "ccg_alpha_sb": 0.5,
+   "ccg_smooth_sigma_sb": 1.5,
+   "ccg_post_sigma_sb": 0.5,
+   "cc_min_area_sb": 5,
+   "cc_thresh_factor_sb": 0.0,
+   "cc_smooth_sigma_sb": 1.0,
+   "sf_min_size_sb": 200,
+   "sf_max_size_sb": -1,
+   "sf_max_size_factor_sb": 10.0,
+   "sf_do_stats_cb": true
+  },
+  "USEG3D_WIDGET_KEYS": {
+   "gd_decay_sb": [
+    "gradient_descent",
+    "gradient_decay"
+   ],
+   "gd_iters_sb": [
+    "gradient_descent",
+    "n_iter"
+   ],
+   "gd_momenta_sb": [
+    "gradient_descent",
+    "momenta"
+   ],
+   "do_mp_cb": [
+    "gradient_descent",
+    "do_mp"
+   ],
+   "gd_renorm_cb": [
+    "gradient_descent",
+    "renorm_gradient"
+   ],
+   "gd_tile_z_sb": [
+    "gradient_descent",
+    [
+     "tile_shape",
+     0
+    ]
+   ],
+   "gd_tile_y_sb": [
+    "gradient_descent",
+    [
+     "tile_shape",
+     1
+    ]
+   ],
+   "gd_tile_x_sb": [
+    "gradient_descent",
+    [
+     "tile_shape",
+     2
+    ]
+   ],
+   "gd_tile_overlap_sb": [
+    "gradient_descent",
+    "tile_overlap_ratio"
+   ],
+   "ccp_ksize_sb": [
+    "combine_cell_probs",
+    "ksize"
+   ],
+   "ccp_alpha_sb": [
+    "combine_cell_probs",
+    "alpha"
+   ],
+   "ccp_smooth_sigma_sb": [
+    "combine_cell_probs",
+    "smooth_sigma"
+   ],
+   "ccp_threshold_level_sb": [
+    "combine_cell_probs",
+    "threshold_level"
+   ],
+   "ccp_threshold_n_levels_sb": [
+    "combine_cell_probs",
+    "threshold_n_levels"
+   ],
+   "ccp_prob_thresh_sb": [
+    "combine_cell_probs",
+    "prob_thresh"
+   ],
+   "ccp_min_prob_thresh_sb": [
+    "combine_cell_probs",
+    "min_prob_thresh"
+   ],
+   "ccp_apply_one_d_p_cb": [
+    "combine_cell_probs",
+    "apply_one_d_p_thresh"
+   ],
+   "post_closing_sb": [
+    "postprocess_binary",
+    "binary_closing"
+   ],
+   "post_dilation_sb": [
+    "postprocess_binary",
+    "binary_dilation"
+   ],
+   "post_fill_cb": [
+    "postprocess_binary",
+    "binary_fill_holes"
+   ],
+   "post_small_obj_sb": [
+    "postprocess_binary",
+    "remove_small_objects"
+   ],
+   "post_extra_erode_sb": [
+    "postprocess_binary",
+    "extra_erode"
+   ],
+   "ccg_ksize_sb": [
+    "combine_cell_gradients",
+    "ksize"
+   ],
+   "ccg_alpha_sb": [
+    "combine_cell_gradients",
+    "alpha"
+   ],
+   "ccg_smooth_sigma_sb": [
+    "combine_cell_gradients",
+    "smooth_sigma"
+   ],
+   "ccg_post_sigma_sb": [
+    "combine_cell_gradients",
+    "post_sigma"
+   ],
+   "cc_min_area_sb": [
+    "connected_component",
+    "min_area"
+   ],
+   "cc_thresh_factor_sb": [
+    "connected_component",
+    "thresh_factor"
+   ],
+   "cc_smooth_sigma_sb": [
+    "connected_component",
+    "smooth_sigma"
+   ],
+   "sf_min_size_sb": [
+    "size_filters",
+    "min_size"
+   ],
+   "sf_max_size_sb": [
+    "size_filters",
+    "max_size"
+   ],
+   "sf_max_size_factor_sb": [
+    "size_filters",
+    "max_size_factor"
+   ],
+   "sf_do_stats_cb": [
+    "size_filters",
+    "do_stats_filter"
+   ]
+  },
+  "_NONE_AS_MINUS_ONE": [
+   "ccp_prob_thresh_sb",
+   "sf_max_size_sb"
+  ],
+  "_useg3d_params": {
+   "__callable__": "_useg3d_params"
+  },
+  "_key_present": {
+   "__callable__": "_key_present"
+  },
+  "_lookup": {
+   "__callable__": "_lookup"
+  },
+  "_preset_from_groups": {
+   "__callable__": "_preset_from_groups"
+  },
+  "useg3d_preset": {
+   "__callable__": "useg3d_preset"
+  },
+  "_STEP3_TOP_KEYS": {
+   "skip_postprocess": "skip_postprocess_cb",
+   "pre_smooth_probs": "ps_smooth_probs_cb",
+   "pre_smooth_flows": "ps_smooth_flows_cb",
+   "pre_smooth_sigma_perp": "ps_sigma_perp_sb",
+   "pre_smooth_sigma_inplane": "ps_sigma_inplane_sb",
+   "flow_mask_threshold": "ps_mask_thresh_sb",
+   "flow_soft_weighting": "ps_soft_weight_cb"
+  },
+  "step3_recon_preset": {
+   "__callable__": "step3_recon_preset"
+  },
+  "newest_step3_manifest": {
+   "__callable__": "newest_step3_manifest"
+  },
+  "SHA1_MAX_BYTES": 1073741824,
+  "model_fingerprints": {
+   "__callable__": "model_fingerprints"
+  },
+  "_sha1": {
+   "__callable__": "_sha1"
+  },
+  "effective_rescale": {
+   "__callable__": "effective_rescale"
+  },
+  "RESCALE_FROM_WIDTH": "from cell width",
+  "RESCALE_NONE": "none",
+  "RESCALE_TRAINED": "model's trained size",
+  "_BUILTIN_DIAM_MEAN": {
+   "nuclei": 17.0
+  },
+  "_BUILTIN_DEFAULT_DIAM": 30.0,
+  "rescale_rule": {
+   "__callable__": "rescale_rule"
+  },
+  "model_diams": {
+   "__callable__": "model_diams"
+  },
+  "real_rescale_factor": {
+   "__callable__": "real_rescale_factor"
+  },
+  "_plain": {
+   "__callable__": "_plain"
+  },
+  "run_snapshot": {
+   "__callable__": "run_snapshot"
+  },
+  "finish_run_snapshot": {
+   "__callable__": "finish_run_snapshot"
+  }
+ }
+}

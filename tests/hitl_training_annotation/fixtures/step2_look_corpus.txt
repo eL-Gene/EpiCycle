@@ -1,0 +1,112 @@
+# copied from the Step 2 look design document, sections 1 and 2 (the New column), 2026-10-13; one cleaned row per line
+New
+---
+"Workspace" + ? / "Patch folder" + ?
+"The project folder every step reads and writes. Shared with Steps 1, 3 and 4."
+"Where the patch list and the 2D annotator read patches from." + qualifier "Using the patches from Project Setup · {n} patches." / idle "Pick a workspace first; then Step 1's patches are used unless you Browse."
+desc "Patches you extracted in Step 1 (Project Setup), with where each one stands. You pick the patch to curate in Curation." · summary "{n} patches · {t} in a trained round · {f} finalized · {p} in progress · {s} not started" · empty "No patches yet." / "Pick a workspace, or Browse to a patch folder."
+"{axes} · {dims} · {c} ch · {k} of {Z} lateral slices curated"
+"{sx} × {sy} × {sz} µm (from Step 1)" (Step 3's voxel wording; amber "voxels" when none, via the shared line3 / line3_warn)
+"{n} predicted · {n} curating · {n} accepted · {n} finalized · {n} trained" as icon + number + word, blank at zero; Session "no records yet" / Curation "not started" (grey) when the patch has no records
+header "Run summary" + ?; desc "The active run: what the next round writes and what it trains on."; Run: {name} {description}; rows "Last round" / "Next round" / "Pairs already trained on" / "Last model" (per bucket, D21); columns "Lateral (XY)" / "Axial (XZ/YZ)"; foot "Switch or create runs with the run row at the top of Curation. Slice counts by status are in Curation → Curation progress; the GPU is in Diagnostics."; empty "No workspace yet." / "Pick one above; a new workspace starts with the run "default"."
+"Round {n} ({bucket}) is training — the workspace and the patch list are read-only until it finishes."
+"Run:" · "New Run" · "Manage ▾" · ?; menu "Manage runs…" / caption "Bring training pairs into this run" / "Import pairs from another run…" / "Import external pairs…"
+"Click a patch to load it. Up / Down load too."
+header + {patch} · {view}; chips "All {n}" … "Finalized {n}"; status words predicted / curating / accepted / finalized / trained; empty "No slices in this view yet." / "Open the 2D annotator and Predict, or draw one."
+header "View" + ?; desc "Which bucket you curate and train. XY → lateral; XZ + YZ → pooled axial."
+header + ?; desc "Slices in this run, all patches, by status."; rows Predicted / Curating / Accepted / Finalized / Trained; note "Trained = in a round model already ({lateral rounds a–b}). Finalized = waiting for the next Train. Next round: lateral {n}, axial {m}."
+desc "What Predict in the 2D annotator uses."; Active: lat: {name} | ax: {name}; "Used only with "Cellpose pretrained", or for a bucket with no round model yet." / "Not used with an external file."; "Use the newest round model after each Train"
+"Open 2D annotator"; "Accept" / "Finalize accepted" / "Discard" / "Revert"
+"Ready · {patch} · {bucket} · {k} slice(s) selected" / "Ready · no slices in this view yet" / "Locked · round {n} ({bucket}) is training · cancel it in Training"
+"Round {n} ({bucket}) is training — slices and the model are read-only until it finishes."
+"Staged for training" + ? (left) / "Training setup" + History + ? (right)
+desc "Finalized {bucket} slices the next Train adds, from every patch. Each thumbnail is the slice with its labels."; count "{n} new · round {r} trains on {t} {bucket} pairs in all ({p} from rounds 00–{r-1:02d})."; "{Other}: nothing finalized. Switch the view in Curation to train {other}." / "{Other}: {n} finalized — this Train does not use them. Switch the view in Curation to train {other}."
+desc "What the next Train writes, where it starts and how long it runs."; "Writes:" {run}_lateral_round_{NN} / axial: not in this round
+"Continue from the last round (cumulative)" / "Start again from the starting model (from scratch)"; hints "Starts from {model} — round {n}'s {bucket} model." / "Starts from {base} again, every round. Earlier rounds’ pairs are still used."
+"Starting model" over pretrained_model; "Start from a file (optional)…"; "Starting model and file are used for round_00, or with "from scratch"."
+"Epochs" over n_epochs / "Batch size" over batch_size / "Device:" GPU, CPU
+"Fewest objects per image" (+ its sentence), "Helper channel", "Recompute flows" (+ its sentence); both old tooltips were wrong (Step 3 assessment §4)
+"Round {n} ({bucket}) is training — the staged list and the setup are read-only until it finishes."
+"Train" · "Cancel" (two buttons); idle "Ready · Train writes {name} from {n} {bucket} pairs (run {run}). Cancel works while a round trains."; running "{run} · {bucket} round {n} · epoch {e} / {N} · loss {l}"
+"Loss curves" + last: lat r3 · train 0.62 · 5 rounds idle / lat r4 · epoch 412 · 0.81 live; combo words Overlay / Current round / Per round
+lat r0 … lat r{n-1} ((live) on the live one), ax r0 … — the disk numbering (D16)
+same words + ? and the descs of §1 S6
+
+## 1. The states
+
+One page header, workspace bar, hint and routing line sit above the accordion in every state (unchanged; drawn text "2D Model HITL Bootstrapping" / "Workspace: {path} (shared across steps)" / "Select a patch → curate slices in the active view → finalize → train a round" / "Routing: XY → lateral, XZ/YZ → pooled axial."). The accordion keeps the shared Accordion; the default open section stays Curation. Every state must fit the 578 px dock with no horizontal scrollbar (Step 3's I6 invariant, measured in a subprocess, §6) and use the room at 1000 px (napari caps the dock at 976).
+
+### 1.0 The room (D26)
+
+Measured, not assumed. The dock is ~576 px tall (the bottom "Run + Artifact History" dock eats the rest) and ~578 px wide (976 at 1000 asked, napari's cap). The page header, workspace bar, hint, routing line and the accordion's headers leave ~290 px for the open section (the Curation body starts ~208 px below the dock top in the 578 shots, with two headers under it). The accordion makes each section a scroll area sized to its largest minimum; the gotcha "A whole-section scroll area hides the lock line at the dock width — pin the column feet, scroll the columns" (Step 3 Model Refinement look) is the lesson.
+The Model Refinement solution, cited. A horizontal QSplitter (left min 240, right min 300, handle 6, stretch 0:1; fusion_reconstruction/ui.py:93-97); each column is a scroll area over a pinned foot; the foot sits on a vertical _CompactSplitter (ui.py:347-355, which asks for no more height than its panes' minimums; setChildrenCollapsible(False), stretch 1 / 0; splitter at :3245-3262) with the scroll's floor MR_SPLIT_TOP_MIN_H = 120 (:189, :3243), the foot's floor its minimumSizeHint, and a Loss plot floor MR_LOSS_MIN_H = 140 (:187); the lock line is the FIRST row of the section, outside the scroll areas, so it never scrolls away. Step 2 copies the shape.
+Per section, at 578 × 576 (the I6 test checks these heights as well as the width):
+
+| Section | Fixed box with a pinned foot | Scrolls | Minimums |
+|---|---|---|---|
+| Session | the lock line (pinned, first row) | the section body: Workspace, Patch folder, Patches list, then the Run summary as its LAST block | list min 2 wide rows (~272 px), cap 4 rows (LIST_CAP_ROWS, DEL:155); the section scrolls at this dock — the Run summary is not a true pinned foot here (Open question) |
+| Curation | lock line + run row; the right column's foot (Open 2D annotator, 2 × 2 buttons, bar, stage line: 112 px laid out, FOOT_MAX_H 110) | the right column's blocks (scroll floor 80 px, SCROLL_MIN_H; 108 px of viewport measured at 576); each left list inside its own splitter pane | the room under the run row is 218 px (108 + 112 − the splitter handle); Patches min 1 row (~70 px, cropped), Slices min 40 px + their headers and chips; in "tall mode" (dock ≥ 700 px, TALL_MODE_MIN_PX) 2 rows each, the splitter starts even and the full right column returns |
+| Curation, short mode (dock < 700 px, the default at 576) | as above | the compact right column (owner's Q1(a)): the View switch, then ONE line of icon + count per status of the ACTIVE bucket (the 5 × 2 table is its hover; the "Curation progress" header is dropped — its ? is the View header's, one guide), then the Model block as Use + Active only (Pretrained, the newest-model checkbox, the channels, Inference and the External path row return in tall mode); the scroll viewport ends at a block boundary (RightColumn.snap_viewport), so no header is cut mid-glyph under the foot; the left split favours Slices (Patches at its one-row minimum, owner's Q3) | the narrow Patches row never wraps: no extension, the tail patch_N survives the elision, line 2 has tighter spellings, the counts line shows the non-zero statuses only when five slots would wrap (StackRowDelegate additive keys name_keep_tail, line2_variants, counts_compact) |
+| Training | lock line; the foot (Train · Cancel, bar, stage line, Loss header, ~110 px closed) on the vertical splitter | the two columns (min 100 px, SPLIT_TOP_MIN_H) | closed ≈ 230 px; opening Loss (min 140 px, MR_SPLIT_OPEN_FRAC 0.55, :190) makes the section scroll at this dock (recorded, §9) |
+| Diagnostics | — | the log | the log pane |
+
+### 1.1 The status table (v1's, Predicted kept amber)
+
+| Stored | On screen | Colour / icon | Where it shows | Note |
+|---|---|---|---|---|
+| predicted | Predicted | #d4a843 layers-outline | slice rows, filter chip, Curation progress, strips | as today |
+| curating | Curating | #a78bca pencil-outline | same | sort rank fixed: the slice list's _STATUS_RANK (controller.py:2328) has no curating key; the badge one (:2517) does |
+| accepted | Accepted | #6abf69 check-circle-outline | same | as today |
+| staged | Finalized | #80deea diamond-stone | same + Training's staged list | as today |
+| committed | Trained + round_NN chip | #8c9eff brain | same | today identical to staged on screen; Revert still asks before reopening one |
+| rejected | — | — | retired from the table | owner call, assessment Q2 |
+| (patch, no record) | not started | #777777 | patch rows, in the counts line's place | |
+
+Slices-list order: trained · finalized · accepted · curating · predicted (mockup note). Today the rank is {"committed":4,"staged":3,"accepted":2,"predicted":1} (controller.py:2328), so the change is an additive rank key, UI-side.
+
+### S0 · Session, no workspace yet
+Open section Session. Workspace header + ? · desc · path field (placeholder "Pick the project folder…") + Browse · Patch folder header + ? · desc · path field ("Patch folder…", greyed with its reason) + Browse + Refresh · grey qualifier "Pick a workspace first; then Step 1's patches are used unless you Browse." · Patches header + ? · desc · painted empty state "No patches yet." / "Pick a workspace, or Browse to a patch folder." · Run summary header + ? · empty state "No workspace yet." / "Pick one above; a new workspace starts with the run "default".". Empty states, not columns of zeros. Curation / Training / Diagnostics collapsed.
+
+### S1 · Session, workspace open
+Same rows, filled. The Patches list is a read-only StackListWidget (ui_shell/_stack_row_delegate.py:1079) on the shared delegate in MODE_WIDE, show_tick=False, no eye, no menu: Step 3's Session list (fusion_reconstruction/ui.py:1303 _create_session_panel; _step3_rows.build_session_row :402). Each row: 128 px picture · name (WholeScale_patch_1.tiff) · line 2 CZYX · 124 × 240 × 240 · 2 ch · 2 of 124 lateral slices curated · line 3 the voxel size 0.52 × 0.52 × 0.52 µm (from Step 1) · the icon-counts line (one status icon + number + word per non-zero status; "no records yet" when none) · chips lat 2 · ax 5 · a round chip (round 1; display_round, D16) on a patch with a trained slice · the proportion strip across the row's foot (segments in the status colours, grey for the rest). The list has a minimum of 2 rows and caps at four picture rows, scrolling inside itself (LIST_CAP_ROWS = 4, list_cap_px, delegate :155; §1.0). The Run summary card is the last block of the Session body (§1.0): Run: Cell + whole cell · lateral + axial · 83 pairs; a table (columns Lateral (XY) | Axial (XZ/YZ)): Last round | 3 | 2, Next round | 4 | 3, Pairs already trained on | 63 | 20, Last model | Cell · round 3 | Cell · round 2 (rounds through display_round; all per bucket, from current_round_by_view in the on_session_patches payload, D21 — never parsed from "Lat 3 | Axi 2"); one dim sentence. The counts line follows D22. Summary line over the list: "15 patches · 4 in a trained round · 2 finalized · 8 in progress · 1 not started". The Patch folder's dim line: "Using the patches from Project Setup · 15 patches."
+
+### S1b · Session under the training lock
+The amber lock line (LockLine, ui_shell/_recon_settings_widgets.py:90) is the first row: "Round 4 (lateral) is training — the workspace and the patch list are read-only until it finishes." The fields and the list dim (opacity 0.55, the delegate's locked look); Browse / Refresh disabled. The lock mechanism is today's _set_training_ui_locked (controller.py:8036) — extended only by attribute names the moved widgets keep; the line itself is new UI.
+
+### S2 · Curation, lateral, a patch loaded
+The section opens on the run row: Run: picker (Cell (whole cell · lat 3 · ax 2 · 83 pairs)) · New Run · Manage ▾ · ?. Below, a horizontal QSplitter (Step 3's numbers: left min 240, right min 300, handle 6 px, stretch 0:1; fusion_reconstruction/ui.py:93-97).
+LEFT (a vertical splitter, Patches over Slices; tall mode (dock ≥ 700 px) opens at ~2.5 patch rows with Slices keeping three full rows; at the real ~576 px dock each pane's minimum is one row, §1.0):
+Patches header + ? · desc "Click a patch to load it. Up / Down load too." · the narrow painted list: 80 px picture, name elided in the middle (Whole…patch_4), line 2 CZYX · 81 × 240 × 240 · 2 ch, line 3 the icon counts (blank at zero), the proportion strip. The loaded patch carries Step 3 Curation's loaded indicator (a 10 % accent glow + a 2 px bar; delegate :611-619, LOADED_BAR_PX / LOADED_GLOW_ALPHA :127-128) over the amber selection fill; the voxel size is the row's hover text. Counts follow the View switch (lateral or pooled axial); the picture does not.
+Slices header (WholeScale_patch_4 · lat) + ? · filter chips with counts All 7 · Predicted 3 · Curating 1 · Accepted 1 · Finalized 2 (still checkable buttons; the hidden filter_committed_btn stays hidden — Finalized covers trained) · rows of a 56 px thumbnail (the slice with its labels), XY slice 31, the status icon, the status word right-aligned in its colour (trained), chips (round_01, imported · Nuclei r2). Extended multi-select, jump-to-slice and selection restore as today.
+RIGHT (a scroll area over the pinned foot):
+View header + ? · desc "Which bucket you curate and train. XY → lateral; XZ + YZ → pooled axial." · the two-segment switch Lateral (XY) | Axial (XZ/YZ) as the mockup draws it (D17): a proxy over the two hidden radios that hold the state.
+Curation progress header + ? · desc "Slices in this run, all patches, by status." · a 5 × 2 table (Predicted / Curating / Accepted / Finalized / Trained × Lateral | Axial), the active bucket's column bold · "Trained = in a round model already (lateral rounds 1–3). Finalized = waiting for the next Train. Next round: lateral 4, axial 3."
+Model header + ? · desc "What Predict in the 2D annotator uses." · Use: combo (FOUR items: Auto (recommended), Round model, External model file, Cellpose pretrained; "None (manual / SAM only)" was removed 2026-10-12 in the release hide list because the feature is unbuilt, and scratch left the Pretrained combo; a persisted none / scratch is coerced to auto / cyto3 in memory on load) · one neutral Active: lat: Cell · round 3 | ax: Cell · round 2 line · Pretrained: combo + "Used only with "Cellpose pretrained", or for a bucket with no round model yet." · checkbox "Use the newest round model after each Train" · the closed Inference parameters disclosure with a grey summary (Balanced · membrane / nuclei · flow 0.4 · cellprob 0.0 · diameter 30 px). Channel to segment / Helper channel are lifted out of the disclosure (v1 table).
+Pinned foot: Open 2D annotator (the ONE primary, PRIMARY_BTN_STYLE, translucent amber) · a 2 × 2 grid Accept · Finalize accepted · Discard · Revert (secondary, coloured icons) · the 14 px busy bar (patch_busy_bar, main_widget.py:490, now with words) · ONE stage line "Ready · WholeScale_patch_4 · lateral · 1 slice selected".
+At 578 px the right column scrolls above the foot and shows its thin scrollbar.
+
+### S2b · Curation, axial, the Manage menu open, an external model
+View on Axial flips every list and count to the pooled axial bucket (patches with no axial records show empty slots; the progress table bolds Axial; slice rows read XZ slice 140 / YZ slice 96; the stage line says "axial"). The Manage ▾ menu: "Manage runs…" · a grey caption "Bring training pairs into this run" · "Import pairs from another run…" · "Import external pairs…". The three old buttons (manage_runs_button, import_pairs_button, import_external_button) stay as hidden QPushButtons the menu actions .click(), so the controller's connections stand. Use = External model file shows its path row (elided, full path on hover) + Browse and Active: lat + ax: nuclei_v1_axial_round_02.model (file); Pretrained greys with "Not used with an external file."
+
+### S2d · Curation, the Use dropdown open
+Every combo on the panel is the root INPUT_STYLE combo (the sibling sections' look; NOT PANEL_INPUT_STYLE) with a dark popup and one line per item. Drawn unclipped only so the popup shows.
+
+### S2c · Curation, a patch with no slices in this view
+Chips all 0; painted empty state "No slices in this view yet." / "Open the 2D annotator and Predict, or draw one."; Accept and the rest grey; stage line "Ready · no slices in this view yet".
+
+### S3 · Curation, axial, under the training lock
+Lock line first: "Round 4 (lateral) is training — slices and the model are read-only until it finishes." Lists dim, the foot's secondary buttons grey; which foot buttons are in today's lock set is UNVERIFIED (fill from the wiring map). Stage line "Locked · round 4 (lateral) is training · cancel it in Training".
+
+### S4 · Training, ready, Continue mode
+LEFT: Staged for training header + ? · desc "Finalized lateral slices the next Train adds, from every patch. Each thumbnail is the slice with its labels." · the painted list (data_to_add_list as a StackListWidget; narrow rows, 56 px picture; line 1 XY slice 26 + finalized in its colour; line 2 status icon + WholeScale_patch_4; line 3 240 × 240 · 2 ch · 57 labels) · "5 new · round 4 trains on 13 lateral pairs in all (8 from rounds 1–3)." · "Axial: nothing finalized. Switch the view in Curation to train axial." / when the OTHER bucket has finalized slices: "Axial: {n} finalized — this Train does not use them. Switch the view in Curation to train axial." (a Train always trains the ACTIVE bucket only, _sync_data_to_add_list, CTRL:1904-1911)
+RIGHT: Training setup header + History button + ? · desc "What the next Train writes, where it starts and how long it runs." · Writes: (the ACTIVE bucket's real file name plus its display round, e.g. Cell_lateral_round_03 · round 4, neutral bold; the other bucket grey axial: not in this round) · Mode: combo (D15: "Continue from the last round (cumulative)" / "Start again from the starting model (from scratch)") · ONE hint from the six _compute_init_hint constants (D19), e.g. "Starts from Cell_lateral_round_02 — round 3's lateral model." (replacing today's three contradicting lines) · Starting model (plain name) over pretrained_model + the cyto3 combo (greyed with its reason ONLY when the hint's severity is "override", D19) · "Start from a file (optional)…" + Browse · "Starting model and file are used for round_00, or with "from scratch"." · Epochs over n_epochs (1000) · Batch size over batch_size (8) · Device: GPU / CPU gold radios · the closed Advanced disclosure with a grey summary.
+FOOT (spans both columns; a splitter above it): Train (the one primary) · Cancel (secondary, disabled idle) · the 14 px bar · ONE stage line "Ready · Train writes Cell_lateral_round_04 from 13 lateral pairs (run Cell). Cancel works while a round trains." · the Loss curves collapsible, closed idle, header last: lat r3 · train 0.62 · 5 rounds, the view combo (Overlay / Current round / Per round) beside it. The foot's Step 3 model: Model Refinement's pinned foot + vertical splitter (fusion_reconstruction/ui.py:3245, _GrowCollapsible :358, MR_SPLIT_OPEN_FRAC :190).
+
+### S4b · Training, Loss open, the foot dragged up
+The splitter above the foot dragged up: the two columns shorten (their lists and the setup scroll); the loss plot box, which has a minimum height, grows to ~240 px. Idle, nothing live: the newest lateral round (lat r3) is the one bold line; every other line is 1.4 px or thinner; axial at 30 %; y axis fitted to the tail (0.4–1.4), early epochs clipped at the top. Legend: lat r1 · lat r2 · lat r3 · ax r1 · ax r2 with the grade shown on each swatch.
+
+### S5 · Training running, Restart mode, Advanced open
+Lock line first: "Round 4 (lateral) is training — the staged list and the setup are read-only until it finishes." The setup column is greyed; Mode "Start again from the starting model (from scratch)"; the hint turns amber: "Starts from cyto3 again, every round. Earlier rounds’ pairs are still used."; Starting model un-greys. Advanced open: plain name over the engine name, 128 px fields — Learning rate / learning_rate 0.010000, Weight decay / weight_decay 0.000100, "Fewest objects per image" / min_train_masks 5 (+ "An image with fewer objects than this is left out of training."), "Channel to segment" / chan2: membrane, "Helper channel" / chan21: nuclei, Normalize · Rescale · Recompute flows (+ "Recompute flows: work the flow targets out during training rather than once before it."), Save config… · Load config…. Foot: Train greys, Cancel lights, the bar 412 / 1000, stage line "Cell · lateral round 4 · epoch 412 / 1000 · loss 0.81"; the Loss collapsible opens with header lat r4 · epoch 412 · 0.81 and a live point; lat r4 (live) is the only bold line.
+
+### S6 · Diagnostics
+System header + ? · "What this computer can train on." · GPU: NVIDIA GeForce RTX 4060 Laptop GPU (the only place the GPU is said). Log output header + ? · "Training events, checkpoint saves and pipeline messages." · the log. Otherwise unchanged (D10).

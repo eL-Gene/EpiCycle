@@ -1,0 +1,19 @@
+{
+  "_comment": "Golden reference for reconstruction-param parity with the EpiCycle monorepo. Mirrors packages/epicycle_reconstruction/config.py (gradient_descent block + pre_smooth defaults) as of 2026-06-12. tests/test_smoothing_parity.py asserts the standalone engine's effective params match these shared tuned values, so any future drift (in either repo, when re-synced) fails LOUDLY as a red test instead of silently on an HPC run. This is NOT a full param dump — only the deliberately-tuned values both repos must agree on.",
+  "_source": "packages/epicycle_reconstruction/config.py",
+  "gradient_descent": {
+    "n_iter": 25,
+    "momenta": 0.98,
+    "gradient_decay": 0.001,
+    "do_mp": true,
+    "renorm_gradient": true
+  },
+  "pre_smooth_defaults": {
+    "pre_smooth_probs": false,
+    "pre_smooth_flows": false,
+    "pre_smooth_sigma_perp": 3.0,
+    "pre_smooth_sigma_inplane": 1.0,
+    "flow_mask_threshold": 0.2,
+    "flow_soft_weighting": true
+  }
+}

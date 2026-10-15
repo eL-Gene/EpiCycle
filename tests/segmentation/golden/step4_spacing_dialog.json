@@ -1,0 +1,3428 @@
+{
+ "one_user": {
+  "tree": [
+   {
+    "class": "SetSpacingDialog",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQDialog {\n    background-color: #2b2b2b;\n    border: 1px solid rgba(255, 255, 255, 0.12);\n    border-radius: 6px;\n}\nQLabel {\n    color: #dddddd;\n    font-size: 12px;\n}\n\nQLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {\n    background-color: rgba(255, 255, 255, 0.04);\n    border: 1px solid rgba(255, 255, 255, 0.10);\n    border-radius: 3px;\n    padding: 4px 6px;\n    color: #dddddd;\n    font-size: 11px;\n}\nQLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {\n    border: 1px solid rgba(255, 255, 255, 0.25);\n    background-color: rgba(255, 255, 255, 0.06);\n}\nQLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {\n    color: #666666;\n    background-color: rgba(255, 255, 255, 0.02);\n}\nQComboBox::drop-down {\n    border: none;\n    padding-right: 4px;\n}\n",
+    "enabled": true,
+    "hidden": true,
+    "windowTitle": "Set spacing"
+   },
+   {
+    "class": "QLabel",
+    "attrs": [
+     "desc_label"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "font-size: 10px; color: #888888;",
+    "enabled": true,
+    "hidden": false,
+    "text": "The voxel size, the Z direction and the axis order of Wound_patch_1.tif."
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Z (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_z_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 2.0,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "2.000",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Y (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_y_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 0.5,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "0.500",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "X (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_x_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 0.25,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "0.250",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Z orientation:"
+   },
+   {
+    "class": "QComboBox",
+    "attrs": [
+     "z_orientation_combo"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "items": [
+     [
+      "Basal-down (default)",
+      null,
+      null
+     ],
+     [
+      "Basal-up (inverted)",
+      null,
+      null
+     ]
+    ],
+    "currentIndex": 1
+   },
+   {
+    "class": "QFrame",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QListView",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_viewport",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_hcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_vcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Axes:"
+   },
+   {
+    "class": "QComboBox",
+    "attrs": [
+     "axes_combo"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "items": [
+     [
+      "As detected",
+      null,
+      null
+     ],
+     [
+      "CZYX",
+      null,
+      null
+     ],
+     [
+      "ZCYX",
+      null,
+      null
+     ],
+     [
+      "ZYX",
+      null,
+      null
+     ]
+    ],
+    "currentIndex": 2
+   },
+   {
+    "class": "QFrame",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QListView",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_viewport",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_hcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_vcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QPushButton",
+    "attrs": [
+     "cancel_btn"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQPushButton {\n    background-color: rgba(255, 255, 255, 0.05);\n    border: 1px solid rgba(255, 255, 255, 0.10);\n    border-radius: 4px;\n    color: #bbbbbb;\n    padding: 6px 18px;\n    min-width: 80px;\n}\nQPushButton:hover {\n    background-color: rgba(255, 255, 255, 0.10);\n}\n",
+    "enabled": true,
+    "hidden": false,
+    "text": "Cancel",
+    "checkable": false,
+    "checked": false
+   },
+   {
+    "class": "QPushButton",
+    "attrs": [
+     "ok_btn"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQPushButton {\n    background-color: rgba(106, 191, 105, 0.25);\n    border: 1px solid rgba(106, 191, 105, 0.40);\n    border-radius: 4px;\n    color: #eeeeee;\n    font-weight: bold;\n    padding: 6px 18px;\n    min-width: 80px;\n}\nQPushButton:hover {\n    background-color: rgba(106, 191, 105, 0.35);\n}\n",
+    "enabled": true,
+    "hidden": false,
+    "text": "OK",
+    "checkable": false,
+    "checked": false
+   }
+  ],
+  "layout": [
+   {
+    "id": "SetSpacingDialog#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "minimum": [
+     360,
+     0
+    ],
+    "layout": {
+     "class": "QVBoxLayout",
+     "objectName": "",
+     "margins": [
+      20,
+      16,
+      20,
+      16
+     ],
+     "sizeConstraint": 0,
+     "spacing": 10,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QLabel#|desc_label|The voxel size, the Z direction and the "
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "layout": {
+        "class": "QFormLayout",
+        "objectName": "",
+        "margins": [
+         0,
+         0,
+         0,
+         0
+        ],
+        "sizeConstraint": 0,
+        "spacing": [
+         6,
+         6
+        ],
+        "items": [
+         {
+          "alignment": 0,
+          "cell": [
+           0,
+           0
+          ],
+          "widget": "QLabel#||Z (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           0,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_z_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           1,
+           0
+          ],
+          "widget": "QLabel#||Y (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           1,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_y_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           2,
+           0
+          ],
+          "widget": "QLabel#||X (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           2,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_x_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           3,
+           0
+          ],
+          "widget": "QLabel#||Z orientation:"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           3,
+           1
+          ],
+          "widget": "QComboBox#|z_orientation_combo|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           4,
+           0
+          ],
+          "widget": "QLabel#||Axes:"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           4,
+           1
+          ],
+          "widget": "QComboBox#|axes_combo|"
+         }
+        ]
+       }
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "layout": {
+        "class": "QHBoxLayout",
+        "objectName": "",
+        "margins": [
+         0,
+         0,
+         0,
+         0
+        ],
+        "sizeConstraint": 0,
+        "spacing": 10,
+        "direction": 0,
+        "items": [
+         {
+          "alignment": 0,
+          "stretch": 1,
+          "spacer": [
+           0,
+           0,
+           7,
+           1
+          ]
+         },
+         {
+          "alignment": 0,
+          "stretch": 0,
+          "widget": "QPushButton#|cancel_btn|Cancel"
+         },
+         {
+          "alignment": 0,
+          "stretch": 0,
+          "widget": "QPushButton#|ok_btn|OK"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "QLabel#|desc_label|The voxel size, the Z direction and the ",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": true,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": false
+    }
+   },
+   {
+    "id": "QLabel#||Z (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_z_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||Y (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_y_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||X (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_x_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||Z orientation:",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QComboBox#|z_orientation_combo|",
+    "sizePolicy": [
+     5,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QFrame#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 0,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QListView#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "id": "QListView#||",
+    "sizePolicy": [
+     13,
+     13,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_viewport||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_hcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 0,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_vcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLabel#||Axes:",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QComboBox#|axes_combo|",
+    "sizePolicy": [
+     5,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QFrame#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 0,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QListView#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "id": "QListView#||",
+    "sizePolicy": [
+     13,
+     13,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_viewport||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_hcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 0,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_vcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QPushButton#|cancel_btn|Cancel",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ],
+    "minimum": [
+     118,
+     0
+    ]
+   },
+   {
+    "id": "QPushButton#|ok_btn|OK",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ],
+    "minimum": [
+     118,
+     0
+    ]
+   }
+  ],
+  "values": {
+   "zyx": [
+    2.0,
+    0.5,
+    0.25
+   ],
+   "z_orientation": "basal_up",
+   "axes_override": "ZCYX"
+  },
+  "modal": false,
+  "windowTitle": "Set spacing"
+ },
+ "three_none": {
+  "tree": [
+   {
+    "class": "SetSpacingDialog",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQDialog {\n    background-color: #2b2b2b;\n    border: 1px solid rgba(255, 255, 255, 0.12);\n    border-radius: 6px;\n}\nQLabel {\n    color: #dddddd;\n    font-size: 12px;\n}\n\nQLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {\n    background-color: rgba(255, 255, 255, 0.04);\n    border: 1px solid rgba(255, 255, 255, 0.10);\n    border-radius: 3px;\n    padding: 4px 6px;\n    color: #dddddd;\n    font-size: 11px;\n}\nQLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {\n    border: 1px solid rgba(255, 255, 255, 0.25);\n    background-color: rgba(255, 255, 255, 0.06);\n}\nQLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {\n    color: #666666;\n    background-color: rgba(255, 255, 255, 0.02);\n}\nQComboBox::drop-down {\n    border: none;\n    padding-right: 4px;\n}\n",
+    "enabled": true,
+    "hidden": true,
+    "windowTitle": "Set spacing"
+   },
+   {
+    "class": "QLabel",
+    "attrs": [
+     "desc_label"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "font-size: 10px; color: #888888;",
+    "enabled": true,
+    "hidden": false,
+    "text": "The voxel size, the Z direction and the axis order of 3 stacks."
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Z (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_z_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 1.0,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "1.000",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Y (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_y_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 1.0,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "1.000",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "X (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_x_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 1.0,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "1.000",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Z orientation:"
+   },
+   {
+    "class": "QComboBox",
+    "attrs": [
+     "z_orientation_combo"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "items": [
+     [
+      "Basal-down (default)",
+      null,
+      null
+     ],
+     [
+      "Basal-up (inverted)",
+      null,
+      null
+     ]
+    ],
+    "currentIndex": 0
+   },
+   {
+    "class": "QFrame",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QListView",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_viewport",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_hcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_vcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Axes:"
+   },
+   {
+    "class": "QComboBox",
+    "attrs": [
+     "axes_combo"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "items": [
+     [
+      "As detected",
+      null,
+      null
+     ],
+     [
+      "CZYX",
+      null,
+      null
+     ],
+     [
+      "ZCYX",
+      null,
+      null
+     ],
+     [
+      "ZYX",
+      null,
+      null
+     ]
+    ],
+    "currentIndex": 0
+   },
+   {
+    "class": "QFrame",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QListView",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_viewport",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_hcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_vcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QPushButton",
+    "attrs": [
+     "cancel_btn"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQPushButton {\n    background-color: rgba(255, 255, 255, 0.05);\n    border: 1px solid rgba(255, 255, 255, 0.10);\n    border-radius: 4px;\n    color: #bbbbbb;\n    padding: 6px 18px;\n    min-width: 80px;\n}\nQPushButton:hover {\n    background-color: rgba(255, 255, 255, 0.10);\n}\n",
+    "enabled": true,
+    "hidden": false,
+    "text": "Cancel",
+    "checkable": false,
+    "checked": false
+   },
+   {
+    "class": "QPushButton",
+    "attrs": [
+     "ok_btn"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQPushButton {\n    background-color: rgba(106, 191, 105, 0.25);\n    border: 1px solid rgba(106, 191, 105, 0.40);\n    border-radius: 4px;\n    color: #eeeeee;\n    font-weight: bold;\n    padding: 6px 18px;\n    min-width: 80px;\n}\nQPushButton:hover {\n    background-color: rgba(106, 191, 105, 0.35);\n}\n",
+    "enabled": true,
+    "hidden": false,
+    "text": "OK",
+    "checkable": false,
+    "checked": false
+   }
+  ],
+  "layout": [
+   {
+    "id": "SetSpacingDialog#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "minimum": [
+     360,
+     0
+    ],
+    "layout": {
+     "class": "QVBoxLayout",
+     "objectName": "",
+     "margins": [
+      20,
+      16,
+      20,
+      16
+     ],
+     "sizeConstraint": 0,
+     "spacing": 10,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QLabel#|desc_label|The voxel size, the Z direction and the "
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "layout": {
+        "class": "QFormLayout",
+        "objectName": "",
+        "margins": [
+         0,
+         0,
+         0,
+         0
+        ],
+        "sizeConstraint": 0,
+        "spacing": [
+         6,
+         6
+        ],
+        "items": [
+         {
+          "alignment": 0,
+          "cell": [
+           0,
+           0
+          ],
+          "widget": "QLabel#||Z (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           0,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_z_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           1,
+           0
+          ],
+          "widget": "QLabel#||Y (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           1,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_y_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           2,
+           0
+          ],
+          "widget": "QLabel#||X (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           2,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_x_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           3,
+           0
+          ],
+          "widget": "QLabel#||Z orientation:"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           3,
+           1
+          ],
+          "widget": "QComboBox#|z_orientation_combo|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           4,
+           0
+          ],
+          "widget": "QLabel#||Axes:"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           4,
+           1
+          ],
+          "widget": "QComboBox#|axes_combo|"
+         }
+        ]
+       }
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "layout": {
+        "class": "QHBoxLayout",
+        "objectName": "",
+        "margins": [
+         0,
+         0,
+         0,
+         0
+        ],
+        "sizeConstraint": 0,
+        "spacing": 10,
+        "direction": 0,
+        "items": [
+         {
+          "alignment": 0,
+          "stretch": 1,
+          "spacer": [
+           0,
+           0,
+           7,
+           1
+          ]
+         },
+         {
+          "alignment": 0,
+          "stretch": 0,
+          "widget": "QPushButton#|cancel_btn|Cancel"
+         },
+         {
+          "alignment": 0,
+          "stretch": 0,
+          "widget": "QPushButton#|ok_btn|OK"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "QLabel#|desc_label|The voxel size, the Z direction and the ",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": true,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": false
+    }
+   },
+   {
+    "id": "QLabel#||Z (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_z_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||Y (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_y_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||X (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_x_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||Z orientation:",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QComboBox#|z_orientation_combo|",
+    "sizePolicy": [
+     5,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QFrame#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 0,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QListView#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "id": "QListView#||",
+    "sizePolicy": [
+     13,
+     13,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_viewport||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_hcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 0,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_vcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLabel#||Axes:",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QComboBox#|axes_combo|",
+    "sizePolicy": [
+     5,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QFrame#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 0,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QListView#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "id": "QListView#||",
+    "sizePolicy": [
+     13,
+     13,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_viewport||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_hcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 0,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_vcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QPushButton#|cancel_btn|Cancel",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ],
+    "minimum": [
+     118,
+     0
+    ]
+   },
+   {
+    "id": "QPushButton#|ok_btn|OK",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ],
+    "minimum": [
+     118,
+     0
+    ]
+   }
+  ],
+  "values": {
+   "zyx": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "z_orientation": "basal_down",
+   "axes_override": null
+  },
+  "modal": false,
+  "windowTitle": "Set spacing"
+ },
+ "one_bad": {
+  "tree": [
+   {
+    "class": "SetSpacingDialog",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQDialog {\n    background-color: #2b2b2b;\n    border: 1px solid rgba(255, 255, 255, 0.12);\n    border-radius: 6px;\n}\nQLabel {\n    color: #dddddd;\n    font-size: 12px;\n}\n\nQLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {\n    background-color: rgba(255, 255, 255, 0.04);\n    border: 1px solid rgba(255, 255, 255, 0.10);\n    border-radius: 3px;\n    padding: 4px 6px;\n    color: #dddddd;\n    font-size: 11px;\n}\nQLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {\n    border: 1px solid rgba(255, 255, 255, 0.25);\n    background-color: rgba(255, 255, 255, 0.06);\n}\nQLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {\n    color: #666666;\n    background-color: rgba(255, 255, 255, 0.02);\n}\nQComboBox::drop-down {\n    border: none;\n    padding-right: 4px;\n}\n",
+    "enabled": true,
+    "hidden": true,
+    "windowTitle": "Set spacing"
+   },
+   {
+    "class": "QLabel",
+    "attrs": [
+     "desc_label"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "font-size: 10px; color: #888888;",
+    "enabled": true,
+    "hidden": false,
+    "text": "The voxel size, the Z direction and the axis order of P9.tif."
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Z (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_z_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 1.0,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "1.000",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Y (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_y_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 0.2,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "0.200",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "X (µm):"
+   },
+   {
+    "class": "QDoubleSpinBox",
+    "attrs": [
+     "spacing_x_sb"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "specialValueText": "",
+    "value": 0.3,
+    "range": [
+     0.001,
+     100.0
+    ],
+    "step": 0.1,
+    "suffix": "",
+    "prefix": "",
+    "decimals": 3
+   },
+   {
+    "class": "QLineEdit",
+    "attrs": [],
+    "objectName": "qt_spinbox_lineedit",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "0.300",
+    "placeholder": "",
+    "readOnly": false
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Z orientation:"
+   },
+   {
+    "class": "QComboBox",
+    "attrs": [
+     "z_orientation_combo"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "items": [
+     [
+      "Basal-down (default)",
+      null,
+      null
+     ],
+     [
+      "Basal-up (inverted)",
+      null,
+      null
+     ]
+    ],
+    "currentIndex": 0
+   },
+   {
+    "class": "QFrame",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QListView",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_viewport",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_hcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_vcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QLabel",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "text": "Axes:"
+   },
+   {
+    "class": "QComboBox",
+    "attrs": [
+     "axes_combo"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false,
+    "items": [
+     [
+      "As detected",
+      null,
+      null
+     ],
+     [
+      "CZYX",
+      null,
+      null
+     ],
+     [
+      "ZCYX",
+      null,
+      null
+     ],
+     [
+      "ZYX",
+      null,
+      null
+     ]
+    ],
+    "currentIndex": 0
+   },
+   {
+    "class": "QFrame",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QListView",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_viewport",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_hcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "qt_scrollarea_vcontainer",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QScrollBar",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": false
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QWidget",
+    "attrs": [],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "",
+    "enabled": true,
+    "hidden": true
+   },
+   {
+    "class": "QPushButton",
+    "attrs": [
+     "cancel_btn"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQPushButton {\n    background-color: rgba(255, 255, 255, 0.05);\n    border: 1px solid rgba(255, 255, 255, 0.10);\n    border-radius: 4px;\n    color: #bbbbbb;\n    padding: 6px 18px;\n    min-width: 80px;\n}\nQPushButton:hover {\n    background-color: rgba(255, 255, 255, 0.10);\n}\n",
+    "enabled": true,
+    "hidden": false,
+    "text": "Cancel",
+    "checkable": false,
+    "checked": false
+   },
+   {
+    "class": "QPushButton",
+    "attrs": [
+     "ok_btn"
+    ],
+    "objectName": "",
+    "toolTip": "",
+    "styleSheet": "\nQPushButton {\n    background-color: rgba(106, 191, 105, 0.25);\n    border: 1px solid rgba(106, 191, 105, 0.40);\n    border-radius: 4px;\n    color: #eeeeee;\n    font-weight: bold;\n    padding: 6px 18px;\n    min-width: 80px;\n}\nQPushButton:hover {\n    background-color: rgba(106, 191, 105, 0.35);\n}\n",
+    "enabled": true,
+    "hidden": false,
+    "text": "OK",
+    "checkable": false,
+    "checked": false
+   }
+  ],
+  "layout": [
+   {
+    "id": "SetSpacingDialog#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "minimum": [
+     360,
+     0
+    ],
+    "layout": {
+     "class": "QVBoxLayout",
+     "objectName": "",
+     "margins": [
+      20,
+      16,
+      20,
+      16
+     ],
+     "sizeConstraint": 0,
+     "spacing": 10,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QLabel#|desc_label|The voxel size, the Z direction and the "
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "layout": {
+        "class": "QFormLayout",
+        "objectName": "",
+        "margins": [
+         0,
+         0,
+         0,
+         0
+        ],
+        "sizeConstraint": 0,
+        "spacing": [
+         6,
+         6
+        ],
+        "items": [
+         {
+          "alignment": 0,
+          "cell": [
+           0,
+           0
+          ],
+          "widget": "QLabel#||Z (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           0,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_z_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           1,
+           0
+          ],
+          "widget": "QLabel#||Y (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           1,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_y_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           2,
+           0
+          ],
+          "widget": "QLabel#||X (µm):"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           2,
+           1
+          ],
+          "widget": "QDoubleSpinBox#|spacing_x_sb|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           3,
+           0
+          ],
+          "widget": "QLabel#||Z orientation:"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           3,
+           1
+          ],
+          "widget": "QComboBox#|z_orientation_combo|"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           4,
+           0
+          ],
+          "widget": "QLabel#||Axes:"
+         },
+         {
+          "alignment": 0,
+          "cell": [
+           4,
+           1
+          ],
+          "widget": "QComboBox#|axes_combo|"
+         }
+        ]
+       }
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "layout": {
+        "class": "QHBoxLayout",
+        "objectName": "",
+        "margins": [
+         0,
+         0,
+         0,
+         0
+        ],
+        "sizeConstraint": 0,
+        "spacing": 10,
+        "direction": 0,
+        "items": [
+         {
+          "alignment": 0,
+          "stretch": 1,
+          "spacer": [
+           0,
+           0,
+           7,
+           1
+          ]
+         },
+         {
+          "alignment": 0,
+          "stretch": 0,
+          "widget": "QPushButton#|cancel_btn|Cancel"
+         },
+         {
+          "alignment": 0,
+          "stretch": 0,
+          "widget": "QPushButton#|ok_btn|OK"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "QLabel#|desc_label|The voxel size, the Z direction and the ",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": true,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": false
+    }
+   },
+   {
+    "id": "QLabel#||Z (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_z_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||Y (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_y_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||X (µm):",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QDoubleSpinBox#|spacing_x_sb|",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLineEdit#qt_spinbox_lineedit||",
+    "sizePolicy": [
+     7,
+     0,
+     0,
+     0
+    ],
+    "cursor": 4
+   },
+   {
+    "id": "QLabel#||Z orientation:",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QComboBox#|z_orientation_combo|",
+    "sizePolicy": [
+     5,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QFrame#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 0,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QListView#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "id": "QListView#||",
+    "sizePolicy": [
+     13,
+     13,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_viewport||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_hcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 0,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_vcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QLabel#||Axes:",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "label": {
+     "wordWrap": false,
+     "textFormat": 2,
+     "alignment": 129,
+     "buddy": true
+    }
+   },
+   {
+    "id": "QComboBox#|axes_combo|",
+    "sizePolicy": [
+     5,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QFrame#||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 0,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QListView#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QWidget#||"
+      },
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "spacer": [
+        0,
+        4,
+        1,
+        0
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "id": "QListView#||",
+    "sizePolicy": [
+     13,
+     13,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_viewport||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_hcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 0,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#qt_scrollarea_vcontainer||",
+    "sizePolicy": [
+     5,
+     5,
+     0,
+     0
+    ],
+    "layout": {
+     "class": "QBoxLayout",
+     "objectName": "",
+     "margins": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "sizeConstraint": 4,
+     "spacing": 0,
+     "direction": 2,
+     "items": [
+      {
+       "alignment": 0,
+       "stretch": 0,
+       "widget": "QScrollBar#||"
+      }
+     ]
+    }
+   },
+   {
+    "id": "QScrollBar#||",
+    "sizePolicy": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QWidget#||",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "id": "QPushButton#|cancel_btn|Cancel",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ],
+    "minimum": [
+     118,
+     0
+    ]
+   },
+   {
+    "id": "QPushButton#|ok_btn|OK",
+    "sizePolicy": [
+     1,
+     0,
+     0,
+     0
+    ],
+    "minimum": [
+     118,
+     0
+    ]
+   }
+  ],
+  "values": {
+   "zyx": [
+    1.0,
+    0.2,
+    0.3
+   ],
+   "z_orientation": "basal_down",
+   "axes_override": null
+  },
+  "modal": false,
+  "windowTitle": "Set spacing"
+ }
+}

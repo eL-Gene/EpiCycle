@@ -1,0 +1,1108 @@
+{
+ "widgets": [
+  {
+   "cls": "QComboBox",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "minw": 0,
+   "maxw": 90,
+   "minh": 0,
+   "maxh": 16777215,
+   "items": [
+    "Scatter",
+    "PCA",
+    "UMAP",
+    "t-SNE",
+    "Violin"
+   ],
+   "current": "Scatter",
+   "editable": false
+  },
+  {
+   "cls": "QFrame",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QListView",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_viewport",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_hcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_vcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QPushButton",
+   "name": "",
+   "hidden": false,
+   "tip": "Lasso select — drag to select points",
+   "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+   "minw": 0,
+   "maxw": 26,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "⟡",
+   "checkable": true,
+   "checked": false
+  },
+  {
+   "cls": "QPushButton",
+   "name": "",
+   "hidden": true,
+   "tip": "Clear selection",
+   "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+   "minw": 0,
+   "maxw": 26,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "✕",
+   "checkable": false,
+   "checked": false
+  },
+  {
+   "cls": "QPushButton",
+   "name": "",
+   "hidden": false,
+   "tip": "Toggle density contours",
+   "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+   "minw": 0,
+   "maxw": 26,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "≈",
+   "checkable": true,
+   "checked": false
+  },
+  {
+   "cls": "QCheckBox",
+   "name": "",
+   "hidden": false,
+   "tip": "Show History — display deleted/superseded labels\nas ghost points in scatter/PCA/UMAP plots",
+   "style": "color: #999; font-size: 10px;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "👻",
+   "checkable": true,
+   "checked": true
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "Feature"
+  },
+  {
+   "cls": "QComboBox",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "minw": 100,
+   "maxw": 140,
+   "minh": 0,
+   "maxh": 16777215,
+   "items": [],
+   "current": "",
+   "editable": false
+  },
+  {
+   "cls": "QFrame",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QListView",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_viewport",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_hcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_vcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "vs"
+  },
+  {
+   "cls": "QComboBox",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "minw": 100,
+   "maxw": 140,
+   "minh": 0,
+   "maxh": 16777215,
+   "items": [],
+   "current": "",
+   "editable": false
+  },
+  {
+   "cls": "QFrame",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QListView",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_viewport",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_hcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_vcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999; font-size: 10px;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": ""
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "Color by"
+  },
+  {
+   "cls": "QComboBox",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "minw": 100,
+   "maxw": 180,
+   "minh": 0,
+   "maxh": 16777215,
+   "items": [],
+   "current": "",
+   "editable": true
+  },
+  {
+   "cls": "QFrame",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QListView",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_viewport",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_hcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_vcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QLineEdit",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "Norm"
+  },
+  {
+   "cls": "QComboBox",
+   "name": "",
+   "hidden": false,
+   "tip": "Linear: raw min-max (good for bounded 0-1 features)\nLog: log1p transform (good for skewed features like area)\nRank: percentile rank (distribution-agnostic, uniform spread)",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "minw": 0,
+   "maxw": 70,
+   "minh": 0,
+   "maxh": 16777215,
+   "items": [
+    "Linear",
+    "Log",
+    "Rank"
+   ],
+   "current": "Rank",
+   "editable": false
+  },
+  {
+   "cls": "QFrame",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QListView",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_viewport",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_hcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_vcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": "Colormap"
+  },
+  {
+   "cls": "QComboBox",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "minw": 0,
+   "maxw": 90,
+   "minh": 0,
+   "maxh": 16777215,
+   "items": [
+    "Viridis",
+    "Plasma",
+    "Inferno",
+    "Magma",
+    "Turbo",
+    "Coolwarm"
+   ],
+   "current": "Viridis",
+   "editable": false
+  },
+  {
+   "cls": "QFrame",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QListView",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_viewport",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_hcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "qt_scrollarea_vcontainer",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QScrollBar",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QWidget",
+   "name": "",
+   "hidden": true,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999; font-size: 9px;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215,
+   "text": ""
+  },
+  {
+   "cls": "PlotWidget",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 16777215
+  },
+  {
+   "cls": "QLabel",
+   "name": "",
+   "hidden": false,
+   "tip": "",
+   "style": "color: #999; font-size: 9px; padding: 2px 4px;",
+   "minw": 0,
+   "maxw": 16777215,
+   "minh": 0,
+   "maxh": 36,
+   "text": ""
+  }
+ ],
+ "layout": {
+  "cls": "QVBoxLayout",
+  "spacing": 2,
+  "margins": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "items": [
+   [
+    "l",
+    {
+     "cls": "QHBoxLayout",
+     "spacing": 6,
+     "margins": [
+      4,
+      4,
+      4,
+      0
+     ],
+     "items": [
+      [
+       "w",
+       "QComboBox",
+       ""
+      ],
+      [
+       "w",
+       "QPushButton",
+       "⟡"
+      ],
+      [
+       "w",
+       "QPushButton",
+       "✕"
+      ],
+      [
+       "w",
+       "QPushButton",
+       "≈"
+      ],
+      [
+       "w",
+       "QCheckBox",
+       "👻"
+      ],
+      [
+       "w",
+       "QLabel",
+       "Feature"
+      ],
+      [
+       "w",
+       "QComboBox",
+       ""
+      ],
+      [
+       "w",
+       "QLabel",
+       "vs"
+      ],
+      [
+       "w",
+       "QComboBox",
+       ""
+      ],
+      [
+       "s"
+      ],
+      [
+       "w",
+       "QLabel",
+       ""
+      ]
+     ]
+    }
+   ],
+   [
+    "l",
+    {
+     "cls": "QHBoxLayout",
+     "spacing": 6,
+     "margins": [
+      4,
+      0,
+      4,
+      0
+     ],
+     "items": [
+      [
+       "w",
+       "QLabel",
+       "Color by"
+      ],
+      [
+       "w",
+       "QComboBox",
+       ""
+      ],
+      [
+       "w",
+       "QLabel",
+       "Norm"
+      ],
+      [
+       "w",
+       "QComboBox",
+       ""
+      ],
+      [
+       "w",
+       "QLabel",
+       "Colormap"
+      ],
+      [
+       "w",
+       "QComboBox",
+       ""
+      ],
+      [
+       "w",
+       "QLabel",
+       ""
+      ],
+      [
+       "s"
+      ]
+     ]
+    }
+   ],
+   [
+    "w",
+    "PlotWidget",
+    ""
+   ],
+   [
+    "w",
+    "QLabel",
+    ""
+   ]
+  ]
+ },
+ "background": "#1a1a2e",
+ "signals": [
+  "category_selected",
+  "labels_selected",
+  "tier_drag_finished",
+  "tier_thresholds_changed",
+  "viewer_color_requested"
+ ],
+ "states": {
+  "Scatter": {
+   "x_label": "Feature",
+   "hidden": {
+    "_y_label": false,
+    "_feature_y_combo": true,
+    "_select_btn": false,
+    "_clear_sel_btn": true,
+    "_stats_label": false
+   },
+   "stats": "24 labels",
+   "legend": "",
+   "plot_texts": []
+  },
+  "PCA": {
+   "x_label": "",
+   "hidden": {
+    "_y_label": true,
+    "_feature_y_combo": true,
+    "_select_btn": false,
+    "_clear_sel_btn": true,
+    "_stats_label": false
+   },
+   "stats": "24 labels",
+   "legend": "",
+   "plot_texts": []
+  },
+  "UMAP": {
+   "x_label": "",
+   "hidden": {
+    "_y_label": true,
+    "_feature_y_combo": true,
+    "_select_btn": false,
+    "_clear_sel_btn": true,
+    "_stats_label": false
+   },
+   "stats": "24 labels",
+   "legend": "",
+   "plot_texts": [
+    "Compute UMAP from the QC Settings dialog\n(or the Embedding tab in Step 4)"
+   ]
+  },
+  "t-SNE": {
+   "x_label": "",
+   "hidden": {
+    "_y_label": true,
+    "_feature_y_combo": true,
+    "_select_btn": false,
+    "_clear_sel_btn": true,
+    "_stats_label": false
+   },
+   "stats": "24 labels",
+   "legend": "",
+   "plot_texts": [
+    "Compute t-SNE from the QC Settings dialog\n(or the Embedding tab in Step 4)"
+   ]
+  },
+  "Violin": {
+   "x_label": "Feature",
+   "hidden": {
+    "_y_label": true,
+    "_feature_y_combo": true,
+    "_select_btn": true,
+    "_clear_sel_btn": true,
+    "_stats_label": false
+   },
+   "stats": "24 labels",
+   "legend": "",
+   "plot_texts": []
+  }
+ },
+ "feature_colour": {
+  "legend": "<span style=\"color:rgb(68,1,83)\">█</span><span style=\"color:rgb(58,82,138)\">█</span><span style=\"color:rgb(32,145,139)\">█</span><span style=\"color:rgb(94,201,97)\">█</span><span style=\"color:rgb(252,231,36)\">█</span>  area",
+  "hidden": {
+   "_norm_label": false,
+   "_norm_combo": false,
+   "_cmap_label": false,
+   "_cmap_combo": false
+  }
+ },
+ "selected": {
+  "stats": "3 selected of 24",
+  "clear_hidden": false
+ }
+}

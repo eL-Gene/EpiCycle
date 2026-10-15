@@ -1,0 +1,62 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.env
+.env.*
+.venv/
+venv/
+.epicycle-env/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebook and interactive artifacts
+.ipynb_checkpoints/
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Windows NUL redirect artifacts
+nul
+
+CHANGELOG.md
+CODEBASE_AUDIT.md
+
+# External dependency repos (local dev references, not submodules)
+external-pkgs/
+
+# Internal research notes (untracked)
+docs/internal/
+
+# Logs and runtime outputs
+*.log
+*.tmp
+*.bak
+
+# Local data/cache generated during runs
+sample_data/
+.napari_cache/
+outputs/
+runs/
+artifacts/
+checkpoints/
+
+docs/_local/

@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use EpiCycle, please cite it as below, and cite Cellpose and u-Segment3D, which it builds on."
+type: software
+title: EpiCycle
+abstract: "A napari plugin for iterative human-in-the-loop 2D training, 3D reconstruction, quality control and curation of cell segmentations in stratified epithelia."
+authors:
+  - family-names: Quitevis
+    given-names: Elgene John A.
+version: 0.1.0
+license: GPL-3.0-or-later
+repository-code: "https://github.com/eL-Gene/EpiCycle"

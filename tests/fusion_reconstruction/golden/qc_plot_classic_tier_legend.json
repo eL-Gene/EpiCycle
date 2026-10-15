@@ -1,0 +1,1961 @@
+{
+ "history_built": true,
+ "colour_items": [
+  "QC status",
+  "QC tier",
+  "Cluster",
+  "Border cell",
+  "area",
+  "solidity",
+  "qc_score",
+  "cluster_id"
+ ],
+ "tier": {
+  "legend": "<a href=\"cat://qc_tier/curated\" style=\"color:rgb(0,188,212); font-weight:normal; text-decoration:none;\">●&nbsp;curated</a> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a> &nbsp; <a href=\"cat://qc_tier/review\" style=\"color:rgb(255,200,60); font-weight:normal; text-decoration:none;\">●&nbsp;review</a> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a> &nbsp; <a href=\"cat://qc_tier/garbage\" style=\"color:rgb(240,60,60); font-weight:normal; text-decoration:none;\">●&nbsp;garbage</a>",
+  "stats": "55 labels  +5 ghost",
+  "history": true,
+  "colours": [
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ],
+   [
+    0.3137,
+    0.7843,
+    0.4706,
+    0.85
+   ],
+   [
+    1.0,
+    0.4706,
+    0.1569,
+    0.85
+   ],
+   [
+    0.9412,
+    0.2353,
+    0.2353,
+    0.85
+   ],
+   [
+    1.0,
+    0.7843,
+    0.2353,
+    0.85
+   ],
+   [
+    0.0,
+    0.7373,
+    0.8314,
+    0.85
+   ],
+   [
+    0.549,
+    0.5882,
+    0.6667,
+    0.85
+   ]
+  ],
+  "scatter": [
+   {
+    "z": 0.0,
+    "n": 55,
+    "size": 7.0,
+    "symbol": "o",
+    "brush": [
+     80,
+     200,
+     120,
+     216
+    ],
+    "pen": [
+     255,
+     255,
+     255,
+     30,
+     0.5,
+     1
+    ],
+    "brushes": [
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ]
+    ]
+   },
+   {
+    "z": 0.0,
+    "n": 5,
+    "size": 10.0,
+    "symbol": "x",
+    "brush": [
+     140,
+     140,
+     160,
+     130
+    ],
+    "pen": [
+     200,
+     200,
+     200,
+     100,
+     1.0,
+     1
+    ],
+    "brushes": [
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   }
+  ]
+ },
+ "tier_no_ghosts": {
+  "legend": "<a href=\"cat://qc_tier/curated\" style=\"color:rgb(0,188,212); font-weight:normal; text-decoration:none;\">●&nbsp;curated</a> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a> &nbsp; <a href=\"cat://qc_tier/review\" style=\"color:rgb(255,200,60); font-weight:normal; text-decoration:none;\">●&nbsp;review</a> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a> &nbsp; <a href=\"cat://qc_tier/garbage\" style=\"color:rgb(240,60,60); font-weight:normal; text-decoration:none;\">●&nbsp;garbage</a>",
+  "scatter": [
+   {
+    "z": 0.0,
+    "n": 55,
+    "size": 7.0,
+    "symbol": "o",
+    "brush": [
+     80,
+     200,
+     120,
+     216
+    ],
+    "pen": [
+     255,
+     255,
+     255,
+     30,
+     0.5,
+     1
+    ],
+    "brushes": [
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ],
+     [
+      80,
+      200,
+      120,
+      216
+     ],
+     [
+      255,
+      120,
+      40,
+      216
+     ],
+     [
+      240,
+      60,
+      60,
+      216
+     ],
+     [
+      255,
+      200,
+      60,
+      216
+     ],
+     [
+      0,
+      188,
+      212,
+      216
+     ],
+     [
+      140,
+      150,
+      170,
+      216
+     ]
+    ]
+   }
+  ]
+ },
+ "pick": {
+  "selected": [
+   4,
+   10,
+   16,
+   22,
+   28,
+   34,
+   40,
+   46,
+   52,
+   58
+  ],
+  "stats": "55 labels  +5 ghost",
+  "legend": "<a href=\"cat://qc_tier/curated\" style=\"color:rgb(0,188,212); font-weight:normal; text-decoration:none;\">●&nbsp;curated</a> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a> &nbsp; <a href=\"cat://qc_tier/review\" style=\"color:rgb(255,200,60); font-weight:bold; text-decoration:underline;\">●&nbsp;review</a> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a> &nbsp; <a href=\"cat://qc_tier/garbage\" style=\"color:rgb(240,60,60); font-weight:normal; text-decoration:none;\">●&nbsp;garbage</a>"
+ },
+ "after_switch": {
+  "selected": [],
+  "legend": "<a href=\"cat://qc_tier/curated\" style=\"color:rgb(0,188,212); font-weight:normal; text-decoration:none;\">●&nbsp;curated</a> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a> &nbsp; <a href=\"cat://qc_tier/review\" style=\"color:rgb(255,200,60); font-weight:normal; text-decoration:none;\">●&nbsp;review</a> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a> &nbsp; <a href=\"cat://qc_tier/garbage\" style=\"color:rgb(240,60,60); font-weight:normal; text-decoration:none;\">●&nbsp;garbage</a>"
+ },
+ "tree": {
+  "class": "QCPlotWidget",
+  "object_name": "",
+  "hidden": true,
+  "tooltip": "",
+  "style": "",
+  "isEnabled": true,
+  "children": [
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "Scatter",
+     "PCA",
+     "UMAP",
+     "t-SNE",
+     "Violin"
+    ],
+    "current": 1,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Lasso select — drag to select points",
+    "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+    "text": "⟡",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "Clear selection",
+    "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+    "text": "✕",
+    "isCheckable": false,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QPushButton",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Toggle density contours",
+    "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+    "text": "≈",
+    "isCheckable": true,
+    "isChecked": false,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QCheckBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Show History — display deleted/superseded labels\nas ghost points in scatter/PCA/UMAP plots",
+    "style": "color: #999; font-size: 10px;",
+    "text": "👻",
+    "isCheckable": true,
+    "isChecked": true,
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999999; font-size: 10px; font-weight: 500;",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "area",
+     "solidity",
+     "qc_score",
+     "cluster_id"
+    ],
+    "current": 0,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "color: #999999; font-size: 10px; font-weight: 500;",
+    "text": "vs",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": true,
+    "tooltip": "",
+    "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "area",
+     "solidity",
+     "qc_score",
+     "cluster_id"
+    ],
+    "current": 1,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999; font-size: 10px;",
+    "text": "55 labels  +5 ghost",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999999; font-size: 10px; font-weight: 500;",
+    "text": "Color by",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "QC status",
+     "QC tier",
+     "Cluster",
+     "Border cell",
+     "area",
+     "solidity",
+     "qc_score",
+     "cluster_id"
+    ],
+    "current": 0,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     },
+     {
+      "class": "QLineEdit",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "",
+      "text": "QC tier",
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999999; font-size: 10px; font-weight: 500;",
+    "text": "Norm",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "Linear: raw min-max (good for bounded 0-1 features)\nLog: log1p transform (good for skewed features like area)\nRank: percentile rank (distribution-agnostic, uniform spread)",
+    "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "Linear",
+     "Log",
+     "Rank"
+    ],
+    "current": 2,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999999; font-size: 10px; font-weight: 500;",
+    "text": "Colormap",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "QComboBox",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+    "items": [
+     "Viridis",
+     "Plasma",
+     "Inferno",
+     "Magma",
+     "Turbo",
+     "Coolwarm"
+    ],
+    "current": 0,
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QFrame",
+      "object_name": "",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QListView",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": [
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_viewport",
+          "hidden": false,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": []
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_hcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         },
+         {
+          "class": "QWidget",
+          "object_name": "qt_scrollarea_vcontainer",
+          "hidden": true,
+          "tooltip": "",
+          "style": "",
+          "isEnabled": true,
+          "children": [
+           {
+            "class": "QScrollBar",
+            "object_name": "",
+            "hidden": false,
+            "tooltip": "",
+            "style": "",
+            "isEnabled": true,
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       },
+       {
+        "class": "QWidget",
+        "object_name": "",
+        "hidden": true,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999; font-size: 9px;",
+    "text": "",
+    "isEnabled": true,
+    "children": []
+   },
+   {
+    "class": "PlotWidget",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "",
+    "isEnabled": true,
+    "children": [
+     {
+      "class": "QWidget",
+      "object_name": "qt_scrollarea_hcontainer",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QScrollBar",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     },
+     {
+      "class": "QWidget",
+      "object_name": "qt_scrollarea_vcontainer",
+      "hidden": true,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": [
+       {
+        "class": "QScrollBar",
+        "object_name": "",
+        "hidden": false,
+        "tooltip": "",
+        "style": "",
+        "isEnabled": true,
+        "children": []
+       }
+      ]
+     },
+     {
+      "class": "QWidget",
+      "object_name": "",
+      "hidden": false,
+      "tooltip": "",
+      "style": "",
+      "isEnabled": true,
+      "children": []
+     }
+    ]
+   },
+   {
+    "class": "QLabel",
+    "object_name": "",
+    "hidden": false,
+    "tooltip": "",
+    "style": "color: #999; font-size: 9px; padding: 2px 4px;",
+    "text": "<a href=\"cat://qc_tier/curated\" style=\"color:rgb(0,188,212); font-weight:normal; text-decoration:none;\">●&nbsp;curated</a> &nbsp; <a href=\"cat://qc_tier/good\" style=\"color:rgb(80,200,120); font-weight:normal; text-decoration:none;\">●&nbsp;good</a> &nbsp; <a href=\"cat://qc_tier/review\" style=\"color:rgb(255,200,60); font-weight:normal; text-decoration:none;\">●&nbsp;review</a> &nbsp; <a href=\"cat://qc_tier/bad\" style=\"color:rgb(255,120,40); font-weight:normal; text-decoration:none;\">●&nbsp;bad</a> &nbsp; <a href=\"cat://qc_tier/garbage\" style=\"color:rgb(240,60,60); font-weight:normal; text-decoration:none;\">●&nbsp;garbage</a>",
+    "isEnabled": true,
+    "children": []
+   }
+  ]
+ }
+}

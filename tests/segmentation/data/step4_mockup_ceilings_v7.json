@@ -1,0 +1,300 @@
+{
+ "meta": {
+  "mockup": "STEP4_REVAMP_MOCKUP_v7_2026-09-28.html",
+  "mockup_sha1": "fecd740f0a57aeb8c8e5b0ce5a7059191da9e5cc",
+  "chrome_version": "153.0.8010.54",
+  "measured": "2026-09-28 17:47",
+  "hand_entered": false
+ },
+ "spec_stated": {
+  "seg_right_col_w": 324,
+  "mt_right_scroll_D": 489,
+  "mt_right_scroll_D3": 464
+ },
+ "rule": "ceil(max(idle, busy) * 1.05) over the mockup's scroll heights (STEP4_SEG_RIGHT_B2_PX: over the right column's CONTENT height, ceil(287.5 * 1.05) = 302, fidelity F4 -- the scroll height is the viewport, not what the column holds); D / D3 and the list rows are the spec's own values; widths are the spec's hard limits",
+ "units": "CSS px at device scale 1; dock 578 x 968 (+1 px border), section viewport = sec_scroll.client_w",
+ "states": {
+  "A": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": {
+    "client_w": 574,
+    "client_h": 667,
+    "scroll_h": 667,
+    "content_h": 415.3,
+    "scrolls": false
+   },
+   "col_l_w": null,
+   "col_r_w": null,
+   "right": null,
+   "foot_h": null,
+   "left_fixed_h": null,
+   "left_rows_visible": null,
+   "left_row_h": null,
+   "lock_lines": [],
+   "export_body_h": null,
+   "collapsibles_open": [],
+   "collapsibles_shut": []
+  },
+  "B": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": {
+    "client_w": 574,
+    "client_h": 667,
+    "scroll_h": 667,
+    "content_h": 595.8,
+    "scrolls": false
+   },
+   "col_l_w": null,
+   "col_r_w": null,
+   "right": null,
+   "foot_h": null,
+   "left_fixed_h": null,
+   "left_rows_visible": null,
+   "left_row_h": null,
+   "lock_lines": [],
+   "export_body_h": null,
+   "collapsibles_open": [],
+   "collapsibles_shut": []
+  },
+  "B2": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": null,
+   "col_l_w": 218,
+   "col_r_w": 324,
+   "right": {
+    "client_w": 324,
+    "content_w": 320,
+    "client_h": 478,
+    "scroll_h": 478,
+    "content_h": 287.5,
+    "scrolls": false
+   },
+   "foot_h": 112.8,
+   "left_fixed_h": 225.3,
+   "left_rows_visible": 5,
+   "left_row_h": 68.3,
+   "lock_lines": [],
+   "export_body_h": null,
+   "collapsibles_open": [
+    "Inference settings"
+   ],
+   "collapsibles_shut": [
+    "Advanced"
+   ]
+  },
+  "B3": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": null,
+   "col_l_w": 218,
+   "col_r_w": 324,
+   "right": {
+    "client_w": 324,
+    "content_w": 320,
+    "client_h": 478,
+    "scroll_h": 909,
+    "content_h": 909.3,
+    "scrolls": true
+   },
+   "foot_h": 112.8,
+   "left_fixed_h": 225.3,
+   "left_rows_visible": 5,
+   "left_row_h": 68.3,
+   "lock_lines": [],
+   "export_body_h": null,
+   "collapsibles_open": [
+    "Inference settings",
+    "Advanced",
+    "Size limits size_filters"
+   ],
+   "collapsibles_shut": [
+    "Smooth before joining pre_smoothing",
+    "Follow the flows gradient_descent",
+    "Combine the probabilities combine_cell_p",
+    "Clean the mask postprocess_binary",
+    "Combine the flows combine_cell_gradients",
+    "Group into cells connected_component"
+   ]
+  },
+  "C": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": null,
+   "col_l_w": 218,
+   "col_r_w": 324,
+   "right": {
+    "client_w": 324,
+    "content_w": 320,
+    "client_h": 422,
+    "scroll_h": 422,
+    "content_h": 287.5,
+    "scrolls": false
+   },
+   "foot_h": 125.3,
+   "left_fixed_h": 237.8,
+   "left_rows_visible": 5,
+   "left_row_h": 68.3,
+   "lock_lines": [
+    {
+     "w": 562,
+     "h": 37.5
+    }
+   ],
+   "export_body_h": null,
+   "collapsibles_open": [
+    "Inference settings"
+   ],
+   "collapsibles_shut": [
+    "Advanced"
+   ]
+  },
+  "D": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": null,
+   "col_l_w": 218,
+   "col_r_w": 324,
+   "right": {
+    "client_w": 324,
+    "content_w": 320,
+    "client_h": 489,
+    "scroll_h": 489,
+    "content_h": 417.8,
+    "scrolls": false
+   },
+   "foot_h": 158.5,
+   "left_fixed_h": 171.8,
+   "left_rows_visible": 5,
+   "left_row_h": 68.3,
+   "lock_lines": [],
+   "export_body_h": null,
+   "collapsibles_open": [],
+   "collapsibles_shut": [
+    "Advanced smoothing in µm · Reset"
+   ]
+  },
+  "D2": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": null,
+   "col_l_w": 218,
+   "col_r_w": 324,
+   "right": {
+    "client_w": 324,
+    "content_w": 320,
+    "client_h": 489,
+    "scroll_h": 489,
+    "content_h": 417.8,
+    "scrolls": false
+   },
+   "foot_h": 158.5,
+   "left_fixed_h": 171.8,
+   "left_rows_visible": 5,
+   "left_row_h": 68.3,
+   "lock_lines": [],
+   "export_body_h": null,
+   "collapsibles_open": [],
+   "collapsibles_shut": [
+    "Advanced smoothing in µm · Reset"
+   ]
+  },
+  "D2win": {
+   "dock_w": 482,
+   "dock_h": 475,
+   "sideways_overflow": [],
+   "sec_scroll": null,
+   "col_l_w": null,
+   "col_r_w": null,
+   "right": null,
+   "foot_h": null,
+   "left_fixed_h": null,
+   "left_rows_visible": null,
+   "left_row_h": null,
+   "lock_lines": [],
+   "export_body_h": 435.8,
+   "collapsibles_open": [],
+   "collapsibles_shut": []
+  },
+  "D3": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": null,
+   "col_l_w": 218,
+   "col_r_w": 324,
+   "right": {
+    "client_w": 324,
+    "content_w": 320,
+    "client_h": 464,
+    "scroll_h": 464,
+    "content_h": 417.8,
+    "scrolls": false
+   },
+   "foot_h": 139.8,
+   "left_fixed_h": 171.8,
+   "left_rows_visible": 5,
+   "left_row_h": 68.3,
+   "lock_lines": [
+    {
+     "w": 562,
+     "h": 37.5
+    }
+   ],
+   "export_body_h": null,
+   "collapsibles_open": [],
+   "collapsibles_shut": [
+    "Advanced smoothing in µm · Reset"
+   ]
+  },
+  "E": {
+   "dock_w": 580,
+   "dock_h": 970,
+   "sideways_overflow": [],
+   "sec_scroll": {
+    "client_w": 574,
+    "client_h": 667,
+    "scroll_h": 667,
+    "content_h": 667,
+    "scrolls": false
+   },
+   "col_l_w": null,
+   "col_r_w": null,
+   "right": null,
+   "foot_h": null,
+   "left_fixed_h": null,
+   "left_rows_visible": null,
+   "left_row_h": null,
+   "lock_lines": [],
+   "export_body_h": null,
+   "collapsibles_open": [],
+   "collapsibles_shut": []
+  }
+ },
+ "ceilings": {
+  "STEP4_MT_RIGHT_D_PX": 514,
+  "STEP4_MT_RIGHT_D3_PX": 487,
+  "STEP4_MT_RIGHT_D_ADV_PX": null,
+  "STEP4_MT_FOOT_PX": 167,
+  "STEP4_SEG_RIGHT_B2_PX": 302,
+  "STEP4_SEG_RIGHT_B3_PX": 955,
+  "STEP4_SEG_FOOT_PX": 132,
+  "STEP4_SEG_LEFT_FIXED_PX": 250,
+  "STEP4_LOCK_LINE_PX": 40,
+  "STEP4_SEG_LIST_MIN_ROWS": 3,
+  "STEP4_MT_LIST_MIN_ROWS": 3,
+  "STEP4_SESSION_B_PX": 857,
+  "STEP4_SEG_RIGHT_COL_W": 322,
+  "STEP4_LEFT_COL_W": 218,
+  "STEP4_EXPORT_W": 480
+ }
+}

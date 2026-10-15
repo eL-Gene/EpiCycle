@@ -1,0 +1,62 @@
+name: Bug report
+description: Something crashed, froze or gave a wrong result.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The fields below are what we need to reproduce the problem; without them most reports cannot be acted on.
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 / Ubuntu 22.04
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: EpiCycle and napari versions
+      description: In the napari console, `import napari_epicycle, napari; print(napari_epicycle.__version__, napari.__version__)`
+      placeholder: 0.1.0, 0.8.0
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: RTX 3070 8 GB, driver 560.xx (or "no GPU")
+  - type: dropdown
+    id: step
+    attributes:
+      label: Which step
+      options:
+        - 1 Project Setup
+        - 2 ROI + HITL 2D
+        - 3 Reconstruct + Curate 3D
+        - 4 3D Stack Segmentation
+        - Whole-tissue engine (notebook / CLI)
+        - Install
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The exact buttons or menu items, in order, and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: Everything printed in the terminal you launched napari from, from the moment before the problem to the end. Paste it as is.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data
+      description: Shape and dtype of the image (for example 143 x 2048 x 2048, uint16, 2 channels), the file format, and whether you can share a small crop that shows the problem.

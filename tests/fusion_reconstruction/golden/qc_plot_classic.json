@@ -1,0 +1,724 @@
+{
+ "class": "QCPlotWidget",
+ "object_name": "",
+ "hidden": true,
+ "tooltip": "",
+ "style": "",
+ "children": [
+  {
+   "class": "QComboBox",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "items": [
+    "Scatter",
+    "PCA",
+    "UMAP",
+    "t-SNE",
+    "Violin"
+   ],
+   "current": 0,
+   "children": [
+    {
+     "class": "QFrame",
+     "object_name": "",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QListView",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": [
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_viewport",
+         "hidden": false,
+         "tooltip": "",
+         "style": "",
+         "children": []
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_hcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_vcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "class": "QPushButton",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "Lasso select — drag to select points",
+   "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+   "text": "⟡",
+   "isCheckable": true,
+   "isChecked": false,
+   "children": []
+  },
+  {
+   "class": "QPushButton",
+   "object_name": "",
+   "hidden": true,
+   "tooltip": "Clear selection",
+   "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+   "text": "✕",
+   "isCheckable": false,
+   "isChecked": false,
+   "children": []
+  },
+  {
+   "class": "QPushButton",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "Toggle density contours",
+   "style": "QPushButton { font-size: 13px; padding: 1px 4px; background: #1e1e2e; color: #999; border: 1px solid rgba(255,255,255,0.10); border-radius: 3px; }QPushButton:hover { border-color: rgba(106,191,105,0.30); }QPushButton:checked { background: rgba(106,191,105,0.15); color: #6abf69; border-color: rgba(106,191,105,0.40); }",
+   "text": "≈",
+   "isCheckable": true,
+   "isChecked": false,
+   "children": []
+  },
+  {
+   "class": "QCheckBox",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "Show History — display deleted/superseded labels\nas ghost points in scatter/PCA/UMAP plots",
+   "style": "color: #999; font-size: 10px;",
+   "text": "👻",
+   "isCheckable": true,
+   "isChecked": true,
+   "children": []
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "text": "Feature",
+   "children": []
+  },
+  {
+   "class": "QComboBox",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "items": [],
+   "current": -1,
+   "children": [
+    {
+     "class": "QFrame",
+     "object_name": "",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QListView",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": [
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_viewport",
+         "hidden": false,
+         "tooltip": "",
+         "style": "",
+         "children": []
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_hcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_vcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "text": "vs",
+   "children": []
+  },
+  {
+   "class": "QComboBox",
+   "object_name": "",
+   "hidden": true,
+   "tooltip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "items": [],
+   "current": -1,
+   "children": [
+    {
+     "class": "QFrame",
+     "object_name": "",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QListView",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": [
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_viewport",
+         "hidden": false,
+         "tooltip": "",
+         "style": "",
+         "children": []
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_hcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_vcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999; font-size: 10px;",
+   "text": "",
+   "children": []
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "text": "Color by",
+   "children": []
+  },
+  {
+   "class": "QComboBox",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "items": [],
+   "current": -1,
+   "children": [
+    {
+     "class": "QFrame",
+     "object_name": "",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QListView",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": [
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_viewport",
+         "hidden": false,
+         "tooltip": "",
+         "style": "",
+         "children": []
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_hcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_vcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    },
+    {
+     "class": "QLineEdit",
+     "object_name": "",
+     "hidden": false,
+     "tooltip": "",
+     "style": "",
+     "text": "",
+     "children": []
+    }
+   ]
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "text": "Norm",
+   "children": []
+  },
+  {
+   "class": "QComboBox",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "Linear: raw min-max (good for bounded 0-1 features)\nLog: log1p transform (good for skewed features like area)\nRank: percentile rank (distribution-agnostic, uniform spread)",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "items": [
+    "Linear",
+    "Log",
+    "Rank"
+   ],
+   "current": 2,
+   "children": [
+    {
+     "class": "QFrame",
+     "object_name": "",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QListView",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": [
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_viewport",
+         "hidden": false,
+         "tooltip": "",
+         "style": "",
+         "children": []
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_hcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_vcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999999; font-size: 10px; font-weight: 500;",
+   "text": "Colormap",
+   "children": []
+  },
+  {
+   "class": "QComboBox",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "QComboBox {  font-size: 10px; padding: 2px 6px;  background: #1e1e2e; color: #e0e0e0; border: 1px solid rgba(255,255,255,0.10);  border-radius: 3px;}QComboBox:hover { border-color: rgba(106,191,105,0.40); }QComboBox::drop-down { border: none; }QComboBox QAbstractItemView {  background: #2b2b2b; color: #e0e0e0;  selection-background-color: rgba(106,191,105,0.25);}",
+   "items": [
+    "Viridis",
+    "Plasma",
+    "Inferno",
+    "Magma",
+    "Turbo",
+    "Coolwarm"
+   ],
+   "current": 0,
+   "children": [
+    {
+     "class": "QFrame",
+     "object_name": "",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QListView",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": [
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_viewport",
+         "hidden": false,
+         "tooltip": "",
+         "style": "",
+         "children": []
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_hcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        },
+        {
+         "class": "QWidget",
+         "object_name": "qt_scrollarea_vcontainer",
+         "hidden": true,
+         "tooltip": "",
+         "style": "",
+         "children": [
+          {
+           "class": "QScrollBar",
+           "object_name": "",
+           "hidden": false,
+           "tooltip": "",
+           "style": "",
+           "children": []
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      },
+      {
+       "class": "QWidget",
+       "object_name": "",
+       "hidden": true,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999; font-size: 9px;",
+   "text": "",
+   "children": []
+  },
+  {
+   "class": "PlotWidget",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "",
+   "children": [
+    {
+     "class": "QWidget",
+     "object_name": "qt_scrollarea_hcontainer",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QScrollBar",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    },
+    {
+     "class": "QWidget",
+     "object_name": "qt_scrollarea_vcontainer",
+     "hidden": true,
+     "tooltip": "",
+     "style": "",
+     "children": [
+      {
+       "class": "QScrollBar",
+       "object_name": "",
+       "hidden": false,
+       "tooltip": "",
+       "style": "",
+       "children": []
+      }
+     ]
+    },
+    {
+     "class": "QWidget",
+     "object_name": "",
+     "hidden": false,
+     "tooltip": "",
+     "style": "",
+     "children": []
+    }
+   ]
+  },
+  {
+   "class": "QLabel",
+   "object_name": "",
+   "hidden": false,
+   "tooltip": "",
+   "style": "color: #999; font-size: 9px; padding: 2px 4px;",
+   "text": "",
+   "children": []
+  }
+ ]
+}

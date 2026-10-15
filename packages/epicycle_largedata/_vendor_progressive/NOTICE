@@ -1,0 +1,61 @@
+================================================================================
+NOTICE -- Vendored napari progressive-loading engine
+================================================================================
+
+The Python modules in this directory (`_progressive_loading.py`,
+`_virtual_data.py`, `_texture_swap.py`, `_glir_metering.py`,
+`_debug_overlay.py`) are vendored, unmodified except for import rewrites and an
+attribution header, from the napari project.
+
+Source
+------
+Project : napari (github.com/napari/napari)
+Pull    : #9067 -- "Progressive loading" (github.com/napari/napari/pull/9067)
+Head    : kephale/napari @ 07e4f3fcfb602878a864aa0de4d9b08bf5a9a2f7
+Branch  : progressive-loading-rebase (rebased onto post-0.8.0 napari main)
+Fetched : 2026-08-02
+
+Only intra-package imports were rewritten to relative form (e.g.
+`from napari.experimental._virtual_data import X` -> `from ._virtual_data import
+X`). All `from napari.*` and `from vispy.*` imports are unchanged and resolve to
+the installed packages. A short attribution header was prepended to each file.
+
+This is a TEMPORARY in-tree copy. DELETE this directory when napari-core ships
+progressive loading in a released version and depend on the upstream API
+instead.
+
+License
+-------
+napari is distributed under the BSD 3-Clause License, reproduced below.
+
+--------------------------------------------------------------------------------
+BSD 3-Clause License
+
+Copyright (c) 2018, Napari
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+--------------------------------------------------------------------------------
