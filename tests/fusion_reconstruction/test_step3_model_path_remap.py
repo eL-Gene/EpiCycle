@@ -53,7 +53,12 @@ def test_step2_anchor_remaps_posix_separators(tmp_path):
 def test_anchor_case_insensitive(tmp_path):
     f = _make(tmp_path, S2_TAIL)
     old = "D:\\labdata\\Src\\Artifacts\\STEP2\\runs\\Cell\\models\\m_lat"
-    assert _paths.remap_model_path_to_workspace(old, tmp_path) == f
+    got = _paths.remap_model_path_to_workspace(old, tmp_path)
+    assert got == f
+    # The rebuilt path is spelled the way the plugin writes the folders, so
+    # it exists on a case-sensitive filesystem too; the stored spelling only
+    # locates the anchor.
+    assert got.parts[-6:-4] == ("artifacts", "step2")
 
 
 def test_runs_alone_is_not_an_anchor(tmp_path):

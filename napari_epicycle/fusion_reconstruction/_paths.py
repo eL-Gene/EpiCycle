@@ -862,7 +862,10 @@ def remap_model_path_to_workspace(path, workspace) -> Optional[Path]:
                 return None
         except (OSError, ValueError):
             return None
-    rebuilt = ws.joinpath(*parts[idx:])
+    # The anchor matched ignoring case; the rebuilt path spells it the way
+    # the plugin writes the folders, so it is found on a case-sensitive
+    # filesystem too.
+    rebuilt = ws.joinpath("artifacts", parts[idx + 1].casefold(), *parts[idx + 2:])
     try:
         return rebuilt if rebuilt.exists() else None
     except OSError:
