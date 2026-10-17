@@ -1,5 +1,11 @@
 # EpiCycle release notes
 
+## 0.1.1 (2026-10-16)
+
+Patch release. Installing 0.1.0 with Option A or Option B (the release zip) produced a package without Step 2 and without the logging helpers, and napari failed at launch with `No module named 'napari_epicycle.hitl_training_annotation'`. Two directories lacked an `__init__.py`, so the packaging step skipped them; installs from a clone (Option C) were not affected. 0.1.1 adds the two files and a test that catches this. No other change.
+
+If you installed 0.1.0, remove that environment (`conda env remove -n epicycle`) and install again following the README.
+
 ## 0.1.0 (first public pre-release, 2026-10-14)
 
 Pre-release 0.1.0. EpiCycle is actively developed; the interface, APIs and on-disk file formats may change between versions, and existing workspaces are migrated on load where a format changes.

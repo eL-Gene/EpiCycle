@@ -5,4 +5,6 @@ include LICENSE README.md CONTRIBUTING.md
 # The help guides: setup.py's build_py copies them into the wheel, so a wheel
 # built FROM the sdist (python -m build, pip install <sdist>) needs them here.
 graft docs/guides
+include packages/epicycle_largedata/_vendor_progressive/NOTICE
+include packages/epicycle_largedata/_vendor_progressive/README.md
 include THIRD_PARTY_NOTICES.md CITATION.cff environment.yml
