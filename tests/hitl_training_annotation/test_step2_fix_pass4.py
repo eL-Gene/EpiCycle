@@ -12,7 +12,7 @@ from qtpy.QtWidgets import QApplication, QScrollArea                 # noqa: E40
 
 sys.path.insert(0, os.path.dirname(__file__))
 from test_step2_curation import _real_widget                        # noqa: E402
-from test_step2_fix_pass3 import _in_dock, _open                    # noqa: E402
+from _step2_dock_helpers import _in_dock, _open                    # noqa: E402
 
 from napari_epicycle.hitl_training_annotation.ui import _step2_lists as L  # noqa: E402
 

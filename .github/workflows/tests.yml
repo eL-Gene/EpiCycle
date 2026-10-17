@@ -58,3 +58,44 @@ jobs:
           pytest tests/fusion_reconstruction -q --tb=short -o addopts="" --timeout=600 --timeout-method=thread --durations=10 \
             "--deselect=tests/fusion_reconstruction/test_step3_pr_lock.py::test_a_brief_flag_shows_its_line_only_after_the_delay" \
             "--deselect=tests/fusion_reconstruction/test_step3_pr_parity_b.py::test_the_not_active_tail_is_kept_when_the_whole_chip_fits"
+
+  install:
+    # A plain (non-editable) install must work: an editable install reads the
+    # source tree and hides a folder that the wheel leaves out.  This job builds
+    # the wheel, installs it into a clean venv, and runs the checks from a folder
+    # that is not the checkout, so the source tree is never on sys.path.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tlambert03/setup-qt-libs@v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            setup.cfg
+            requirements-lock.txt
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip
+          pip wheel . --no-deps -w dist
+      - name: Install the wheel into a clean venv
+        # Same torch / constraints handling as the pytest job above.
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          . "$RUNNER_TEMP/venv/bin/activate"
+          python -m pip install --upgrade pip
+          pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cpu
+          grep -viE '^(torch|torchvision)==' requirements-lock.txt > constraints-ci.txt
+          WHEEL="$(ls "$PWD"/dist/*.whl)"
+          pip install "${WHEEL}[pyqt6]" -c constraints-ci.txt
+      - name: Check the installed package
+        # Run from RUNNER_TEMP, not the checkout: the source tree must not be importable.
+        run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE"/scripts/ci/check_install.py "$GITHUB_WORKSPACE"/dist/*.whl

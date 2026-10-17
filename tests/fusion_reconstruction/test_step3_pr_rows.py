@@ -208,8 +208,11 @@ def test_the_row_help_lines_are_steps_3s(ui):
 # (row 20) a real panel + controller on a temporary workspace
 
 class _Sig:
-    def connect(self, *a, **k):
-        pass
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, f, *a, **k):
+        self.slots.append(f)
 
 
 class _FakeThread:
@@ -229,6 +232,7 @@ class _FakeWorker:
     def __init__(self, fn, configs):
         self.patch_started = self.patch_completed = _Sig()
         self.view_progress = self.all_completed = self.error = _Sig()
+        self.cancelled = _Sig()
         self.log_message = _Sig()
         self.configs = configs
         _FakeWorker.made.append(self)
@@ -312,10 +316,15 @@ def test_predict_runs_the_ticks_and_nothing_without_one(full, monkeypatch):
     c._predict_all()                          # nothing ticked
     assert _FakeWorker.made == []             # the old route is gone
     _tick(w, "a.tif")
+    c._pipeline_cancelled = (9, 9)
     c._predict_all()
     c._prediction_running = False
     (worker,) = _FakeWorker.made
     assert [x["patch_name"] for x in worker.configs] == ["a.tif"]
+    # the launch wired the cancelled signal and reset the previous flag
+    assert worker.cancelled.slots == [c._on_serial_pred_cancelled]
+    assert c._pipeline_cancelled is None
+    assert c._serial_prediction_worker is worker
 
 
 def test_reconstruct_runs_the_ready_ticks(full, monkeypatch):

@@ -335,10 +335,15 @@ def test_serial_pred_complete_discards_on_run_switch(capsys):
     c._serial_pred_launch_epoch = 0
     c._run_epoch = 1
     c._predicting_patches = {"patch_A"}
+    c._pipeline_cancelled = (1, 2)
+    c.ui = _FakeUI()
+    c.ui.pipeline_cancel_btn = _FakeBtn()
     FusionReconstructionController._on_serial_pred_complete(c)
     assert "[RUN-EPOCH] prediction all-complete discarded" in (
         capsys.readouterr().out
     )
+    assert c._pipeline_cancelled is None
+    assert c.ui.pipeline_cancel_btn.enabled is False
 
 
 # ---------------------------------------------------------------------------

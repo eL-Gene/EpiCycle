@@ -8,7 +8,7 @@ dependencies:
   - pip
   - pip:
       # Constrain every transitive dependency to the validated versions.
-      - -c https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.1/requirements-lock.txt
+      - -c https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.2/requirements-lock.txt
       # GPU PyTorch (cu118 builds).  Without an NVIDIA GPU only the curation steps work.
       # Another CUDA build of torch 2.7.1 can be used by changing the index URL below.
       - --extra-index-url https://download.pytorch.org/whl/cu118
@@ -17,4 +17,4 @@ dependencies:
       # u-Segment3D: the archive of the commit setup.cfg pins (the one we validated; no git needed).
       - u-Segment3D @ https://github.com/DanuserLab/u-segment3D/archive/5d11e1efad810409ef3ebccf25101484b97d42fb.zip
       # EpiCycle itself (brings napari 0.8.0, Cellpose 3.1.1.2, and PyQt6 via the extra).
-      - napari-epicycle[pyqt6] @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.1.zip
+      - napari-epicycle[pyqt6] @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.2.zip

@@ -57,6 +57,7 @@ Helper functions are PURE (no side effects, no filesystem mutation).
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Optional, Union
@@ -760,6 +761,114 @@ def _validate_bucket(bucket: str) -> None:
         )
 
 
+# ----------------------------------------------------------------------------
+# Model paths on a copied workspace
+# ----------------------------------------------------------------------------
+
+_SEPS = chr(92) + "/"
+
+
+def _split_model_path(path):
+    """Parse ``path`` by its own separators.
+
+    Returns ``(parts, is_absolute, flavour)``.  A string with a backslash, a
+    drive letter or a ``//server`` prefix is read as a Windows path
+    (flavour ``"nt"``), anything else as a posix path (``"posix"``),
+    whatever the host is.
+    """
+    from pathlib import PurePosixPath, PureWindowsPath
+    text = str(path or "").strip()
+    if not text:
+        return (), False, "posix"
+    if (chr(92) in text or re.match(r"^[A-Za-z]:", text)
+            or re.match(r"^//[^/]", text)):
+        pure = PureWindowsPath(text)
+        return pure.parts, pure.is_absolute(), "nt"
+    pure = PurePosixPath(text)
+    return pure.parts, pure.is_absolute(), "posix"
+
+
+def _norm_part(p):
+    return p.replace(chr(92), "/").strip("/") or p
+
+
+def _anchored(path):
+    """(parts, anchor index, flavour) for an absolute anchored path, else None."""
+    parts, is_abs, flavour = _split_model_path(path)
+    if not is_abs:
+        return None
+    idx = _last_anchor(parts)
+    if idx is None or idx == 0:
+        return None
+    # An uplevel or no-op segment in the tail could point outside the
+    # workspace once rebuilt.
+    if any(p in ("..", ".") for p in parts[idx:]):
+        return None
+    return parts, idx, flavour
+
+
+def model_path_old_root(path) -> Optional[str]:
+    """The workspace folder a stored model path was written under.
+
+    The anchor is the LAST ``artifacts/step2`` or ``artifacts/step3`` pair
+    (matched ignoring case); the old root is everything before it, with
+    slashes unified and case folded, so two spellings of one folder compare
+    equal.  Relative strings, bare names and paths with no anchor give None.
+    """
+    hit = _anchored(path)
+    if hit is None:
+        return None
+    parts, idx, _flavour = hit
+    return "/".join(_norm_part(p) for p in parts[:idx]).casefold()
+
+
+def _last_anchor(parts):
+    low = [p.casefold() for p in parts]
+    for i in range(len(low) - 2, -1, -1):
+        if low[i] == "artifacts" and low[i + 1] in ("step2", "step3"):
+            return i
+    return None
+
+
+def remap_model_path_to_workspace(path, workspace) -> Optional[Path]:
+    """Re-root a stored model path onto ``workspace``, or None.
+
+    Returns ``workspace / artifacts / step{2,3} / ...`` (the tail from the
+    last anchor pair) only when the path is absolute, has an anchor, was
+    written under a different folder than ``workspace``, that other folder
+    does not exist on this machine at all (a real copy to another machine
+    never has it; a folder that is still here is a live workspace whose
+    models must be left alone), and the rebuilt path exists.  A model path
+    never defines the workspace root for anything else: an imported model
+    may live in another workspace, so anything doubtful returns None and
+    the caller keeps its own behaviour.
+    """
+    if not workspace:
+        return None
+    hit = _anchored(path)
+    if hit is None:
+        return None
+    parts, idx, flavour = hit
+    ws = Path(workspace)
+    old_root = model_path_old_root(path)
+    ws_key = "/".join(_norm_part(p) for p in ws.parts).casefold()
+    if old_root is None or old_root == ws_key:
+        return None
+    # A string written for the other kind of machine cannot name a folder
+    # here, and is never resolved against the working directory.
+    if flavour == os.name:
+        try:
+            if Path(*parts[:idx]).exists():
+                return None
+        except (OSError, ValueError):
+            return None
+    rebuilt = ws.joinpath(*parts[idx:])
+    try:
+        return rebuilt if rebuilt.exists() else None
+    except OSError:
+        return None
+
+
 __all__ = [
     # Constants
     "STEP3_STATE_FILENAME",
@@ -842,6 +951,9 @@ __all__ = [
     "legacy_refinement_training_data",
     "legacy_models_root",
     "legacy_refinement_models_root",
+    # Model paths on a copied workspace
+    "model_path_old_root",
+    "remap_model_path_to_workspace",
     # Layout detection
     "detect_layout_version",
     "is_legacy_layout",

@@ -634,6 +634,43 @@ def _safe_curation_debug_log(obj, msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Model paths on a copied workspace
+# ---------------------------------------------------------------------------
+
+def _heal_copied_model_paths(ws, lat, ax, missing, log):
+    """Re-root missing model paths onto workspace ``ws``, all or nothing.
+
+    Returns the healed (lateral, axial) pair, or None when any missing
+    entry cannot be healed (the caller then keeps its normal
+    missing-path behaviour).  Existing paths, bare names and empty
+    values pass through unchanged.  Every missing entry must come from
+    the same old workspace folder.
+    """
+    try:
+        if not ws:
+            return None
+        roots = {_paths.model_path_old_root(e) for e in missing}
+        if len(roots) != 1 or None in roots:
+            return None
+        out = []
+        pairs = []
+        for entry in (lat, ax):
+            if entry in missing:
+                new = _paths.remap_model_path_to_workspace(entry, ws)
+                if new is None:
+                    return None
+                pairs.append((entry, new))
+                out.append(str(new))
+            else:
+                out.append(entry)
+        for old, new in pairs:
+            log(f"[MODEL-RESTORE] re-rooted {old} -> {new}")
+        return out[0], out[1]
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Stdout/stderr capture for backend log forwarding
 # ---------------------------------------------------------------------------
 
@@ -746,6 +783,9 @@ class _SerialPredictionWorker(QObject):
     patch_started = Signal(str, int, int)     # name, current_index, total
     patch_completed = Signal(str, dict)       # name, result_dict (views)
     view_progress = Signal(str, str, int, int)  # patch_name, view, current, total
+    # (patches done, patches total); emitted before all_completed when the
+    # run ended because Cancel was asked.
+    cancelled = Signal(int, int)
     all_completed = Signal()
     error = Signal(str, str)                  # name, error_msg
 
@@ -760,18 +800,35 @@ class _SerialPredictionWorker(QObject):
 
     def run(self):
         total = len(self._configs)
+        done = 0
+        was_cancelled = False
         for i, cfg in enumerate(self._configs):
             if self._cancel_requested:
+                was_cancelled = True
                 break
             patch_name = cfg["patch_name"]
             self.patch_started.emit(patch_name, i, total)
             try:
                 def _progress_cb(view, current, total_slices, _pn=patch_name):
+                    # Cancel lands after the slice that is running.  The
+                    # final per-view report (current == total_slices) never
+                    # raises: the patch is already complete by then.
+                    if self._cancel_requested and current < total_slices:
+                        raise _CancelledError("Segmentation cancelled")
                     self.view_progress.emit(_pn, view, current, total_slices)
                 result = self._fn(progress_cb=_progress_cb, **cfg)
                 self.patch_completed.emit(patch_name, result)
+                done += 1
+            except _CancelledError:
+                # _CancelledError subclasses Exception, so this clause stays
+                # first.  The cut patch gets no result and no error; the
+                # model's GPU memory stays cached until the next predict.
+                was_cancelled = True
+                break
             except Exception as exc:
                 self.error.emit(patch_name, str(exc))
+        if was_cancelled:
+            self.cancelled.emit(done, total)
         self.all_completed.emit()
 
 
@@ -2164,6 +2221,8 @@ class FusionReconstructionController:
 
         # Pipeline mutex state
         self._predicting_patches: set = set()
+        # (done, total) once the worker reports a Cancel; None otherwise
+        self._pipeline_cancelled = None
         self._reconstructing_patches: set = set()
         self._prediction_running: bool = False
         self._reconstruction_running: bool = False
@@ -5480,14 +5539,21 @@ class FusionReconstructionController:
                 return False
             return "/" in s or "\\" in s
 
-        for entry in (lat, ax):
-            if _is_path_like(entry) and not Path(entry).exists():
+        missing = [e for e in (lat, ax)
+                   if _is_path_like(e) and not Path(e).exists()]
+        healed = None
+        if missing:
+            healed = _heal_copied_model_paths(
+                getattr(self, "working_dir", ""), lat, ax, missing,
+                self._append_log)
+            if healed is None:
                 # File moved or deleted — persisted state is stale.
                 self._append_log(
-                    f"[MODEL-RESTORE] Persisted model path missing: {entry!r} "
-                    f"— falling back to auto-discovery."
+                    f"[MODEL-RESTORE] Persisted model path missing: "
+                    f"{missing[0]!r} — falling back to auto-discovery."
                 )
                 return False
+            lat, ax = healed
 
         if not lat and not ax:
             return False  # Nothing persisted — let discovery run.
@@ -5503,6 +5569,8 @@ class FusionReconstructionController:
             f"[MODEL-RESTORE] Restored persisted model selection "
             f"(mode={mode!r})"
         )
+        if healed is not None:
+            self._persist_current_model_selection()
         return True
 
     def _persist_current_model_selection(self,
@@ -6228,7 +6296,9 @@ class FusionReconstructionController:
         ui.predict_selected_btn.setEnabled(not any_running)
         ui.reconstruct_selected_btn.setEnabled(not any_running)
         # Pause: enabled only when a worker is running
-        ui.pipeline_cancel_btn.setEnabled(any_running)
+        # (not once a Cancel is already on the live predict worker)
+        ui.pipeline_cancel_btn.setEnabled(
+            any_running and not self._pred_cancel_requested())
         # 2026-06-06: predict/reconstruct also drive the unified Step-3 busy
         # lock (curate surface + open annotator + workflow step-nav + patch
         # switch).  Recompute it from the live flags on EVERY predict/recon
@@ -6894,6 +6964,7 @@ class FusionReconstructionController:
         self._pipeline_start_time = _time.monotonic()
         self._pipeline_patch_count = len(configs)
         self._pipeline_errors = 0
+        self._pipeline_cancelled = None
         self._pipeline_slices_done = 0
 
         # Pre-calculate total slices across all patches for granular progress.
@@ -6962,6 +7033,7 @@ class FusionReconstructionController:
             worker.view_progress.connect(self._on_serial_pred_view_progress)
             worker.all_completed.connect(self._on_serial_pred_complete)
             worker.error.connect(self._on_serial_pred_error)
+            worker.cancelled.connect(self._on_serial_pred_cancelled)
             worker.all_completed.connect(thread.quit)
             thread.finished.connect(self._cleanup_serial_prediction_thread)
 
@@ -7079,11 +7151,28 @@ class FusionReconstructionController:
         progress = slices_done / max(total_slices, 1)
         eta = _format_eta(elapsed, progress) if slices_done > 0 else ""
         time_str = _pipe.pipe_time(_format_elapsed(elapsed), eta)
-        self._pr_status(
-            _pipe.PIPE_SEGMENTING_ITEM.format(
-                i=idx + 1, n=total, name=patch_name, time=time_str)
-        )
+        if self._pred_cancel_requested():
+            self._show_cancelling_line()
+        else:
+            self._pr_status(
+                _pipe.PIPE_SEGMENTING_ITEM.format(
+                    i=idx + 1, n=total, name=patch_name, time=time_str)
+            )
         self._refresh_patch_state_list()
+
+    def _show_cancelling_line(self) -> None:
+        """Put the Cancelling sentence back if another writer (a Session row
+        click, say) replaced the status line during a cancelled run."""
+        line = _pipe.PIPE_CANCELLING.format(unit="slice")
+        if getattr(self, "_pr_job_line", "") != line:
+            self._pr_status(line)
+
+    def _pred_cancel_requested(self) -> bool:
+        """True once Cancel was clicked on the live prediction worker (the
+        Cancelling line then stays until the run ends)."""
+        return bool(getattr(
+            getattr(self, "_serial_prediction_worker", None),
+            "_cancel_requested", False))
 
     def _on_serial_pred_view_progress(
         self, patch_name: str, view: str, current: int, total_slices: int,
@@ -7107,12 +7196,15 @@ class FusionReconstructionController:
         time_str = _pipe.pipe_time(_format_elapsed(elapsed), eta)
         n_patches = self._pipeline_patch_count
         done_patches = n_patches - len(self._predicting_patches)
-        self._pr_status(
-            _pipe.PIPE_SEGMENTING_VIEW.format(
-                unit="patch", i=done_patches + 1, n=n_patches,
-                name=patch_name, VIEW=view.upper(), c=current,
-                t=total_slices, time=time_str)
-        )
+        if self._pred_cancel_requested():
+            self._show_cancelling_line()
+        else:
+            self._pr_status(
+                _pipe.PIPE_SEGMENTING_VIEW.format(
+                    unit="patch", i=done_patches + 1, n=n_patches,
+                    name=patch_name, VIEW=view.upper(), c=current,
+                    t=total_slices, time=time_str)
+            )
 
     def _on_serial_pred_patch_done(self, patch_name: str, result: dict):
         self._predicting_patches.discard(patch_name)
@@ -7160,6 +7252,9 @@ class FusionReconstructionController:
                 patch=patch_name, px=f"{result.get('diameter'):g}"))
 
     def _on_serial_pred_complete(self):
+        # A Cancel click between this signal and the thread finishing must
+        # not overwrite the summary below.
+        self.ui.pipeline_cancel_btn.setEnabled(False)
         self._predicting_patches.clear()
         # Phase 3c (B) RUN-EPOCH guard: if the run changed mid-prediction,
         # discard the summary/refresh (it would describe the OLD run).  The
@@ -7177,6 +7272,23 @@ class FusionReconstructionController:
                 "[RUN-EPOCH] Prediction finished after a run switch — summary "
                 "suppressed (results belong to the prior run)."
             )
+            self._pipeline_cancelled = None
+            return
+        cancelled = getattr(self, "_pipeline_cancelled", None)
+        if cancelled is not None:
+            # Cancel ended the run: say how far it got.  The bar stays where
+            # it stopped and the cut patch is still unprocessed.
+            self._pipeline_cancelled = None
+            done, n_total = cancelled
+            self.ui.pipeline_progress.setFormat("%p%")
+            elapsed = _time.monotonic() - self._pipeline_start_time
+            summary = _pr_text.S3_PRED_CANCELLED.format(done=done, total=n_total)
+            if self._pipeline_errors:
+                summary += _pipe.PIPE_FAILED_SUFFIX.format(k=self._pipeline_errors)
+            summary += _pipe.PIPE_TIME_SUFFIX.format(t=_format_elapsed(elapsed))
+            self._pr_status(summary, "warn")
+            self._append_log(summary)
+            self._refresh_patch_state_list()
             return
         self.ui.pipeline_progress.setValue(self.ui.pipeline_progress.maximum())
         self.ui.pipeline_progress.setFormat("%p%")
@@ -7191,6 +7303,9 @@ class FusionReconstructionController:
         self._pr_status(summary, self._pr_done_kind(succeeded, self._pipeline_errors))
         self._append_log(summary)
         self._refresh_patch_state_list()
+
+    def _on_serial_pred_cancelled(self, done: int, total: int):
+        self._pipeline_cancelled = (int(done), int(total))
 
     def _on_serial_pred_error(self, patch_name: str, error_msg: str):
         self._pipeline_errors += 1
@@ -7208,10 +7323,10 @@ class FusionReconstructionController:
         if self._serial_prediction_worker is not None:
             self._serial_prediction_worker.request_pause()
             self._pr_status(
-                _pipe.PIPE_CANCELLING.format(unit="patch")
+                _pipe.PIPE_CANCELLING.format(unit="slice")
             )
             self.ui.pipeline_cancel_btn.setEnabled(False)
-            self._append_log("Segmentation cancelled")
+            self._append_log("Cancel requested: stopping after the current slice")
 
     def _cleanup_serial_prediction_thread(self):
         self._serial_prediction_thread = None
