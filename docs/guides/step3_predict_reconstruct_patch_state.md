@@ -73,7 +73,7 @@ The four buttons stay at the bottom of the right column, under the settings, how
 |---|---|
 | **Predict Selected** | "Predicts the cells in 2D on the ticked patches, one slice at a time in all three views. Accepted and finalized patches are skipped." |
 | **Reconstruct Selected** | "Joins the 2D predictions of the ticked patches into 3D cells. A patch must be predicted first." |
-| **Cancel** | "Stops the run after the patch it is working on." |
+| **Cancel** | "Stops a Predict after the slice it is working on, and a Reconstruct after the patch it is working on." |
 | **View** | "Shows the highlighted patch’s 3D cells over its image in the viewer." |
 
 ### Why a button is grey
@@ -84,10 +84,10 @@ The line under the progress bar says why, in this order:
 - "Every ticked patch is protected." — only accepted or finalized patches are chosen.
 - When Predict can run, the line reads "Ready · 2 ticked", followed by "Predict the ticked patches first." while none of them is predicted yet, so Reconstruct stays grey.  If protected patches are still ticked, it ends, after a dot, by saying what happens to them: "1 protected (finalized) is skipped" (several read, for example, "3 protected (accepted, finalized) are skipped").  The number in "Ready · 2 ticked" is every ticked patch, as in the line under the list.  If the line is too long for the two lines under the buttons, the statuses are left out ("2 protected are skipped"), and if that still does not fit the clause moves before "Predict the ticked patches first."
 
-While a run is going, the same line follows it (which patch, which view, the time left) and keeps its last sentence when the run ends, until you change your ticks.  A run where some patches failed ends on an amber line; one where none succeeded, on a red one.
+While a run is going, the same line follows it (which patch, which view, the time left) and keeps its last sentence when the run ends, until you change your ticks.  A run where some patches failed ends on an amber line; one where none succeeded, on a red one.  A cancelled Predict ends on an amber line, for example "Segmentation cancelled: 1/3 patches done", and the patch it was working on stays unprocessed.
 
 ### While something is running
-An amber line at the top of **Predict + Reconstruct** says what is running.  While Predict or Reconstruct runs, for example "Predicting — Cancel stops it after the current patch. The run, the ticks, the model and the settings are locked.", the run row, **Change…**, the settings and the ticks are grey; **Cancel** and **View** stay live, and under the list: "You can still click rows and use View on finished patches."  While something else is open — for example "A refine step is staged in the annotator — Accept or Discard it there." — the line tells you where to finish it, and nothing here is greyed except the buttons that would start a run, and **View**.  A short pause (a patch loading) shows its line only if it lasts more than a moment.
+An amber line at the top of **Predict + Reconstruct** says what is running.  While Predict or Reconstruct runs, for example "Predicting — Cancel stops it after the current slice. The run, the ticks, the model and the settings are locked.", the run row, **Change…**, the settings and the ticks are grey; **Cancel** and **View** stay live, and under the list: "You can still click rows and use View on finished patches."  While something else is open — for example "A refine step is staged in the annotator — Accept or Discard it there." — the line tells you where to finish it, and nothing here is greyed except the buttons that would start a run, and **View**.  A short pause (a patch loading) shows its line only if it lasts more than a moment.
 
 ### Going back a stage
 If a patch is at `reconstructed` and you re-run prediction, it moves back to `predicted` and the old reconstruction is invalidated. EpiCycle warns before overwriting curated work — finalized patches are protected.

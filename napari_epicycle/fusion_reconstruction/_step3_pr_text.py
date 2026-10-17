@@ -267,7 +267,8 @@ S3_LAYOUT_HELP_LINES = {
         "Joins the 2D predictions of the ticked patches into 3D cells. A "
         "patch must be predicted first."),
     "pipeline_cancel_btn": (
-        "Stops the run after the patch it is working on."),
+        "Stops a Predict after the slice it is working on, and a "
+        "Reconstruct after the patch it is working on."),
     "view_reconstructed_button": (
         "Shows the highlighted patch’s 3D cells over its image in the "
         "viewer."),
@@ -326,8 +327,10 @@ S3_RERUN_LINE = "{patch} — {status}"
 # ── The lock line (row 21) ─────────────────────────────────────────────────
 #: jobs, in Step 4's form
 S3_LOCK_PREDICT = (
-    "Predicting — Cancel stops it after the current patch. The run, the "
+    "Predicting — Cancel stops it after the current slice. The run, the "
     "ticks, the model and the settings are locked.")
+#: the line a cancelled Predict ends on (done / total are patches)
+S3_PRED_CANCELLED = "Segmentation cancelled: {done}/{total} patches done"
 S3_LOCK_RECONSTRUCT = (
     "Reconstructing — Cancel stops it after the current patch. The run, "
     "the ticks, the model and the settings are locked.")

@@ -148,6 +148,9 @@ class _FakeThread:
     def quit(self):
         pass
 
+    def isRunning(self):
+        return False
+
 
 class _FakeWorker:
     made = []
@@ -155,10 +158,14 @@ class _FakeWorker:
     def __init__(self, fn, configs):
         self.patch_started = self.patch_completed = _Sig()
         self.view_progress = self.all_completed = self.error = _Sig()
+        self.cancelled = _Sig()
         self.configs = configs
         _FakeWorker.made.append(self)
 
     def moveToThread(self, t):
+        pass
+
+    def run(self):
         pass
 
 
@@ -199,6 +206,7 @@ def test_the_block_is_built_once_at_launch_and_lands_in_the_manifest(
     c._predict_all()
     c._prediction_running = False
     assert built == [("cyto3", "cyto3")]            # once, at launch
+    assert c._serial_prediction_worker is _FakeWorker.made[-1]
     cfgs = _FakeWorker.made[-1].configs
     assert {cf["patch_name"] for cf in cfgs} == {"a.tif", "d.tif"}
     block = cfgs[0]["model_provenance"]

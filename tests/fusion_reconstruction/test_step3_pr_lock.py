@@ -117,7 +117,7 @@ def test_the_priority_is_specific_first_and_busy_last():
 def test_the_job_sentences_are_step_4s_form():
     P = _P()
     assert P.S3_LOCK_PREDICT == (
-        "Predicting — Cancel stops it after the current patch. The run, "
+        "Predicting — Cancel stops it after the current slice. The run, "
         "the ticks, the model and the settings are locked.")
     assert P.S3_LOCK_REFINE == (
         "A refine step is staged in the annotator — Accept or Discard it "

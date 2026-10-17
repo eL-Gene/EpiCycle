@@ -1,5 +1,13 @@
 # EpiCycle release notes
 
+## 0.1.2 (2026-10-17)
+
+Patch release, from the first week of people installing EpiCycle.
+
+- **Step 3, Cancel during Predict now stops after the current slice.** Before, it only stopped after the whole patch, so on a large patch the panel looked frozen for minutes after the click and then reported "Segmentation complete". The run now ends within one slice, the patch it was working on is left unprocessed, and the summary says how many patches finished, for example "Segmentation cancelled: 1/3 patches done". Cancel during Reconstruct still stops after the current patch.
+- **Step 3, model paths on a copied workspace.** A workspace copied to another computer kept the absolute paths of its chosen lateral and axial models, which no longer existed there. Step 3 then quietly picked the newest model file it could find instead. The stored paths are now rebuilt under the new workspace when the original is gone, so the model you chose is the one that runs. A copy on the same computer, where the original still exists, keeps using the original's files.
+- **Tests:** three Step 2 test files imported helpers from a file that is not part of the public repository; the helpers now live in a shared module, so the public test suite runs from a clone. The CI also builds and installs the package the way users do, so a file left out of the install cannot pass again.
+
 ## 0.1.1 (2026-10-16)
 
 Patch release. Installing 0.1.0 with Option A or Option B (the release zip) produced a package without Step 2 and without the logging helpers, and napari failed at launch with `No module named 'napari_epicycle.hitl_training_annotation'`. Two directories lacked an `__init__.py`, so the packaging step skipped them; installs from a clone (Option C) were not affected. 0.1.1 adds the two files and a test that catches this. No other change.

@@ -114,7 +114,7 @@ GOLDEN = {
 # Plain literals: (file, method or None, expected text).
 LITERALS = {
     "PIPE_CANCELLING_PRED": (S3C, "_cancel_prediction",
-                             "Cancelling... will stop after current patch "
+                             "Cancelling... will stop after current slice "
                              "completes"),
     "PIPE_CANCELLING_RECON": (S3C, "_cancel_reconstruction",
                               "Cancelling... will stop after current patch "
@@ -270,11 +270,25 @@ def _literals_in(path, method):
 
 
 _LITERAL_CONST = {
-    "PIPE_CANCELLING_PRED": lambda T: T.PIPE_CANCELLING.format(unit="patch"),
+    "PIPE_CANCELLING_PRED": lambda T: T.PIPE_CANCELLING.format(unit="slice"),
     "PIPE_CANCELLING_RECON": lambda T: T.PIPE_CANCELLING.format(unit="patch"),
     "ROW_SEGMENTING": lambda T: T.ROW_SEGMENTING,
     "ROW_RECONSTRUCTING": lambda T: T.ROW_RECONSTRUCTING,
 }
+
+
+@pytest.mark.parametrize("method,unit", [
+    ("_cancel_prediction", "slice"),
+    ("_cancel_reconstruction", "patch"),
+])
+def test_step3_cancel_formats_the_expected_unit(method, unit):
+    """Predict stops after a slice, Reconstruct after a patch."""
+    fn = _functions(S3C)[method]
+    units = [kw.value.value
+             for n in ast.walk(fn) if isinstance(n, ast.Call)
+             for kw in n.keywords
+             if kw.arg == "unit" and isinstance(kw.value, ast.Constant)]
+    assert units == [unit]
 
 
 @pytest.mark.parametrize("name", sorted(LITERALS))

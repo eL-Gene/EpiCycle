@@ -59,8 +59,8 @@ Same versions, installed by hand. Run this in an Anaconda Prompt:
 conda create -n epicycle python=3.12
 conda activate epicycle
 pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu118
-pip install -r https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.1/requirements-lock.txt
-pip install --no-deps "napari-epicycle @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.1.zip"
+pip install -r https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.2/requirements-lock.txt
+pip install --no-deps "napari-epicycle @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.2.zip"
 ```
 
 The PyTorch line is the CUDA 11.8 build we test with; any current NVIDIA driver runs it (a CUDA 13 driver works too). If you prefer a different CUDA build of the same PyTorch version, pick its line on pytorch.org and use it in place of ours; later CUDA builds are untested but expected to work. Without a GPU, use the CPU build; only the curation steps run.
@@ -69,7 +69,7 @@ The `requirements-lock.txt` line installs every other dependency at the exact ve
 
 We install u-Segment3D from the exact version we used for the paper, not from its latest release. The latest release works with EpiCycle too, but it expects a newer CUDA than the rest of our setup, and installing it alongside ours leaves two GPU libraries fighting over the same job. We have not tested that on a GPU, so for now we stay with the version we know. Updating everything to the newer CUDA is on the list.
 
-To install a later release, put its tag (`vX.Y.Z`) where the commands above say `v0.1.1`.
+To install a later release, put its tag (`vX.Y.Z`) where the commands above say `v0.1.2`.
 
 **Option C, from a clone**
 

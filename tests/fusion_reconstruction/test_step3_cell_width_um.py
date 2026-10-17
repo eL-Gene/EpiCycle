@@ -257,6 +257,9 @@ class _FakeThread:
     def start(self):
         pass
 
+    def quit(self):
+        pass
+
 
 class _FakeWorker:
     made = []
@@ -266,6 +269,7 @@ class _FakeWorker:
         sig = SimpleNamespace(connect=lambda *a, **k: None)
         self.patch_started = self.patch_completed = sig
         self.view_progress = self.all_completed = self.error = sig
+        self.cancelled = sig
         self.configs = configs
         _FakeWorker.made.append(self)
 
@@ -301,6 +305,7 @@ def test_predict_resolves_spacing_with_read_file_false_on_the_main_thread(
     c._predict_all()
     c._prediction_running = False
     (worker,) = _FakeWorker.made
+    assert c._serial_prediction_worker is worker
     cfg = {x["patch_name"]: x for x in worker.configs}
     assert cfg["A.tif"]["spacing"] == {"zyx": VOXEL_A, "source": "step1"}
     assert cfg["B.tif"]["spacing"] is None
@@ -351,6 +356,7 @@ def test_predict_opens_no_file_for_the_spacing_on_the_main_thread(
     c._predict_all()
     c._prediction_running = False
     assert _FakeWorker.made, "Predict did not launch"
+    assert c._serial_prediction_worker is _FakeWorker.made[-1]
     # one open per patch: the slice count, nothing from the spacing code
     assert opens.count("A.tif") == 1, opens.paths
     assert opens.count("B.tif") == 1, opens.paths
