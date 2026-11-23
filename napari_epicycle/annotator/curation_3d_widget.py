@@ -38,7 +38,25 @@ except Exception:  # pragma: no cover
         return ""
 
 from dataclasses import dataclass, field
+
+from napari_epicycle.annotator._isolation_bracket import (
+    DEFAULT_PIECES_CAP,
+    MODE_MULTI,
+    MODE_OFF,
+    MODE_SINGLE,
+    IsolationSnapshot,
+    OpenBracket,
+    biggest_first,
+    restore_target,
+)
+import itertools as _itertools
 import time as _time
+from collections import deque
+
+from packages.epicycle_annotator.layer_batch import (
+    batched_layer_removals,
+    qt_viewers_of as _qt_viewers_of,
+)
 from pathlib import Path as _Path
 from typing import Callable
 
@@ -53,6 +71,30 @@ def _defer_to_event_loop(fn):
 
     QTimer.singleShot(0, fn)
 
+
+
+def _nav_has_row(nav, label_id) -> bool:
+    """True when the navigator has a selectable table row for *label_id*.
+
+    A navigator that exposes no table (or a table that cannot be read) counts
+    as having the row, so the caller keeps its normal select path.
+    """
+    table = getattr(nav, "_table", None)
+    if table is None:
+        return True
+    try:
+        from qtpy.QtCore import Qt
+
+        for r in range(table.rowCount()):
+            item = table.item(r, 1)
+            if item is None:
+                continue
+            d = item.data(Qt.UserRole)
+            if d and d.get("label_id") == label_id:
+                return True
+        return False
+    except Exception:
+        return True
 
 
 import numpy as np
@@ -76,8 +118,17 @@ from qtpy.QtCore import QEvent, QObject, Qt
 
 from napari.layers import Image, Labels
 
-from napari_epicycle.annotator.native_multiview_widget import NativeMultiviewAnnotator
-from napari_epicycle.annotator.refinement_state import RefinementOpState
+from napari_epicycle.annotator.native_multiview_widget import (
+    NativeMultiviewAnnotator,
+    register_layer_hook,
+    unregister_layer_hook,
+)
+from napari_epicycle.annotator.refinement_state import (
+    ISOLATION_BLOCKING,
+    RefinementOpState,
+    StagedOp,
+)
+from napari_epicycle.annotator._staged_op_text import STAGED_WORK_OPEN
 from napari_epicycle.ui_shell.theme import (
     DESTRUCTIVE_BTN_STYLE,
     DIM_LABEL_STYLE,
@@ -98,6 +149,52 @@ from napari_epicycle.ui_shell.theme import (
 # live under docs/guides/ (an installed wheel: napari_epicycle/guides/);
 # ui_shell._guides.guides_dir() picks the folder.
 from napari_epicycle.ui_shell._guides import guides_dir as _guides_dir
+
+
+def _gc_batch(widget):
+    """One garbage collection for every layer removal inside the ``with``.
+
+    Passes the main and the three side-view Qt viewers so the closing step
+    can finish their GL contexts.  No event-loop turn inside the block.
+    """
+    return batched_layer_removals(*_qt_viewers_of(widget))
+
+
+class _StepTimer:
+    """Main-thread time of each step of one operation, printed as one line.
+
+    ``lap(name)`` closes the step that ran since the previous lap (or since
+    the timer was made); ``line(**extra)`` prints
+    ``<tag> name=ms ... key=value total=ms``.  One ``perf_counter`` call per
+    step, so it is cheap enough to stay in the code as a diagnostic.
+    """
+
+    __slots__ = ("tag", "_t0", "_last", "_steps")
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+        self._t0 = self._last = _time.perf_counter()
+        self._steps = []
+
+    def lap(self, name: str) -> None:
+        now = _time.perf_counter()
+        self._steps.append((name, (now - self._last) * 1000.0))
+        self._last = now
+
+    def line(self, **extra) -> None:
+        total = (_time.perf_counter() - self._t0) * 1000.0
+        parts = ["{}={:.0f}ms".format(n, ms) for n, ms in self._steps]
+        parts += ["{}={}".format(k, v) for k, v in extra.items()]
+        print("{} {} total={:.0f}ms".format(self.tag, " ".join(parts), total),
+              flush=True)
+
+
+def _ndisplay_of(widget):
+    """2 or 3 for a timing line; "?" when the widget has no viewer dims."""
+    dims = getattr(getattr(widget, "viewer", None), "dims", None)
+    return getattr(dims, "ndisplay", "?")
+
+
 _ANNOTATOR_GUIDES_DIR = _guides_dir()
 
 #: Brick U3: the ceiling on the wall picture, in BYTES.
@@ -122,6 +219,15 @@ _ANNOTATOR_GUIDES_DIR = _guides_dir()
 #: 64 MB of float32 is 16 M voxels, about 24x the crop measured above --
 #: rather than a ceiling the ordinary case walks into.
 WALLS_DISPLAY_BUDGET_BYTES = 64 * 1024 * 1024
+
+#: Largest number of isolated cells the 3D view draws as one small layer per
+#: cell.  Two or fewer cells keep the per-cell layers; three or more colour the
+#: main layer with one colour map instead, the way the 2D view always does.
+#: Measured live on napari 0.8: the colour-map path costs about 0.25 s at any
+#: number of cells and renders correctly in 3D; per-cell layers cost about
+#: 0.5 s per cell to build and 0.8 s per cell to tear down, so a 170-cell
+#: lasso went from minutes of freeze to 5 s.  Not a user setting.
+ISO_PROXY_MAX_CELLS = 2
 
 
 @dataclass
@@ -150,7 +256,7 @@ _ARROW_NAMES = {Qt.Key_Up: "Up", Qt.Key_Down: "Down",
 
 
 def _add_shift_nudge(event, orient, nudge_cb) -> bool:
-    """The Shift branch both side-view key filters run FIRST (grill E-M10): Shift + an arrow goes to Add's box nudge, which
+    """The Shift branch both side-view key filters run FIRST: Shift + an arrow goes to Add's box nudge, which
     answers True when it took the key.  Anything else -- no callback, no
     Shift, not an arrow, Add not active -- is False, and the filter falls
     through to its own code unchanged."""
@@ -168,6 +274,47 @@ def _add_shift_nudge(event, orient, nudge_cb) -> bool:
         return False
 
 
+def _add_marker_key_route(event, orient, key_cb) -> bool:
+    """Ctrl+Z (Undo last marker) and Esc (no object current) for Add's
+    markers, run by both side-view key filters BEFORE anything else.  The
+    filters sit on the side view's own widgets, so the key reaches them
+    only when that view has the keyboard focus -- wherever the pointer is.
+    ``key_cb(orient, name, dry)`` answers True when Add takes the key
+    (Place markers on, a box session on the Add tab); then the key is
+    consumed and never reaches napari, whose own Ctrl+Z would undo the
+    active layer's last paint.  Qt asks first whether the key is a
+    shortcut (``ShortcutOverride``): Add's key is accepted there, so the
+    key press itself follows.  Anything else is False and the filter goes
+    on unchanged -- Ctrl+Shift+Z among them, which still reaches napari
+    (the side view's active layer redoes its own last undo)."""
+    if key_cb is None or orient is None:
+        return False
+    try:
+        kind = event.type()
+        if kind not in (QEvent.KeyPress, QEvent.ShortcutOverride):
+            return False
+        key = event.key()
+        mods = event.modifiers()
+        ctrl, shift, alt, meta = (bool(mods & m) for m in (
+            Qt.ControlModifier, Qt.ShiftModifier, Qt.AltModifier,
+            Qt.MetaModifier))
+        if key == Qt.Key_Z and ctrl and not (shift or alt or meta):
+            name = "Undo"
+        elif key == Qt.Key_Escape and not (ctrl or shift or alt or meta):
+            name = "Esc"
+        else:
+            return False
+        if kind == QEvent.ShortcutOverride:
+            if key_cb(orient, name, True):
+                event.accept()
+                return True
+            return False
+        return bool(key_cb(orient, name, False))
+    except Exception as exc:
+        print(f"[ADD] marker key failed: {exc!r}")
+        return False
+
+
 class _UpDownBlocker(QObject):
     """Event filter that routes Up/Down arrows to label navigation.
 
@@ -175,17 +322,23 @@ class _UpDownBlocker(QObject):
     canvas overlays, etc.).  Up/Down triggers prev/next label navigation
     in the Label Navigator instead of scrolling subviewers.  With a
     *nudge_callback* and an *orient*, Shift + an arrow goes to Add's box
-    nudge first (see :func:`_add_shift_nudge`).
+    nudge first (see :func:`_add_shift_nudge`); with a
+    *marker_key_callback*, Ctrl+Z and Esc go to Add's markers first (see
+    :func:`_add_marker_key_route`).
     """
 
     def __init__(self, navigate_callback=None, parent=None,
-                 nudge_callback=None, orient=None):
+                 nudge_callback=None, orient=None,
+                 marker_key_callback=None):
         super().__init__(parent)
         self._navigate_cb = navigate_callback
         self._nudge_cb = nudge_callback
         self._orient = orient
+        self._marker_key_cb = marker_key_callback
 
     def eventFilter(self, obj, event):
+        if _add_marker_key_route(event, self._orient, self._marker_key_cb):
+            return True  # consume: Add's marker key
         if _add_shift_nudge(event, self._orient, self._nudge_cb):
             return True  # consume: Add moved (or refused) the box
         if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Up, Qt.Key_Down):
@@ -204,19 +357,24 @@ class _SliceStepFilter(QObject):
 
     Left/Right scroll by the step size from the spinbox, clamping to
     [0, max_slice].  Up/Down navigate to prev/next label in the
-    Label Navigator.
+    Label Navigator.  Ctrl+Z and Esc go to Add's markers first when Add
+    takes them (see :func:`_add_marker_key_route`).
     """
 
     def __init__(self, viewer_model, step_spinbox, navigate_callback=None,
-                 parent=None, nudge_callback=None, orient=None):
+                 parent=None, nudge_callback=None, orient=None,
+                 marker_key_callback=None):
         super().__init__(parent)
         self._vm = viewer_model
         self._step_sb = step_spinbox
         self._navigate_cb = navigate_callback
         self._nudge_cb = nudge_callback
         self._orient = orient
+        self._marker_key_cb = marker_key_callback
 
     def eventFilter(self, obj, event):
+        if _add_marker_key_route(event, self._orient, self._marker_key_cb):
+            return True  # consume: Add's marker key
         if event.type() != QEvent.KeyPress:
             return False
         if _add_shift_nudge(event, self._orient, self._nudge_cb):
@@ -263,6 +421,72 @@ class _SliceStepFilter(QObject):
 
 
 
+def _sweep_isolation_proxies(widget) -> int:
+    """Remove any layer named like the isolation proxy that the widget no
+    longer records (an append whose ``inserted`` hook raised).  Never raises."""
+    n = 0
+    try:
+        for lyr in list(widget.viewer.layers):
+            if str(getattr(lyr, "name", "")).startswith("_epicycle_isolation_proxy"):
+                try:
+                    lyr.visible = False
+                    widget.viewer.layers.remove(lyr)
+                    n += 1
+                except Exception:       # noqa: BLE001
+                    pass
+    except Exception:       # noqa: BLE001
+        pass
+    return n
+
+
+def _refocus_main_layer(widget) -> bool:
+    """Make the curated Labels layer the active one when none is.
+
+    A proxy or temporary layer that was active leaves ``selection.active``
+    empty when it is removed, which blanks the layer controls.  The change
+    is made with the side-view sync of the active layer switched off: that
+    sync copies the main layer's mode (locked to pan/zoom) onto the side
+    views and would knock them out of paint mode.  Never raises.
+    """
+    try:
+        layers = widget.viewer.layers
+        selection = layers.selection
+        if selection.active is not None or len(selection) > 0:
+            return False
+        main = widget._layer_by_name(layers, widget._active_labels_name)
+        if main is None:
+            return False
+        sync = getattr(getattr(widget, "sync_manager", None),
+                       "sync_active_layer", None)
+        if callable(sync):
+            with selection.events.active.blocker(sync):
+                selection.active = main
+        else:
+            selection.active = main
+        # Side views: their overlay copies were added last, so removing them
+        # leaves no active layer there either.  The main copy is selected
+        # without copying a mode.
+        for orient, attr in (("XY", "viewer_model_xy"),
+                             ("XZ", "viewer_model_xz"),
+                             ("YZ", "viewer_model_yz")):
+            try:
+                vm = getattr(widget, attr, None)
+                if vm is None:
+                    continue
+                sel = vm.layers.selection
+                if sel.active is not None or len(sel) > 0:
+                    continue
+                copy = widget._layer_by_name(
+                    vm.layers, f"{widget._active_labels_name}_{orient}")
+                if copy is not None:
+                    sel.active = copy
+            except Exception:       # noqa: BLE001
+                pass
+        return True
+    except Exception:       # noqa: BLE001
+        return False
+
+
 def _heal_render(widget, layer, *, tag: str = "") -> int:
     """Call ``widget._heal_label_render`` when present (test fakes may lack
     it); never raises.  See ``Curation3DAnnotator._heal_label_render``."""
@@ -293,6 +517,200 @@ _CONTOUR_3D_WARNING = "Contours are not displayed"
 #: filtered per layer); the entry is removed when the outline goes off or
 #: the candidate layer is removed.  ``None`` = not installed.
 _ADD_OUTLINE_FILTER = None
+
+#: Clear objects: one number per Clear, process-wide.  It keys the Clear's
+#: undo entry (``extra["add_clear_seq"]``) to the mask of what it cleared; an
+#: annotator relaunched on the same patch finds the controller's undo stack
+#: as it was, so the numbers never restart.
+_ADD_CLEAR_SEQ = _itertools.count(1)
+
+#: Spread from each marker needs the solver's compiler (numba): asked ONCE
+#: per process, on a worker (the import alone is about a second).  ``ok``:
+#: ``None`` = not known yet (Spread is offered), ``True`` / ``False`` once
+#: asked; ``why`` (when False): "missing" (numba is not installed) or
+#: "cache" (its cache folder cannot be written).  A Preview whose set-up
+#: refuses sets it too, so later Previews stop retrying the set-up.
+_ADD_NUMBA = {"ok": None, "why": None}
+#: the check's thread and worker, held HERE (never on a page): a page
+#: closed before the answer neither waits for it on the main thread nor
+#: drops a running thread; the answer lands in ``_ADD_NUMBA`` whatever page
+#: is open.  Kept for the process once started (one tiny thread).
+_ADD_NUMBA_JOB = {"thread": None, "worker": None}
+
+#: The Add page's tissue-outline layer; its side-view copies are
+#: ``<name>_XY`` / ``_XZ`` / ``_YZ`` (the subviewer manager's naming).
+_ADD_OUTLINE_LAYER_NAME = "guide_add_outline"
+
+#: The side copies' look: in a 2D slice the outline is drawn over the
+#: stain, where the main view's additive 0.3 cyan vanishes on bright stain
+#: (it clips to white).  So each side copy paints cyan over the slice at
+#: half opacity (``translucent``) and its zero is transparent: only the
+#: outline's own pixels are painted, and they show on bright stain too.
+_ADD_OUTLINE_SIDE_LOOK = dict(opacity=0.5, blending="translucent")
+_ADD_OUTLINE_SIDE_CMAP_NAME = "epicycle_add_outline_side"
+
+
+def _add_outline_side_colormap():
+    """Cyan with a transparent zero (0 -> clear, 1 -> cyan)."""
+    from napari.utils.colormaps import Colormap
+
+    return Colormap(colors=[[0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 1.0, 1.0]],
+                    name=_ADD_OUTLINE_SIDE_CMAP_NAME,
+                    display_name="cyan (clear zero)")
+
+
+def _add_numba_answered(outcome) -> None:
+    """The check's answer (``(key, engine sentence)``), on the main thread."""
+    res = getattr(outcome, "result", None)
+    if not res:
+        return
+    key, says = (tuple(res) + ("", ""))[:2]
+    _ADD_NUMBA["ok"] = key == "ok"
+    _ADD_NUMBA["why"] = None if key == "ok" else str(key)
+    if key == "ok":
+        print("[ADD] Spread from each marker can run here")
+    else:
+        print("[ADD] Spread from each marker CANNOT run here ({}): {}".format(
+            key, says))
+
+
+def _add_numba_failed(message) -> None:
+    print(f"[ADD] solver check failed: {message}")
+    _ADD_NUMBA["ok"] = False
+    _ADD_NUMBA["why"] = "missing"
+
+
+#: The first direct colour map drawn for a label data type costs about
+#: 1.6 s on the main thread: napari compiles (numba) the loop that turns
+#: label ids into texture values, once per data type, array rank and layout.
+#: The Add result is drawn with a direct colour map, so the first Preview
+#: paid it.  The compile is done once per label data type (``dtypes``) on a
+#: plain thread the module keeps, started at the first Add box -- a box is
+#: placed seconds before any Preview can finish.  Nothing waits for it
+#: (Close box, Done, a close); it holds the interpreter lock in stretches,
+#: so the page may stutter while it runs.  napari's loops are numba
+#: ``parallel=True`` kernels, and numba's ``workqueue`` threading layer
+#: aborts the process when two Python threads run them at once, so the
+#: warm-up runs only when a thread-safe layer (tbb or omp) is certain
+#: (``safe``: the answer of ``_add_cmap_warm_safe``, asked once).
+_ADD_CMAP_WARM = {"thread": None, "dtypes": set(), "safe": None}
+
+#: numba's thread-safe threading layers and the module each one loads
+_ADD_NUMBA_SAFE_POOLS = {"tbb": "tbbpool", "omp": "omppool"}
+
+
+def _add_numba_pool_loadable(name) -> bool:
+    """Can numba load its *name* threading layer here?  The same test numba
+    runs when it picks a layer: tbb must also be a recent enough library.
+    Loading the module starts no thread."""
+    import importlib
+
+    from numba.np.ufunc import parallel as _par
+
+    try:
+        if name == "tbb":
+            _par._check_tbb_version_compatible()
+        importlib.import_module("numba.np.ufunc." + _ADD_NUMBA_SAFE_POOLS[name])
+        return True
+    except ImportError:
+        return False
+
+
+def _add_cmap_warm_safe():
+    """``(ok, why)``: may a second thread run napari's parallel numba
+    loops while the main thread draws?  Only when numba's threading layer
+    is tbb or omp, the two thread-safe ones.
+
+    Once numba has picked its layer, ``numba.threading_layer()`` names it.
+    Before, the choice numba WILL make is worked out the way numba makes it
+    (``NUMBA_THREADING_LAYER`` / ``numba.config.THREADING_LAYER``, then
+    ``THREADING_LAYER_PRIORITY`` for ``default``), testing each candidate
+    with the import numba itself uses, without starting any layer: a
+    candidate list that reaches workqueue, an unknown setting or any error
+    means no."""
+    try:
+        import sys
+
+        from numba.core import config
+        from numba.np.ufunc import parallel as _par
+    except Exception as exc:  # noqa: BLE001
+        return False, "numba is not importable ({!r})".format(exc)
+    try:
+        if getattr(_par, "_is_initialized", False):
+            layer = str(_par.threading_layer())
+            if layer in _ADD_NUMBA_SAFE_POOLS:
+                return True, "numba's threading layer is {}".format(layer)
+            return False, ("numba's threading layer is {}, which is not "
+                           "thread-safe".format(layer))
+        t = str(config.THREADING_LAYER).lower()
+        if t in ("tbb", "omp", "workqueue"):
+            order = [t]
+        elif t == "default":
+            order = [str(b).lower() for b in config.THREADING_LAYER_PRIORITY]
+        elif t == "safe":
+            order = ["tbb"]
+        elif t == "threadsafe":
+            order = ["tbb", "omp"]
+        elif t == "forksafe":
+            order = (["tbb"]
+                     + ([] if sys.platform.startswith("linux") else ["omp"])
+                     + ["workqueue"])
+        else:
+            return False, "numba's threading layer {!r} is unknown".format(t)
+        for name in order:
+            if name == "workqueue":
+                return False, ("numba would use its workqueue threading "
+                               "layer, which is not thread-safe")
+            if name in _ADD_NUMBA_SAFE_POOLS and _add_numba_pool_loadable(name):
+                return True, "numba will use its {} threading layer".format(
+                    name)
+        return False, "no thread-safe numba threading layer can load"
+    except Exception as exc:  # noqa: BLE001
+        return False, "the numba threading-layer check failed ({!r})".format(
+            exc)
+
+
+def _add_cmap_warm_body(cast, dtype, cast_auto=None) -> None:
+    """Run napari's direct-colour-map texture cast on tiny arrays of the
+    session's label type: every rank and layout a draw passes (the 3D main
+    view; the 2D side views, C, Fortran and both strided layouts), at the
+    texture size an Add map needs (its 49 cyclic colours, faint or opaque,
+    stay far under 254); the cyclic map's cast on the 2D layouts (a side
+    copy built while the outline is on is first drawn in napari's own
+    colours); and the cyclic lookup the row swatches use."""
+    import time
+
+    import numpy as np
+    from napari.utils.colormaps import DirectLabelColormap, label_colormap
+
+    t0 = time.perf_counter()
+    try:
+        dt = np.dtype(dtype)
+        clear = np.zeros(4, np.float32)
+        cyc = label_colormap(49, seed=0.5)
+        cyc.map(np.arange(1, 9, dtype=np.intp))
+        small = {None: clear, 0: clear}
+        for i in range(1, 201):
+            small[i] = np.asarray(cyc.map(np.array([i], np.intp))[0],
+                                  np.float32)
+        cm = DirectLabelColormap(color_dict=small)
+        base = np.arange(1, 17, dtype=dt)
+        sq = base.reshape(4, 4)
+        flat = (
+            base[:8].reshape(2, 4),                        # a 2D slice
+            np.asfortranarray(base[:8].reshape(2, 4)),     # a transposed one
+            sq[:, ::2],                                    # strided, C-like
+            np.asfortranarray(sq)[::2, :],                 # strided, F-like
+        )
+        for a in (base[:8].reshape(2, 2, 2),) + flat + (base[:8],):
+            cast(a, cm)
+        if cast_auto is not None:
+            for a in flat:
+                cast_auto(a, cyc)
+        print("[ADD-PERF] colour warm-up {:.0f}ms dtype={} (off the main "
+              "thread)".format((time.perf_counter() - t0) * 1000.0, dt))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ADD] colour warm-up failed: {exc!r}")
 
 
 def _add_outline_filter(on: bool) -> None:
@@ -499,6 +917,22 @@ def _safe_attr(obj, name, default=None):
     except Exception:
         return default
 
+
+def _only_touching_unticked(adv) -> int:
+    """How many rows are unticked when the touching rule unticked them
+    all and the user has unticked nothing else; 0 otherwise.
+
+    Preview then refuses with "tick one of the touching markers", not
+    "you unticked every marker" -- the user unticked nothing.  Never
+    raises: a panel without the marker list answers 0.
+    """
+    try:
+        touching = set(adv._touching_ids_in_list() or ())
+        unticked = {int(i) for i in (adv.get_unticked_marker_ids() or ())}
+    except Exception:
+        return 0
+    return len(touching) if touching and unticked == touching else 0
+
 #: The sentences S1 holds only because the GATE put them there; once the
 #: gate's condition clears it may replace them (B1b audit C-L2).
 _REFINE_GATE_SENTENCES = frozenset((REFINE_PICK_CHANNEL,
@@ -515,6 +949,78 @@ def _qobject_is_deleted(obj) -> bool:
         return bool(_sip.isdeleted(obj))
     except Exception:
         return False
+
+
+def _from_sender(owner, sender, handler):
+    """``handler`` as the slot for one of ``sender``'s signals (a worker or
+    its QThread): while it runs, ``owner._signal_sender()`` names ``sender``.
+
+    Never Qt's ``sender()`` for this.  For a Python slot PyQt answers
+    ``sender()`` from ONE pointer shared by the whole process; a worker's
+    ``run`` (``started -> worker.run``) is a Python slot in the WORKER
+    thread, which saves that pointer when the thread starts and writes it
+    back when ``run`` returns -- just after ``finished`` is emitted, so a
+    finish handler that lets the worker thread in (a ``print`` does) reads
+    whatever was the sender at thread start: an object with no token (the
+    stale gate abstains) or a deleted one (an access violation inside
+    ``sender()``).
+
+    Everything the slot holds is WEAK: the sender (a strong one would keep
+    every worker, and the arrays its job holds, alive), the owner and the
+    handler (PyQt never frees the slot of a signal whose sender was moved
+    to a thread, so a strong owner kept every closed annotator alive, one
+    more per relaunch, and made owner -> worker -> slot -> owner a cycle
+    the collector could clear while a queued finish was pending).  The tag
+    also keeps the token the sender carries now, so a sender gone by the
+    time its slot runs still answers with it.  The slot does nothing once
+    the owner or its handler is gone, or the owner widget is deleted, as a
+    bound method would.  PyQt itself holds the slot (a non-method callable
+    is held strongly).
+
+    The slot passes EVERY signal argument on: PyQt's retry with fewer
+    arguments (for a handler that takes fewer than the signal sends) does
+    not reach through it, so each wrapped handler must accept its signal's
+    full argument list (pinned by a test).
+    """
+    import functools
+    import weakref
+
+    def _weak(obj):
+        try:
+            return weakref.ref(obj)
+        except TypeError:           # a test fake without weak references
+            return (lambda o: (lambda: o))(obj)
+
+    try:
+        h_ref = weakref.WeakMethod(handler)
+    except TypeError:               # not a bound method (a test's function)
+        h_ref = (lambda f: (lambda: f))(handler)
+    tag = (_weak(sender), getattr(sender, "_epicycle_token", None))
+    return functools.partial(_call_from_sender, _weak(owner), tag, h_ref)
+
+
+def _call_from_sender(owner_ref, tag, handler_ref, *args):
+    """Run the handler with its owner's current sender set to the tag
+    (restored after, so a nested call keeps its own).  Nothing runs when
+    the owner or the handler is gone, or the owner widget is deleted."""
+    owner = owner_ref()
+    handler = handler_ref()
+    if owner is None or handler is None or _qobject_is_deleted(owner):
+        return None
+    prev = getattr(owner, "_signal_from", None)
+    owner._signal_from = tag
+    try:
+        return handler(*args)
+    finally:
+        owner._signal_from = prev
+
+
+def _signal_sender_gone(owner) -> bool:
+    """True inside a wired slot whose sender is already gone: a late answer
+    of a worker the page dropped (its replacement, if any, is the live
+    one, so this answer is never the current one)."""
+    tag = getattr(owner, "_signal_from", None)
+    return tag is not None and tag[0]() is None
 
 
 def _afw_pair_alive(dock, widget) -> bool:
@@ -536,6 +1042,379 @@ def _afw_pair_alive(dock, widget) -> bool:
         return False
 
 
+def _show_dock_of(widget) -> None:
+    """Show (when hidden) and raise the ``QDockWidget`` holding ``widget``.
+
+    The Advanced Features dock's X only hides it, so a door that brings one
+    of its tabs forward shows the dock too.  A widget outside a dock (or a
+    test fake with no Qt parent) is left alone; never raises.
+    """
+    try:
+        from qtpy.QtWidgets import QDockWidget
+
+        node = widget.parent() if hasattr(widget, "parent") else None
+        while node is not None and not isinstance(node, QDockWidget):
+            node = node.parent()
+        if node is None:
+            return
+        if node.isHidden():
+            node.show()
+        node.raise_()
+    except Exception as exc:  # noqa: BLE001 -- never raise into a refusal
+        print(f"[STAGED-OP] could not show the Advanced dock: {exc!r}")
+
+
+def _enable_if_alive(button, enabled) -> None:
+    """``button.setEnabled(enabled)``; a button that is gone (None while the
+    widget closes) is skipped."""
+    if button is not None:
+        button.setEnabled(enabled)
+
+
+def _iso_call(obj, name, *args, **kwargs):
+    """Call an isolation-bracket helper when *obj* has it (None otherwise), so
+    a minimal test double that lacks the bracket keeps working."""
+    fn = getattr(obj, name, None)
+    if fn is None:
+        return None
+    return fn(*args, **kwargs)
+
+
+#: "The controller has not said yet" for the plot colours (None means: the
+#: Colour box is off, so napari's own colours apply).
+_PLOT_CMAP_UNSET = object()
+
+
+def _resolve_plot_cmap(widget):
+    """The plot's ``{id: rgba}`` (None = Colour box off).  When the
+    controller has not said yet, ask it once through the pull callback."""
+    plot = getattr(widget, "_plot_cmap", None)
+    if plot is _PLOT_CMAP_UNSET:
+        pull = getattr(widget, "_plot_cmap_pull_cb", None)
+        plot = None
+        if callable(pull):
+            try:
+                plot = pull()
+            except Exception:       # noqa: BLE001
+                plot = None
+        try:
+            widget._plot_cmap = plot
+        except Exception:           # noqa: BLE001
+            pass
+    return plot
+
+
+def _plot_full_colormap(widget, extra_ids=()):
+    """A fresh colour map for the whole volume in the plot's colours (napari's
+    own cyclic colours when the Colour box is off).  Never a shared object."""
+    import numpy as np
+    from napari.utils.colormaps import DirectLabelColormap, label_colormap
+
+    plot = _resolve_plot_cmap(widget)
+    if not plot:
+        return label_colormap(49, seed=0.5)
+    hidden = np.array([0, 0, 0, 0], dtype=np.float32)
+    color_dict = {None: hidden, 0: hidden}
+    ids = set(int(i) for i in plot) | set(int(i) for i in extra_ids)
+    color_dict.update(_plot_colour_for(widget, ids))
+    return DirectLabelColormap(color_dict=color_dict)
+
+
+def _plot_colour_for(widget, ids):
+    """RGBA (float32) per id in *ids*, as ``{id: rgba}``.
+
+    The QC plot's colour wins whenever the controller has given one; an id
+    the plot does not colour (a cell painted a moment ago) and every id when
+    the Colour box is off take napari's own cyclic colour, so a new cell is
+    visible at once.  A plain function, not only a method, so a minimal test
+    double can call it.
+    """
+    import numpy as np
+
+    ids_sorted = sorted(int(x) for x in ids)
+    arr = np.asarray(ids_sorted, dtype=np.intp)
+    plot = _resolve_plot_cmap(widget)
+    cyc = getattr(widget, "_cached_label_colormap", None)
+    if cyc is None:
+        from napari.utils.colormaps import label_colormap
+        cyc = label_colormap(49, seed=0.5)
+        try:
+            widget._cached_label_colormap = cyc
+        except Exception:           # noqa: BLE001
+            pass
+    out = np.zeros((arr.size, 4), dtype=np.float32)
+    if arr.size:
+        out[:] = cyc.map(arr).astype(np.float32)
+    if plot:
+        for i, lid in enumerate(ids_sorted):
+            c = plot.get(lid)
+            if c is not None:
+                out[i] = np.asarray(c, dtype=np.float32)
+    return {lid: out[i] for i, lid in enumerate(ids_sorted)}
+
+
+def _add_candidate_colormaps(widget, ids, ticked):
+    """The Add result's two colour maps, ``(main, side)``.
+
+    Every object is drawn in its row swatch's colour (napari's own cyclic
+    colours, the map ``_plot_colour_for`` caches); a ticked object is opaque
+    in both.  An unticked one is not listed in ``main``, so it takes the
+    clear ``None`` colour -- napari's 3D labels drawing stops at the first
+    visible label, so a faint object would hide the ticked ones behind and
+    inside it; a shorter map is also cheaper to build and to draw -- and it
+    is faint (``ADD_UNTICKED_ALPHA``) in ``side``, the three side views'
+    map, which lists every id.  Zero and unknown ids are clear; ``None`` is
+    clear, not napari's default black, so even an empty ``main`` keeps the
+    layer in direct mode.  Two fresh objects every call (the property sync
+    compares colour maps by identity)."""
+    import numpy as np
+    from napari.utils.colormaps import DirectLabelColormap
+
+    from packages.epicycle_annotator.add_preview import ADD_UNTICKED_ALPHA
+
+    ids_sorted = sorted({int(x) for x in ids} - {0})
+    on = {int(x) for x in ticked}
+    cyc = getattr(widget, "_cached_label_colormap", None)
+    if cyc is None:
+        from napari.utils.colormaps import label_colormap
+
+        cyc = label_colormap(49, seed=0.5)
+        try:
+            widget._cached_label_colormap = cyc
+        except Exception:           # noqa: BLE001
+            pass
+    rgba = np.zeros((len(ids_sorted), 4), np.float32)
+    if ids_sorted:
+        rgba[:] = cyc.map(np.asarray(ids_sorted, dtype=np.intp)).astype(
+            np.float32)
+    clear = np.zeros(4, np.float32)
+    main = {None: clear, 0: clear}
+    side = {None: clear, 0: clear}
+    for k, lid in enumerate(ids_sorted):
+        if lid in on:
+            c = rgba[k].copy()
+            c[3] = 1.0
+            main[lid] = side[lid] = c
+            continue
+        s = rgba[k].copy()
+        s[3] = float(ADD_UNTICKED_ALPHA)
+        side[lid] = s
+    return (DirectLabelColormap(color_dict=main),
+            DirectLabelColormap(color_dict=side))
+
+
+def _add_ball_colormap():
+    """The click balls' colour map: napari's own 49 cyclic object colours
+    (a ball's value ``ball_value(id)`` draws its object's colour) and one
+    more value, ``ADD_BALL_APART_VALUE``, in its own red -- a seed refused
+    as not touching its object.  Still cyclic, so the 49 colours are drawn
+    exactly as before."""
+    import numpy as np
+    from napari.utils.colormaps import CyclicLabelColormap, label_colormap
+
+    from packages.epicycle_annotator.add_preview import (
+        ADD_BALL_APART_RGBA,
+        ADD_BALL_APART_VALUE,
+    )
+
+    cyc = label_colormap(49, seed=0.5)
+    colors = np.asarray(cyc.colors, np.float32)
+    assert len(colors) == ADD_BALL_APART_VALUE, len(colors)
+    red = np.asarray([ADD_BALL_APART_RGBA], np.float32)
+    return CyclicLabelColormap(colors=np.vstack([colors, red]),
+                               seed=cyc.seed, background_value=0)
+
+
+def _add_shell(ball):
+    """The ball's outer voxels (a hollow ball); a ball too small to have
+    an inside is drawn whole."""
+    from scipy import ndimage as ndi
+
+    inner = ndi.binary_erosion(ball)
+    shell = ball & ~inner
+    return shell if shell.any() else ball
+
+
+def _one_label_colormap(widget, label_id):
+    """A colour map that shows exactly *label_id*, in the plot's colour."""
+    import numpy as np
+    from napari.utils.colormaps import DirectLabelColormap
+
+    hidden = np.array([0, 0, 0, 0], dtype=np.float32)
+    colour = _plot_colour_for(widget, [int(label_id)])[int(label_id)]
+    return DirectLabelColormap(
+        color_dict={None: hidden, 0: hidden, int(label_id): colour})
+
+
+def _write_main_one_label_map(self, main_layer, cmap) -> None:
+    """Give the (hidden) main layer the one-cell map the side views wear,
+    so a stray show of main during a one-cell isolation draws only that
+    cell.  The map main wore is kept as the one to put back."""
+    if main_layer is None:
+        return
+    if getattr(self, "_pre_isolation_colormap", None) is None:
+        self._pre_isolation_colormap = main_layer.colormap
+    from contextlib import nullcontext
+    sync = getattr(self, "sync_manager", None)
+    ctx = (sync.suppress_property_sync()
+           if sync is not None and hasattr(sync, "suppress_property_sync")
+           else nullcontext())
+    with ctx:
+        main_layer.colormap = cmap
+
+
+def _iso_user_hid(self) -> bool:
+    """True when the isolation's proxy layers exist and are all hidden (the
+    hide key was pressed), so a change of cell keeps them hidden."""
+    layers = []
+    proxy = getattr(self, "_isolation_proxy_layer", None)
+    if proxy is not None:
+        layers.append(proxy)
+    layers.extend((getattr(self, "_multi_label_proxy_layers", None) or {}).values())
+    return bool(layers) and not any(
+        bool(getattr(layer, "visible", True)) for layer in layers)
+
+
+def _show_side_label_layers(self) -> None:
+    """Make the three side views' labels layers visible."""
+    try:
+        from napari.layers import Labels
+        sync = getattr(self, "sync_manager", None)
+        name = getattr(self, "_active_labels_name", "")
+        if sync is None or not name:
+            return
+        base = sync._base_label_name(name)
+        for vm in (sync.viewer_model_xy, sync.viewer_model_xz,
+                   sync.viewer_model_yz):
+            for layer in vm.layers:
+                if (isinstance(layer, Labels)
+                        and sync._base_label_name(layer.name) == base):
+                    layer.visible = True
+    except Exception as exc:        # noqa: BLE001
+        print(f"[ISO-COLOUR] side views not shown: {exc!r}", flush=True)
+
+
+def _sync_single_cell_views(self, main_layer, label_id, *, hidden=False,
+                            write_main=True) -> None:
+    """Every single-cell entry (a new proxy, a restore after an edit, a row
+    change) gives the side views the cell's own colour map and the
+    show-selected flag.  A map left over from a fragment or an earlier cell
+    would draw nothing.  *hidden* keeps the views hidden when the isolation
+    was hidden; *write_main* also gives the hidden main layer the map."""
+    try:
+        one = _one_label_colormap(self, label_id)
+        if write_main:
+            _write_main_one_label_map(self, main_layer, one)
+        push = getattr(self, "_propagate_colormap_to_subviewers", None)
+        if callable(push):
+            push(one)
+    except Exception as exc:        # noqa: BLE001
+        print(f"[ISO-COLOUR] side-view colour not set: {exc!r}", flush=True)
+    show = getattr(self, "_propagate_show_selected_label", None)
+    if callable(show):
+        if hidden:
+            show(True, label_id=label_id, keep_hidden=True)
+        else:
+            show(True, label_id=label_id)
+
+
+def _advance_clearing_selection(nav):
+    """Move the navigator to the next triage row; True when one took over.
+
+    The old selection is cleared first, without telling anyone: with several
+    rows still selected the next row would arrive as a multi-selection and
+    the isolation of one cell would be refused.
+    """
+    clear = getattr(nav, "clear_selection_silently", None)
+    if clear is not None:
+        try:
+            clear()
+        except Exception as exc:  # noqa: BLE001 - a deleted widget
+            print(f"[ISO-BRACKET] clear selection raised {exc!r}", flush=True)
+    return bool(nav.select_next_triage())
+
+
+def _iso_mark(ann) -> tuple:
+    """What the 3D view isolates right now, to compare after an advance."""
+    live = _iso_call(ann, "_iso_live_ids")
+    active = bool(getattr(ann, "_isolation_active", False))
+    selected = None
+    if active:
+        # 2D isolation has no proxies: the shader hides all but the main
+        # layer's selected label, so that label is part of the mark.
+        try:
+            layer = _iso_call(ann, "_layer_by_name", ann.viewer.layers,
+                              ann._active_labels_name)
+            selected = getattr(layer, "selected_label", None)
+        except Exception:      # noqa: BLE001 - a fake without a layer
+            selected = None
+    return (frozenset(live or ()),
+            active,
+            getattr(ann, "_isolation_proxy_label_id", None),
+            frozenset(getattr(ann, "_isolation_label_set", None) or ()),
+            selected)
+
+
+def _restore_after_advance(ann, advanced, before=None) -> bool:
+    """Whether an edit's bracket must be restored after the auto-advance.
+
+    True when there was no next row, when a next row was selected but nothing
+    ended up isolated (else the main view stays blank), and when the isolation
+    is exactly what it was before the advance (*before*, taken by
+    ``_iso_mark``): the edit's own cell, forced into view by Refine Further,
+    is still showing and the next row isolated nothing new.  When the next
+    row is the very cell that was already isolated, the snapshot is restored
+    too (nothing new happened); that is accepted.
+    """
+    if not advanced:
+        return True
+    live = _iso_call(ann, "_iso_live_ids")
+    if not (live or getattr(ann, "_isolation_active", False)):
+        print("[ISO-BRACKET] advance isolated nothing - restoring", flush=True)
+        return True
+    if before is not None and _iso_mark(ann) == before:
+        print("[ISO-BRACKET] advance left the isolation unchanged - "
+              "restoring", flush=True)
+        return True
+    return False
+
+
+def _reshape_iso_sets(original_id, new_ids, record):
+    """(consumed, created) for a Reshape Accept.
+
+    With a guided commit record the original is consumed only when the record
+    says it was superseded.  Without one (a hand-painted split) the original
+    always goes.  ``created`` keeps ``new_ids`` order, minus the original.
+    """
+    original_id = int(original_id)
+    if record is not None:
+        consumed = (original_id,) if record.get("superseded") else ()
+        created = tuple(int(i) for i in new_ids if int(i) != original_id)
+    else:
+        consumed = (original_id,)
+        created = tuple(int(i) for i in new_ids)
+    return consumed, created
+
+
+
+def _frag_layers(widget) -> list:
+    """The accepted fragment edits of the open Reshape, oldest first."""
+    layers = getattr(widget, "_frag_undo_layers", None)
+    if layers is None:
+        layers = []
+        widget._frag_undo_layers = layers
+    return layers
+
+
+def _spacing_source_of(annotator):
+    """The ``spacing_source`` label for the ``[CONTOUR]`` line, or ``None``
+    when the annotator cannot say.  Never raises."""
+    try:
+        return annotator._refine_spacing_source()
+    except Exception:
+        return None
+
+
 class Curation3DAnnotator(NativeMultiviewAnnotator):
     """Multiview annotator specialized for 3D label curation.
 
@@ -543,8 +1422,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     draw + contour interpolation + focused refinement navigation.
     """
 
-    # --- Reshape R1: CLASS-level defaults for the guided-split flags ------
-    # These must resolve without touching instance state.  `_refinement_op_active`
+    # --- CLASS-level defaults for the guided-split flags ------------------
+    # These must resolve without touching instance state.  `staged_kinds()`
     # is read by the navigator's isolation gate, and PyQt6 raises RuntimeError
     # ("super-class __init__() was never called"), NOT AttributeError, for a
     # missing attribute on a QObject whose C++ side is not constructed -- so
@@ -576,11 +1455,26 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._interp_label_id = None   # label ID that was interpolated
         self._interp_running = False   # guard against concurrent Preview clicks
         self._interp_refine_mode = False  # True when refining after interpolation
+        # The open isolation bracket of the edit that is running (Reshape,
+        # Refine Further), or None.
+        self._iso_bracket = None
 
         # Split state — mirrors interpolation state pattern
         self._split_snapshot = None      # ROI crop snapshot before seed painting
         self._split_roi = None           # tuple of slices for the snapshot region
-        # --- Reshape R1: guided Split ----------------
+        # Refine Further on reshape pieces: the (roi, snapshot) of every
+        # fragment edit accepted so far, oldest first.  Accept all hands
+        # them to the one undo entry of the whole Reshape.
+        self._frag_undo_layers = []
+        # Bumped each time a draw snapshot is taken: the undo entries of
+        # one drawing session carry its number, so Clear Edits only takes
+        # back the entries of its own session.
+        self._draw_session = 0
+        # The plane (roi, copy) the paint stroke in flight is about to
+        # write, and whether the new-label hook already carried it.
+        self._stroke_plane = None
+        self._stroke_plane_consumed = False
+        # --- guided Split ----------------------------
         # `_reshape_active` is THE gate.  It is set at Start from the two
         # pickers and is False for every legacy split, so every guarded
         # branch below is inert on the path users already know.
@@ -718,6 +1612,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_box = None             # roi_box.BoxRec (center+size, ZYX)
         self._add_roi = None             # slices-tuple for the box ROI
         self._add_candidate_layer = None  # full-volume temp Labels (candidate)
+        self._add_drawn_roi = None       # the box the candidate shows a result in
         self._add_box_shapes = None      # legacy ref (kept null; see box_overlay)
         self._add_box_overlay = None     # vispy Line overlay (3D wireframe + subviewer rects)
         self._add_last_size = None        # sticky box size (sz,sy,sx) across Place Box
@@ -733,6 +1628,33 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._on_add_undo_session_cb = None  # controller undo-N-commits callback
         self._add_threshold_value = None  # current threshold (channel value space)
         self._add_box_timer = None       # debounce timer for box recompute
+        self._add_ball_timer = None      # debounce timer for a Ball change
+        # "Update as I click": the tick (kept per workspace), the quiet
+        # before a run, a change while a run is in flight (one more run
+        # follows), the run in flight being a live one, its stage, the
+        # settings epoch (a finish launched on other settings is stale) and
+        # an Accept waiting for the last change to be drawn
+        self._add_live_enabled = True
+        self._add_live_timer = None
+        self._add_live_dirty = False
+        self._add_live_run = False
+        self._add_live_stage = None
+        self._add_settings_epoch = 0
+        self._add_launch_settings_epoch = 0
+        self._add_accept_pending = False
+        # a live answer drawn by the thread in flight; a Preview pressed
+        # during a live run (it runs the manual way if live cannot follow);
+        # the rows the user ticked / unticked this box (kept by id), the
+        # ticks the list last showed, and "the list is being filled"
+        self._add_live_landed = False
+        self._add_manual_owed = False
+        self._add_unticked_ids = set()
+        self._add_user_ticked_ids = set()
+        self._add_last_checked = set()
+        self._add_filling = False
+        self._add_balls_radius = None    # the radius (voxels) last drawn
+        # the box the user had before a whole patch: S / M / L go back to it
+        self._add_box_before_whole = None
         # Add rebuild B2.3: the preview worker, the one
         # box-info worker, Stop as a state, the transient S1 sentence.
         self._add_busy = False
@@ -763,8 +1685,74 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_click_markers = []
         self._add_markers_base = None
         self._add_absorbed_ids = set()     # B-M1: the last Preview's
+        # {reserved id: "dim" | "small"}: the markers the last Preview made
+        # nothing from for another reason (set and cleared with the above)
+        self._add_marker_why = {}
+        # {(z, y, x): "dim" | "kept"}: what each seed of an object grown
+        # from several markers made at the last result (a refused, "apart"
+        # seed is in ``_add_apart_seeds``, by record, the one store for it)
+        self._add_seed_why = {}
         self._add_rebase_note = None       # B-M2: a pending re-base
         self._add_volume_max = None        # B-L3: (id(shared), max)
+        # Clear objects: the count's worker and phase ("counting" /
+        # "clearing"), its stamp and pending plan, every Add write since
+        # (stale guard), the highest id a Clear removed on this patch and
+        # run, what each Clear zeroed (keyed by its undo entry's number),
+        # the Clears of this Add session, and "a Clear in this box"
+        self._add_clear_thread = None
+        self._add_clear_worker = None
+        self._add_clear_token = 0
+        self._add_clear_phase = None
+        self._add_clear_pending = None
+        self._add_clear_stamp = None
+        self._add_clear_n = 0
+        self._add_clear_t0 = None
+        self._add_volume_epoch = 0
+        self._add_clear_floor = 0
+        self._add_clear_records = {}
+        self._add_session_clear_seqs = []
+        self._add_clears_above = []
+        self._add_box_cleared = False
+        # Inside each cell's patch levels {key: PatchLevels}, and the box
+        # being the whole patch (Nuclei)
+        self._add_levels_cache = {}
+        # ... and the reason the levels refused a channel {key: sentence}:
+        # per levels key, never the run's refusal
+        self._add_levels_errors = {}
+        self._add_whole_patch = False
+        # Cells: the tissue outline measured once per patch ({"key",
+        # "outline", "shell"}) and the reason a key could not be measured,
+        # the wall picture of the whole patch ({"key", "elev"}), what each
+        # Clear zeroed (packed bits, keyed by its undo entry's number), the
+        # key of the outline drawn in the main view, the growth engine's
+        # first-run line, the solver check's worker
+        self._add_outline_cache = None
+        self._add_outline_errors = {}
+        self._add_elev_cache = None
+        # a small box's own wall picture ({"key", "elev"}), kept per box
+        # and wall settings for any Cells box at or under the live limit --
+        # the tick on or off, whatever the marker source (the walls do not
+        # depend on the markers; the drawn result is the same)
+        self._add_box_elev_cache = None
+        # Nuclei ▸ the markers on a whole patch, run as you click: the
+        # prepared patch and its latest solution ({"key", "stage",
+        # "solution"}), the solution drawn now, and the launch's key
+        self._add_marker_cache = None
+        self._add_drawn_marker_solution = None
+        self._add_launch_marker_key = None
+        # Cells ▸ Click markers on a box at or under the live limit: the
+        # click-by-click fill's prepared box ({"key", "stage"}, or the box
+        # remembered as one the full run answers), handed to a run and
+        # taken back when it ends; the launch's key and the holder it took
+        self._add_cells_stage = None
+        self._add_launch_cells_key = None
+        self._add_launch_cells_holder = None
+        self._add_launch_cells_sig = None
+        self._add_drawn_cells_sig = None
+        self._add_clear_masks = {}
+        self._add_outline_layer_key = None
+        self._add_outline_layer = None
+        self._add_warm_text = None
         self._add_info_spacing = None      # A-L3
         self._add_markers_epoch = 0
         self._add_launch_markers_epoch = 0
@@ -870,6 +1858,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._on_discard_garbage_cb = None
         self._on_merge_cb = None
         self._on_isolation_cleared_cb = None
+        # The QC plot's colour per label ({id: RGBA}), pushed by the
+        # controller; None = the Colour box is off.  Until the controller
+        # says, the pull callback asks it once.
+        self._plot_cmap = _PLOT_CMAP_UNSET
+        self._plot_cmap_pull_cb = None
 
         # Navigator state — floating Label Navigator widget
         self._navigator_widget = None
@@ -937,7 +1930,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """
         s = self._refine_state
         # Interpolation family
-        s.interp_active = bool(getattr(self, "_interp_running", False))
+        # A staged preview (snapshot held) or refine mode counts as active
+        # even when nothing is computing.
+        s.interp_active = bool(
+            getattr(self, "_interp_running", False)
+            or getattr(self, "_interp_snapshot", None) is not None
+            or getattr(self, "_interp_refine_mode", False)
+        )
         s.interp_refine_mode = bool(getattr(self, "_interp_refine_mode", False))
         s.interp_snapshot = getattr(self, "_interp_snapshot", None)
         s.interp_label_id = getattr(self, "_interp_label_id", None)
@@ -965,25 +1964,48 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # whether idle / running / staged.  Mutual-exclusion with other
         # ops is enforced via any_op_active.
         s.batch_refine_active = getattr(self, "_batch_refine_dialog", None) is not None
-
-    def _refinement_op_active(self) -> bool:
-        """Return True iff any refinement op (interp / split / smooth) is
-        currently staged or in refine mode.  Used to gate cross-op
-        actions like "Merge Into" that must not run concurrently with
-        a staged op.
-        """
-        return bool(
-            getattr(self, "_split_running", False)
-            # Reshape sits INSIDE the navigator isolation gate from the
-            # start, so a mid-preview isolation click does not
-            # fight the tool.  `_split_running` already covers the whole
-            # guided session (it rides `_start_split`); the explicit flag
-            # is belt-and-braces for the worker window.
-            or getattr(self, "_reshape_running", False)
-            or getattr(self, "_smooth_running", False)
-            or getattr(self, "_interp_snapshot", None) is not None
-            or getattr(self, "_interp_refine_mode", False)
+        # A batch counts as an open edit only while it computes or its
+        # preview waits for Accept / Reject; an idle dialog does not.
+        s.batch_op_open = bool(
+            getattr(self, "_batch_running", False)
+            or getattr(self, "_batch_staged", False)
         )
+        # Add holds the surface from Start; a REVIEW is not an open edit.
+        s.add_active = bool(getattr(self, "_add_running", False))
+
+    def staged_kinds(self) -> frozenset:
+        """Every kind of open edit right now (empty at idle).  Doors test
+        membership or intersection of this set."""
+        self._sync_refine_state()
+        return self._refine_state.staged_kinds()
+
+    def staged_op_kind(self):
+        """The highest-priority open kind (sentence / tab pick only)."""
+        self._sync_refine_state()
+        return self._refine_state.staged_op_kind()
+
+    def _row_click_block_anchor(self):
+        """The label the open edit works on while a navigator row click must
+        be refused (0 when unknown), else None.
+
+        Blocked: a Reshape (unless it is only in its fragment-refine
+        stage), a Refine and an interpolation.  Add, Batch and Merge leave
+        row clicks alone.
+        """
+        kinds = self.staged_kinds()
+        frag = bool(getattr(self, "_split_fragment_refine", False))
+        if StagedOp.RESHAPE in kinds and not frag:
+            anchor = getattr(self, "_split_label_id", None)
+        elif StagedOp.REFINE in kinds:
+            anchor = getattr(self, "_smooth_label_id", None)
+        elif StagedOp.INTERPOLATE in kinds:
+            anchor = getattr(self, "_interp_label_id", None)
+        else:
+            return None
+        try:
+            return int(anchor or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _is_op_active_for_navigator(self) -> bool:
         """Predicate handed to ``CurationLabelNavigator.set_callbacks``
@@ -997,13 +2019,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         navigator asks this predicate (is any refinement op staged?) before
         acting.
 
-        Returns ``_refinement_op_active()`` — the most conservative
-        predicate available, covering interp snapshot held, interp
-        refine-further mode, split running, and smooth running.  More
-        inclusive than ``_refine_state.any_op_active`` (which doesn't
-        cover refine-mode without a fresh ``_sync_refine_state()``).
+        True when a Reshape, Refine or Interpolate edit is open (a running
+        interpolation counts; a Reshape is covered by its session flag).
         """
-        active = self._refinement_op_active()
+        active = bool(self.staged_kinds() & ISOLATION_BLOCKING)
         if active:
             # Diagnostic — when the gate trips, surface which flag
             # caused it so the user can see in the console exactly
@@ -1045,11 +2064,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
              isolation (lasso / merge dialog).  Toggle all N sub-
              proxies in main + subviewer label layers (which use
              DirectLabelColormap for multi-iso).
-          3. ``_isolation_proxy_layer`` non-None AND ndisplay == 3 —
-             single-label 3D isolation.  Toggle proxy in main +
+          3. ``_isolation_proxy_layer`` set and present in the viewer
+             (any ndisplay) — single-label isolation.  Toggle proxy in main +
              subviewer label layers.
           4. Fallback to ``super()._get_toggle_targets_for_name`` —
-             no isolation, 2D mode, OR ``name`` is an image channel.
+             no isolation OR ``name`` is an image channel.
         """
         # Image-channel gate: any name that is NOT a labels layer
         # falls straight through to the default behavior, regardless
@@ -1067,11 +2086,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             )
             return super()._get_toggle_targets_for_name(name)
 
-        # while Add runs or a candidate exists, the
+        # while Add runs or a result is drawn, the
         # labels key also toggles the candidate, the click balls and their
         # side-view copies.
         if (getattr(self, "_add_running", False)
-                or getattr(self, "_add_candidate_layer", None) is not None):
+                or getattr(self, "_add_drawn_roi", None) is not None):
             extra = self._add_toggle_targets()
             if extra:
                 targets = list(super()._get_toggle_targets_for_name(name))
@@ -1120,10 +2139,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             )
             return targets
 
-        # Priority 3: Single-label isolation in 3D (proxy active)
+        # Priority 3: Single-label isolation (proxy active, in 2D or 3D)
         proxy = getattr(self, "_isolation_proxy_layer", None)
         ndisplay = getattr(self.viewer.dims, "ndisplay", 2)
-        if proxy is not None and ndisplay == 3:
+        try:
+            _proxy_live = proxy is not None and proxy in self.viewer.layers
+        except Exception:
+            _proxy_live = False
+        if _proxy_live:
             targets = [proxy]
             for vm in [self.viewer_model_xy, self.viewer_model_xz, self.viewer_model_yz]:
                 orient = self._orientation_for_vm(vm)
@@ -1134,7 +2157,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 if sub_layer is not None:
                     targets.append(sub_layer)
             print(
-                f"[CHKEY] FM8 routing: mode=SINGLE-ISO-3D name={name!r} "
+                f"[CHKEY] FM8 routing: mode=SINGLE-ISO ndisplay={getattr(getattr(self.viewer, "dims", None), "ndisplay", None)} name={name!r} "
                 f"n_targets={len(targets)} "
                 f"proxy_label={getattr(self, '_isolation_proxy_label_id', None)}"
             )
@@ -1273,7 +2296,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if nav is None or not hasattr(nav, "set_merge_enabled"):
             return
         try:
-            nav.set_merge_enabled(not self._refinement_op_active())
+            self._sync_refine_state()
+            nav.set_merge_enabled(not self._refine_state.any_op_active)
         except Exception:
             pass
 
@@ -1283,7 +2307,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         Thin delegate to ``RefinementOpState.can_start_destructive_label_op``
         — the canonical predicate on the centralized refinement-state
-        dataclass.  Wider than ``_refinement_op_active`` because the
+        dataclass.  Wider than ``staged_kinds()`` because the
         canonical predicate also covers an uncommitted paint stroke
         (``draw_snapshot_present``) and an open merge dialog
         (``merge_dialog_open``).
@@ -1385,6 +2409,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 return
             data = np.asarray(layer.data)
             max_label = int(data.max()) if data.size > 0 else 0
+            # never a removed (reserved) number: this runs at every patch
+            # switch and open, where the page's own Clear floor is 0 again
+            max_label = max(max_label,
+                            Curation3DAnnotator._fresh_label_floor(self))
             next_label = max(max_label + 1, 1)
             self._set_selected_label_all(next_label)
             self._interp_status_label.setText(f"Label pinned to {next_label}.")
@@ -1634,7 +2662,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             "original shape before you started drawing"
         )
         self._clear_edits_btn.setStyleSheet(SECONDARY_BTN_STYLE)
-        self._clear_edits_btn.setEnabled(False)
+        _enable_if_alive(getattr(self, "_clear_edits_btn", None), False)
         layout.addWidget(self._clear_edits_btn)
 
         # --- Section divider before Tools row ---
@@ -1811,7 +2839,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     "on_select_fragment": self._on_fragment_selected,
                     "on_detect_seeds": self._detect_seeds,
                     "on_threshold_changed": self._on_seed_threshold_changed,
-                    # --- Reshape R1: guided Split ---
+                    # --- guided Split ---
                     "on_seeds_from_changed": self._on_reshape_source_changed,
                     "on_walls_from_changed": self._on_reshape_source_changed,
                     "on_guide_browse": self._on_reshape_guide_browse,
@@ -1871,8 +2899,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     on_threshold_changed=self._on_add_threshold_changed,
                     on_otsu_reset=self._on_add_otsu_reset,
                     on_preview=self._preview_add,
-                    on_accept=self._accept_add,
-                    # Add rebuild 4.7: Done / Discard / Cancel
+                    # the footer: Accept / Done, and Close box / Discard
+                    # / Undo all -- routed by state
+                    on_accept=self._add_primary,
                     on_reject=self._add_secondary,
                     on_advanced_changed=self._on_add_advanced_changed,
                     on_select_piece=self._on_add_piece_selected,
@@ -1898,7 +2927,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     on_click_tick=self._on_add_click_tick,
                     on_show_walls=self._on_add_show_walls,
                     on_contour_toggled=self._on_add_contour_toggled,
-                    on_accept_refine=self._accept_add_and_refine,
+                    on_clear=self._on_add_clear_requested,
+                    on_look_for_changed=self._on_add_look_for_changed,
+                    on_whole_patch=self._start_add_whole,
+                    on_outline_changed=self._on_add_outline_changed,
+                    on_show_outline=self._on_add_show_outline,
+                    on_live_toggled=self._on_add_live_toggled,
+                    on_click_pick=self._add_pick_object,
                 )
             # Populate image combos immediately so user can
             # select channels before hitting Start.
@@ -1957,16 +2992,25 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._open_multiviewer_settings
         )
         # Auto-load when new layers are added and subviewers are still empty.
-        self.viewer.layers.events.inserted.connect(self._on_layer_inserted)
+        register_layer_hook(
+            self, self.viewer.layers.events.inserted, self._on_layer_inserted
+        )
         # The four channel combos are filled with LAYER NAMES, and nothing
         # used to tell them a layer had come or gone (policy 1).
         # Paired with the disconnect in _close_cleanup, beside the
         # inserted one -- an unpaired connect accumulates a handler per
         # annotator relaunch.
-        self.viewer.layers.events.removed.connect(self._on_layer_removed)
+        register_layer_hook(
+            self, self.viewer.layers.events.removed, self._on_layer_removed
+        )
         # Pre-sync: snapshot shared_data before the stroke is synced
         # (enables Clear Edits to undo raw draw corrections).
         self.drawing_handler.pre_sync_callback = self._on_subviewer_pre_sync
+        # Stroke start: which plane of the volume this stroke will write,
+        # copied before any sync, so one Undo takes the whole stroke back.
+        self.drawing_handler.stroke_begin_callback = (
+            self._on_subviewer_stroke_begin
+        )
         # Post-sync: refresh isolation proxy so user sees drawn corrections.
         self.drawing_handler.post_sync_callback = self._on_subviewer_draw_complete
         # New-label hook: fires when enclosed-fill + auto-increment
@@ -1980,6 +3024,25 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     # ---------------------------------------------------------------
     # Auto-load on layer insertion
     # ---------------------------------------------------------------
+
+    def _channel_memory(self, adv, combo_attr: str, mem_attr: str) -> str:
+        """The channel name a refill should restore for one combo.
+
+        The live (or last chosen) name on the dock's combo wins and is
+        copied onto this annotator, so a dock relaunched inside the same
+        annotator restores it too.  Empty means nothing was ever chosen,
+        and the combo then stays blank.
+        """
+        name = ""
+        combo = getattr(adv, combo_attr, None)
+        if combo is not None:
+            try:
+                name = adv._remember_channel_choice(combo)
+            except Exception:
+                name = ""
+        if name:
+            setattr(self, mem_attr, name)
+        return str(getattr(self, mem_attr, "") or "")
 
     def _refresh_wall_channels(self) -> None:
         """Re-fill ONLY the membrane-channel combo.
@@ -2001,7 +3064,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 continue
             if isinstance(layer, Image):
                 names.append(layer.name)
-        adv.set_wall_channels(names)
+        adv.set_wall_channels(
+            names, self._channel_memory(
+                adv, "split_wall_channel_combo", "_last_wall_channel"))
 
     def _refresh_seed_channels(self) -> None:
         """Re-fill ONLY the MARKER-channel combo -- the fifth one.
@@ -2020,7 +3085,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 continue
             if isinstance(layer, Image):
                 names.append(layer.name)
-        adv.set_seed_channels(names)
+        adv.set_seed_channels(
+            names, self._channel_memory(
+                adv, "split_seed_channel_combo", "_last_seed_channel"))
 
     def _refresh_all_image_combos(self) -> None:
         """Re-read the viewer's image layers into all four channel combos.
@@ -2125,6 +3192,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         on_label_smoothed=None,
         on_recalculate=None,
         on_new_label_painted=None,
+        on_paint_stroke=None,
         on_batch_refined=None,
         on_batch_refine_lock=None,
         on_add_mode_lock=None,
@@ -2132,7 +3200,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         on_add_undo_session=None,
         on_save_batch_recipe=None,
         get_saved_batch_recipes=None,
-        # --- Reshape R1 ---
+        # --- guided Split ---
         on_reshape_lock=None,
         on_refine_lock=None,
         on_reshape_committed=None,
@@ -2145,6 +3213,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         get_plot_selection=None,
         # ---  the df id floor (ghosts included) ---
         get_label_id_floor=None,
+        # --- Clear objects: the Good count, the Clears still undoable ---
+        get_kept_tier_count=None,
+        get_live_add_clears=None,
     ):
         """Store callbacks for curation operations that set tier to 'curated'.
 
@@ -2205,6 +3276,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._on_recalculate_cb = on_recalculate
         if on_new_label_painted is not None:
             self._on_new_label_painted_cb = on_new_label_painted
+        if on_paint_stroke is not None:
+            self._on_paint_stroke_cb = on_paint_stroke
         if on_batch_refined is not None:
             self._on_batch_refined_cb = on_batch_refined
         if on_batch_refine_lock is not None:
@@ -2222,7 +3295,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._save_batch_recipe_cb = on_save_batch_recipe
         if get_saved_batch_recipes is not None:
             self._get_saved_batch_recipes_cb = get_saved_batch_recipes
-        # Reshape R1: the lock mirrors on_add_mode_lock; the
+        # Guided Split: the lock mirrors on_add_mode_lock; the
         # commit callback carries the df rows + the arbiter flags; the
         # context provider is how this widget learns the workspace, the
         # patch, the run and the voxel spacing, none of which it owns.
@@ -2256,6 +3329,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # ghosts included, so an added object never hides behind one.
         if get_label_id_floor is not None:
             self._get_label_id_floor_cb = get_label_id_floor
+        # Clear objects: how many of a list of ids are marked Good (the
+        # confirm says so) and which Clears are still on the undo stack.
+        if get_kept_tier_count is not None:
+            self._get_kept_tier_count_cb = get_kept_tier_count
+        if get_live_add_clears is not None:
+            self._get_live_add_clears_cb = get_live_add_clears
 
     def _on_subviewer_new_label_painted(self, label_id: int) -> None:
         """Forwarder from DrawingHandler.new_label_callback to the
@@ -2267,10 +3346,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         cb = getattr(self, "_on_new_label_painted_cb", None)
         if cb is None:
             return
+        plane = getattr(self, "_stroke_plane", None)
         try:
-            cb(int(label_id))
-        except Exception:
-            pass
+            if plane is not None:
+                # The new cell's entry carries the plane, so Undo takes
+                # its voxels out of the volume too; the stroke is not
+                # pushed a second time.
+                self._stroke_plane_consumed = True
+                cb(int(label_id), roi_slices=plane[0], old_roi_data=plane[1],
+                   draw_session=getattr(self, "_draw_session", 0))
+            else:
+                cb(int(label_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[PAINT-UNDO] callback raised: {exc!r}")
 
     def set_navigator_selection_callback(self, callback):
         """Store callback for navigator label selection events.
@@ -2383,6 +3471,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             on_batch_refine=self._open_batch_refine_from_navigator,
             on_selection_changed=self._on_navigator_selection_changed,
             is_op_active=self._is_op_active_for_navigator,
+            is_select_blocked=self._row_click_block_anchor,
         )
         _safe_curation_debug(self, 
             "callbacks set: "
@@ -2524,20 +3613,28 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         )
         return result
 
-    def _zero_label_in_volume(self, label_id: int) -> None:
+    def _zero_label_in_volume(self, label_id: int):
         """Zero out all remaining voxels of a label in the main volume.
 
         Used by intent-based deletion to clean up partial erasures.
+        Returns ``(roi_slices, snapshot)`` of the label as it was just
+        before the zeroing (what Undo must put back), or ``(None, None)``.
         """
         lbl_name = getattr(self, "_active_labels_name", None)
         if not lbl_name:
             lbl_name = self.labels_combo.currentText()
         if not lbl_name or lbl_name not in self.viewer.layers:
-            return
+            return None, None
         data = self.viewer.layers[lbl_name].data
-        data[data == label_id] = 0
+        mask = data == label_id
+        roi, snap = self._snapshot_label_roi(
+            data, label_id, _precomputed_mask=mask)
+        data[mask] = 0
+        return roi, snap
 
-    def _handle_manually_deleted_label(self, label_id: int) -> None:
+    def _handle_manually_deleted_label(
+        self, label_id: int, roi_slices=None, old_roi_data=None,
+    ) -> None:
         """Reconcile state for a label that was manually erased from volume.
 
         Fires the delete callback (same as "Delete Label" button) and removes
@@ -2545,7 +3642,21 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """
         if self._on_delete_label_cb:
             try:
-                self._on_delete_label_cb(label_id, roi_slices=None, old_roi_data=None)
+                # The volume already lost the label: the df catches up and
+                # no undo entry is pushed (there is no voxel change to put
+                # back, and an entry would bury the one that did change it).
+                if roi_slices is not None:
+                    # This path removed voxels itself (intent-zero): a real
+                    # entry, so Undo puts the whole label back.
+                    self._on_delete_label_cb(
+                        label_id, roi_slices=roi_slices,
+                        old_roi_data=old_roi_data,
+                    )
+                else:
+                    self._on_delete_label_cb(
+                        label_id, roi_slices=None, old_roi_data=None,
+                        reconcile=True,
+                    )
             except Exception:
                 pass
         nav = getattr(self, "_navigator_widget", None)
@@ -2720,14 +3831,94 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         return main_layer.data
 
     def _navigator_navigate(self, label_id, centroid) -> None:
-        """Navigate subviewers to centroid when navigator selects a label."""
-        if centroid is not None:
-            z, y, x = centroid
+        """Pan the side views to the cell *label_id*.
+
+        The centroid comes from the saved features table and can describe a
+        volume that no longer exists (edits discarded or never saved).  It is
+        therefore checked against the labels in memory: when the position is
+        not inside the cell, the views pan to a voxel of the cell instead.
+        With no active labels layer the centroid is used as given.
+        """
+        def _pan(z, y, x):
             self.navigate_to_slice("XY", z)
             self.navigate_to_slice("XZ", y)
             self.navigate_to_slice("YZ", x)
 
-    def _on_isolation_changed(self, label_ids) -> None:
+        name = getattr(self, "_active_labels_name", "") or ""
+        layers = getattr(getattr(self, "viewer", None), "layers", None)
+        layer = None
+        if name and layers is not None:
+            try:
+                layer = layers[name] if name in layers else None
+            except Exception:
+                layer = None
+        if layer is None:
+            if centroid is not None:
+                _pan(*centroid)
+            return
+
+        data = layer.data
+        lid = int(label_id)
+        shape = data.shape
+        point = None
+        in_bounds = False
+        if centroid is not None:
+            try:
+                point = tuple(int(c) for c in centroid)
+                in_bounds = len(point) == 3 and all(
+                    0 <= p < s for p, s in zip(point, shape)
+                )
+            except (TypeError, ValueError):
+                point, in_bounds = None, False
+        if in_bounds and data[point] == lid:
+            _pan(*point)
+            return
+
+        # Not inside the cell: look near the table position first, then
+        # through the whole volume.
+        found = None
+        if in_bounds:
+            lo = [max(0, p - 50) for p in point]
+            hi = [min(s, p + 51) for p, s in zip(point, shape)]
+            sub = data[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+            idx = np.argwhere(sub == lid)
+            if idx.size:
+                found = idx + np.asarray(lo)
+        if found is None:
+            idx = np.argwhere(data == lid)
+            if idx.size:
+                found = idx
+        if found is None:
+            if in_bounds:
+                print(
+                    f"[NAV-FIX] label {lid} is not in the volume; panned to "
+                    f"the table position ({point[0]},{point[1]},{point[2]})",
+                    flush=True,
+                )
+                _pan(*point)
+            else:
+                print(
+                    f"[NAV-FIX] label {lid} is not in the volume; no pan",
+                    flush=True,
+                )
+            return
+        # The cell voxel nearest the mean of the cell's voxels, so a bent
+        # cell still gets a point inside itself.
+        mean = found.mean(axis=0)
+        best = found[int(np.argmin(((found - mean) ** 2).sum(axis=1)))]
+        z, y, x = (int(v) for v in best)
+        if point is None:
+            msg = f"[NAV-FIX] label {lid} has no table position; panned to ({z},{y},{x})"
+        else:
+            msg = (
+                f"[NAV-FIX] label {lid}: the table position "
+                f"({point[0]},{point[1]},{point[2]}) is not inside the cell; "
+                f"panned to ({z},{y},{x})"
+            )
+        print(msg, flush=True)
+        _pan(z, y, x)
+
+    def _on_isolation_changed(self, label_ids, *, reason: str = "toggle_off") -> None:
         """Handle multi-label isolation from the Navigator.
 
         When *label_ids* is non-empty, builds a ``DirectLabelColormap``
@@ -2787,9 +3978,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             f"isolation_active={self._isolation_active}"
         )
 
+        _single_st = None
+        _clear_st = None
         if label_ids:
             label_set = set(label_ids)
             if len(label_set) == 1:
+                _single_st = _StepTimer("[ISO-PERF] single")
                 # --- Fast path: single label → use napari's built-in
                 # show_selected_label (no 3D re-render, just shader uniform). ---
                 target_id = next(iter(label_set))
@@ -2840,6 +4034,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                         )
                         return
 
+                _single_st.lap("claim")
                 # If we were previously using a DirectLabelColormap for
                 # multi-select, restore the original colormap first.
                 if self._pre_isolation_colormap is not None:
@@ -2850,6 +4045,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 if main_layer.selected_label != target_id:
                     main_layer.selected_label = target_id
 
+                _single_st.lap("restore_map")
                 # Phase 2: 3D proxy display layer for fast isolation
                 if ndisplay == 3:
                     # Set suppress flag FIRST — before any property changes
@@ -2862,11 +4058,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     # Use proxy layer — small ROI for fast isosurface
                     if hasattr(main_layer, "show_selected_label"):
                         main_layer.show_selected_label = False
+                    _user_hid = _iso_user_hid(self)
                     self._update_isolation_proxy(target_id, main_layer)
-                    # Subviewers stay on show_selected_label path (2D)
-                    self._propagate_show_selected_label(
-                        True, label_id=target_id
-                    )
+                    _single_st.lap("proxy")
+                    # The side views wear this cell's colour; a map left
+                    # from an earlier recolour would hide it.  Subviewers
+                    # stay on the show_selected_label path (2D).  A hidden
+                    # isolation stays hidden for the new cell.
+                    _sync_single_cell_views(
+                        self, main_layer, target_id, hidden=_user_hid)
+                    _single_st.lap("side_views")
                     _safe_curation_debug(self,
                         "3D proxy isolation applied "
                         f"target={target_id} ndisplay={ndisplay}"
@@ -2877,10 +4078,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                         self._remove_isolation_proxy()
                     if hasattr(main_layer, "show_selected_label"):
                         main_layer.show_selected_label = True
+                    _single_st.lap("show_selected")
                     # WP-A: Propagate show_selected_label to subviewers.
                     matched = self._propagate_show_selected_label(
                         True, label_id=target_id
                     )
+                    _single_st.lap("side_views")
                     _safe_curation_debug(self,
                         "single-label isolation applied "
                         f"target={target_id} "
@@ -2906,8 +4109,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                         )
                         return
 
-                # Decide whether to use the multi-label PROXY (3D mode) or
-                # the legacy DirectLabelColormap-on-main path (2D mode).
+                # Decide whether to use the multi-label PROXIES (3D, up to
+                # ISO_PROXY_MAX_CELLS cells) or the DirectLabelColormap-on-main
+                # path (2D, or a bigger 3D set).
                 # In 3D, applying a colormap to the full main layer forces
                 # napari to re-run iso_categorical extraction over the
                 # whole 1024×1024×Z volume — the dominant cost when the
@@ -2916,7 +4120,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 _dims = getattr(self.viewer, "dims", None)
                 _ndisplay = getattr(_dims, "ndisplay", 2) if _dims else 2
 
-                if _ndisplay == 3:
+                _t_iso = _time.perf_counter()
+                _use_proxies = (
+                    _ndisplay == 3 and len(label_set) <= ISO_PROXY_MAX_CELLS
+                )
+                print(
+                    f"[ISO-PERF] path={'proxy' if _use_proxies else 'colormap'} "
+                    f"n={len(label_set)} ndisplay={_ndisplay} "
+                    f"K={ISO_PROXY_MAX_CELLS}", flush=True)
+
+                if _use_proxies:
                     # 3D: build N small single-label proxy crops (one per
                     # selected label, each in show_selected_label mode).
                     # Subviewers stay on the legacy DirectLabelColormap path
@@ -2935,20 +4148,33 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     # Build / diff the per-label sub-proxies (each one
                     # is the same lightweight create as a refine isolation
                     # crop — proven render path).
+                    _user_hid = _iso_user_hid(self)
                     self._apply_multi_label_proxy(main_layer, label_set)
                     self._isolation_label_set = frozenset(int(x) for x in label_set)
                     # Build the multi-label DirectLabelColormap fresh and
                     # propagate to subviewers. The 3D render uses the
                     # sub-proxies (above); subviewers use this colormap.
                     self._propagate_multi_label_colormap_to_subviewers(label_set)
+                    # Hiding main for the proxies hid the side views too:
+                    # show them again unless the isolation was hidden.
+                    if _user_hid:
+                        for _lyr in (self._multi_label_proxy_layers or {}).values():
+                            _lyr.visible = False
+                    else:
+                        _show_side_label_layers(self)
                     _safe_curation_debug(self,
                         f"multi-label proxy isolation applied count={len(label_set)}"
                     )
                 else:
-                    # 2D: legacy path — colormap on main is cheap because
-                    # there is no iso_categorical re-render.
+                    # 2D, or a 3D set too big for one layer per cell: one
+                    # colour map on the main layer.  Any per-cell layers left
+                    # from a smaller set go first.
                     if getattr(self, "_isolation_proxy_active", False):
                         self._remove_isolation_proxy(restore_visibility=False)
+                        # Main is hidden now; forget the cached set so the
+                        # colour map below is applied and main re-shown even
+                        # when the cache already equals the incoming set.
+                        self._isolation_label_set = None
 
                     if not self._isolation_active or self._pre_isolation_colormap is None:
                         self._pre_isolation_colormap = main_layer.colormap
@@ -2962,6 +4188,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     _safe_curation_debug(self,
                         f"multi-label isolation applied count={len(label_set)}"
                     )
+                    print(
+                        "[ISO-PERF] colormap_path "
+                        f"n={len(label_set)} ms="
+                        f"{(_time.perf_counter() - _t_iso) * 1000:.1f}",
+                        flush=True)
 
             # F3: Dispatch through coordinator for plot highlight sync.
             # Only dispatches when the user manually toggled the Isolate
@@ -2980,13 +4211,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     except Exception:
                         pass
             self._isolation_bridge_dispatched = False
+            if _single_st is not None:
+                _single_st.lap("plot_bridge")
+                _single_st.line(target=int(next(iter(label_set))),
+                                ndisplay=_ndisplay_of(self))
         else:
+            _clear_st = _StepTimer("[ISO-PERF] clear")
             # Phase 2: Remove proxy on isolation clear.
             # Defer main_layer.visible=True until AFTER colormap and
             # property changes to avoid multiple expensive 3D re-renders.
             _had_proxy = getattr(self, "_isolation_proxy_active", False)
             if _had_proxy:
                 self._remove_isolation_proxy(restore_visibility=False)
+            _clear_st.lap("proxy_remove")
             # Restore previous colormap
             if self._isolation_active:
                 self._isolation_active = False
@@ -3034,6 +4271,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 # WP-A: Clear show_selected_label on subviewers too.
                 self._propagate_show_selected_label(False)
 
+            _clear_st.lap("restore")
             # B1 fix: Always notify controller when Isolate is unchecked,
             # even if _isolation_active was False.  This handles the case
             # where the controller set isolation via lasso (CONTROLLER_ISOLATION)
@@ -3042,12 +4280,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # _isolated_label_ids, plot highlight, etc.
             if self._on_isolation_cleared_cb:
                 try:
-                    self._on_isolation_cleared_cb(reason="toggle_off")
+                    self._on_isolation_cleared_cb(reason=reason)
                 except TypeError:
                     self._on_isolation_cleared_cb()
                 except Exception:
                     pass
 
+            _clear_st.lap("controller_cleared")
             # Deferred visibility: restore main_layer.visible AFTER all
             # property changes (colormap, show_selected_label, controller
             # callback) are done.  Use QTimer.singleShot(0, ...) to push
@@ -3059,6 +4298,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     shot = getattr(self, "_single_shot_in_session", None)
 
                     def _reshow_main(_l=_ml):
+                        # A proxy built since this was queued (auto-advance
+                        # isolates the next row at once) keeps main hidden.
+                        if getattr(self, "_isolation_proxy_active", False):
+                            return
                         _l.visible = True
                         _heal_render(self, _l, tag="isolation-off")
 
@@ -3074,6 +4317,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                         _heal_render(self, main_layer, tag="isolation-off-sync")
                     except Exception:
                         pass
+        if _clear_st is not None:
+            _clear_st.lap("reshow_queue")
+            _clear_st.line(reason=reason)
         owner_after = getattr(auth, "current_owner", None) if auth is not None else None
         _dt = _time.perf_counter() - _t0
         if _dt > 0.03:
@@ -3083,6 +4329,482 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 f"main_show_sel={getattr(main_layer, 'show_selected_label', None)} "
                 f"main_selected={getattr(main_layer, 'selected_label', None)}"
             )
+
+    def _iso_live_ids(self) -> frozenset:
+        """The label ids the 3D view isolates right now (empty when none)."""
+        multi = getattr(self, "_multi_label_proxy_set", None)
+        if multi:
+            return frozenset(int(i) for i in multi)
+        lid = getattr(self, "_isolation_proxy_label_id", None)
+        if getattr(self, "_isolation_proxy_active", False) and lid is not None:
+            return frozenset({int(lid)})
+        if getattr(self, "_isolation_active", False):
+            # A colour-map isolation has no layers: the cache is the state.
+            cached = getattr(self, "_isolation_label_set", None)
+            if cached:
+                return frozenset(int(i) for i in cached)
+        return frozenset()
+
+    # ---------------------------------------------------------------
+    # Isolation bracket: what an edit leaves behind in the 3D view
+    # ---------------------------------------------------------------
+
+    # Which open-edit kinds keep a bracket owned by each owner kind alive.
+    _ISO_OWNER_KINDS = {
+        "reshape": frozenset({"reshape"}),
+        "interp": frozenset({"interpolate", "refine"}),
+    }
+
+    def _iso_owner_alive(self, kind) -> bool:
+        """True while an edit of the bracket's owner *kind* is still open."""
+        try:
+            open_now = {getattr(k, "value", k) for k in self.staged_kinds()}
+        except Exception:      # noqa: BLE001 - a half-built widget
+            return False
+        return bool(open_now & self._ISO_OWNER_KINDS.get(kind, frozenset()))
+
+    def _iso_bracket_open(self, kind=None):
+        """The open bracket (of *kind*, when given), or None."""
+        bracket = getattr(self, "_iso_bracket", None)
+        if bracket is None or (kind is not None and bracket.kind != kind):
+            return None
+        return bracket
+
+    def _iso_take(self, kind=None):
+        """Detach and return the open bracket (None when none is open, or
+        when it belongs to another *kind* of edit, which is then left
+        alone), so an op can end it after a step that clears its own state."""
+        bracket = getattr(self, "_iso_bracket", None)
+        if bracket is None or (kind is not None and bracket.kind != kind):
+            return None
+        self._iso_bracket = None
+        return bracket
+
+    def _iso_release_authority(self) -> None:
+        """Give up the annotator's claim on the colormap (a no-op when the
+        annotator does not hold it)."""
+        auth = getattr(self, "_colormap_authority", None)
+        if auth is None:
+            return
+        try:
+            from napari_epicycle.fusion_reconstruction.colormap_authority import (
+                ColormapOwner,
+            )
+            auth.release(ColormapOwner.ANNOTATOR_ISOLATION)
+        except Exception as exc:      # noqa: BLE001
+            print(f"[ISO-BRACKET] authority release raised {exc!r}",
+                  flush=True)
+
+    def _iso_release_if_idle(self, snapshot) -> None:
+        """After a bracket is dropped without a restore: give the colormap
+        back when the edit had been holding it and nothing is isolated now.
+
+        Starting an edit keeps the annotator's colormap claim for the whole
+        edit; a drop that follows a successful auto-advance finds the next
+        row's isolation live (it owns the claim now), and must leave it.
+        """
+        if snapshot.mode == MODE_OFF:
+            return
+        if self._iso_live_ids() or getattr(self, "_isolation_active", False):
+            return
+        self._iso_release_authority()
+
+    def _iso_drop(self, why: str = "") -> None:
+        """Forget the open bracket without touching the view."""
+        bracket = self._iso_take()
+        if bracket is not None:
+            print(f"[ISO-BRACKET] drop kind={bracket.kind} why={why}",
+                  flush=True)
+            self._iso_release_if_idle(bracket.snapshot)
+
+    def _iso_begin(self, kind, target=None):
+        """Record what is isolated now, before an edit that will change it.
+
+        One bracket at a time: the first edit to begin owns it.  A bracket
+        whose owner is no longer open is replaced.  *target* is the cell the
+        edit runs on (read from the edit's own state when not given).
+        Returns the snapshot in force (the new one, or the owner's).
+        """
+        existing = getattr(self, "_iso_bracket", None)
+        if existing is not None:
+            if self._iso_owner_alive(existing.kind):
+                print(f"[ISO-BRACKET] begin kind={kind} ignored: "
+                      f"{existing.kind} owns the bracket", flush=True)
+                return existing.snapshot
+            print(f"[ISO-BRACKET] begin kind={kind} replaces stale "
+                  f"{existing.kind}", flush=True)
+        multi = getattr(self, "_multi_label_proxy_set", None)
+        label_set = getattr(self, "_isolation_label_set", None)
+        main_layer = None
+        try:
+            main_layer = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+        except Exception:      # noqa: BLE001
+            main_layer = None
+        if multi:
+            mode, ids = MODE_MULTI, frozenset(int(i) for i in multi)
+        elif label_set:
+            mode, ids = MODE_MULTI, frozenset(int(i) for i in label_set)
+        elif (getattr(self, "_isolation_proxy_active", False)
+              and getattr(self, "_isolation_proxy_label_id", None) is not None):
+            mode = MODE_SINGLE
+            ids = frozenset({int(self._isolation_proxy_label_id)})
+        elif getattr(self, "_isolation_active", False):
+            # 2D single isolation: the shader hides every other label.
+            sel = int(getattr(main_layer, "selected_label", 0) or 0)
+            mode = MODE_SINGLE if sel > 0 else MODE_OFF
+            ids = frozenset({sel}) if sel > 0 else frozenset()
+        else:
+            mode, ids = MODE_OFF, frozenset()
+        try:
+            main_visible = bool(getattr(main_layer, "visible", True))
+        except Exception:      # noqa: BLE001
+            main_visible = True
+        checkbox = False
+        nav = getattr(self, "_navigator_widget", None)
+        if nav is not None and hasattr(nav, "is_isolate_checked"):
+            try:
+                checkbox = bool(nav.is_isolate_checked())
+            except Exception as exc:      # noqa: BLE001 - a deleted widget
+                print(f"[ISO-BRACKET] begin: navigator read raised {exc!r}",
+                      flush=True)
+                checkbox = False
+        if target is None:
+            attr = "_interp_label_id" if kind == "interp" else "_split_label_id"
+            target = getattr(self, attr, None)
+        snap = IsolationSnapshot(mode, ids, main_visible, checkbox)
+        self._iso_bracket = OpenBracket(
+            kind, snap, int(target) if target is not None else 0)
+        print(f"[ISO-BRACKET] begin kind={kind} mode={mode} n_ids={len(ids)} "
+              f"target={target} main_visible={main_visible} box={checkbox}",
+              flush=True)
+        return snap
+
+    def _iso_suspend(self) -> None:
+        """Take the isolation away while an edit runs.
+
+        Removes the proxies, puts the main colormap (and the side views')
+        back and clears the active flags.  The colormap ownership is kept.
+        The main labels layer is left as it is (the caller has hidden it).
+        """
+        n_before = len(self._iso_live_ids())
+        try:
+            self._remove_isolation_proxy(restore_visibility=False)
+        except Exception as exc:      # noqa: BLE001
+            print(f"[ISO-BRACKET] suspend: proxy removal raised {exc!r}",
+                  flush=True)
+        pre = getattr(self, "_pre_isolation_colormap", None)
+        auth = getattr(self, "_colormap_authority", None)
+        if auth is not None:
+            # Pop the authority's restore point only; the colormap to put
+            # back is always the one the widget saved (the single-label
+            # path clears it without popping the authority's).
+            try:
+                auth.restore()
+            except Exception:      # noqa: BLE001
+                pass
+        cmap = pre
+        main_layer = None
+        try:
+            main_layer = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+        except Exception:      # noqa: BLE001
+            main_layer = None
+        if main_layer is not None and hasattr(main_layer, "show_selected_label"):
+            # The 2D single shader flag: a later clear must not leave main
+            # showing one label.
+            try:
+                main_layer.show_selected_label = False
+            except Exception:      # noqa: BLE001
+                pass
+        if cmap is not None:
+            try:
+                if main_layer is not None:
+                    from contextlib import nullcontext
+                    sync = getattr(self, "sync_manager", None)
+                    ctx = (sync.suppress_property_sync()
+                           if sync is not None
+                           and hasattr(sync, "suppress_property_sync")
+                           else nullcontext())
+                    with ctx:
+                        main_layer.colormap = cmap
+                        self._propagate_colormap_to_subviewers(
+                            main_layer.colormap)
+            except Exception as exc:      # noqa: BLE001
+                print(f"[ISO-BRACKET] suspend: colormap restore raised "
+                      f"{exc!r}", flush=True)
+        elif main_layer is not None:
+            # A one-cell isolation kept no saved map: the side views still
+            # wear its one-label map, which would hide every neighbour for
+            # the whole edit.  Give them the full map again.
+            try:
+                from contextlib import nullcontext
+                sync = getattr(self, "sync_manager", None)
+                ctx = (sync.suppress_property_sync()
+                       if sync is not None
+                       and hasattr(sync, "suppress_property_sync")
+                       else nullcontext())
+                with ctx:
+                    self._propagate_colormap_to_subviewers(
+                        _plot_full_colormap(self))
+            except Exception as exc:      # noqa: BLE001
+                print(f"[ISO-BRACKET] suspend: side-view colormap raised "
+                      f"{exc!r}", flush=True)
+        self._pre_isolation_colormap = None
+        # The colormap ownership is NOT released here: it stays with the
+        # annotator for the whole edit, so a plot lasso cannot take it
+        # while an edit is staged.  _iso_end claims it again through the
+        # isolation call, or releases it when nothing is to be isolated.
+        if getattr(self, "_isolation_active", False):
+            try:
+                self._propagate_show_selected_label(False)
+            except Exception:      # noqa: BLE001
+                pass
+        self._isolation_active = False
+        self._isolation_label_set = None
+        self._multi_label_proxy_set = None
+        print(f"[ISO-BRACKET] suspend n_ids_before={n_before}", flush=True)
+
+    def _iso_end(self, kind, consumed=(), created=(), restore=True,
+                 bracket=None) -> None:
+        """Leave an edit: put the isolation the bracket recorded back.
+
+        Only the edit that owns the bracket may end it; any other kind does
+        nothing.  *bracket* is one the caller took earlier with
+        ``_iso_take`` (the edit cleared its own state in between).  With
+        ``restore=False`` the bracket is just dropped.  Otherwise ONE
+        isolation call shows the cells ``restore_target`` names, and the
+        navigator's Isolate box goes back to what it was.
+        """
+        if bracket is None:
+            bracket = getattr(self, "_iso_bracket", None)
+            if bracket is None or bracket.kind != kind:
+                return
+            self._iso_bracket = None
+        elif bracket.kind != kind:
+            return
+        elif getattr(self, "_iso_bracket", None) is bracket:
+            self._iso_bracket = None
+        snap = bracket.snapshot
+        if not restore:
+            print(f"[ISO-BRACKET] end kind={kind} mode={snap.mode} "
+                  f"n_ids={len(snap.ids)} target=- restore=False",
+                  flush=True)
+            self._iso_release_if_idle(snap)
+            return
+        target_ids = restore_target(
+            snap, bracket.target, tuple(consumed), tuple(created),
+            pieces_cap=self._reshape_pieces_cap())
+        print(f"[ISO-BRACKET] end kind={kind} mode={snap.mode} "
+              f"n_ids={len(snap.ids)} target={sorted(target_ids)[:12]} "
+              f"n_target={len(target_ids)} restore=True", flush=True)
+        box = bool(snap.checkbox)
+        try:
+            if snap.mode != MODE_OFF and target_ids:
+                # The commit callback rebuilt the table just before: select
+                # the rows of what is isolated now, quietly, so the
+                # isolation's own dispatch sees them.
+                _nav_rows = getattr(self, "_navigator_widget", None)
+                _select = getattr(_nav_rows, "select_rows_silently", None)
+                if callable(_select):
+                    _select(set(target_ids))
+                self._on_isolation_changed(set(target_ids))
+            else:
+                # Nothing is to be isolated (it was not before, or every cell
+                # that was is gone).  If the edit isolated something (Refine
+                # Further does), clear it -- as a "forget", so the plot does
+                # not echo the clear and deselect the navigator row.
+                if (self._iso_live_ids()
+                        or getattr(self, "_isolation_active", False)):
+                    self._on_isolation_changed(set(), reason="forget")
+                self._iso_release_authority()
+                if snap.mode != MODE_OFF:
+                    box = False
+        except Exception as exc:      # noqa: BLE001
+            print(f"[ISO-BRACKET] end: isolation call raised {exc!r}",
+                  flush=True)
+        nav = getattr(self, "_navigator_widget", None)
+        if nav is not None and hasattr(nav, "set_isolate_checked"):
+            try:
+                nav.set_isolate_checked(box)
+            except Exception as exc:      # noqa: BLE001 - a deleted widget
+                print(f"[ISO-BRACKET] end: navigator set raised {exc!r}",
+                      flush=True)
+
+    def _iso_refresh(self, ids, *, roi_hint=None, push_colormap=True) -> None:
+        """Redraw the isolated cells among *ids* after their voxels changed.
+
+        One isolated cell: the forced proxy update the shared sync always
+        made.  Several isolated cells: each cell in *ids* that is already
+        isolated has its sub-proxy resized in place; a cell that is not yet
+        isolated but has voxels is added to the isolation (its result must
+        show somewhere); a cell with no voxels is forgotten and never added.
+        The side views then get the multi colormap of the resulting set, so
+        the isolation is never collapsed to one cell.
+
+        *roi_hint* limits the search for each cell's box to the region the
+        edit touched.  *push_colormap* False lets a caller that re-sends the
+        colormap itself afterwards skip the first send.
+        """
+        import time as _t
+
+        t0 = _t.perf_counter()
+        ids = [int(i) for i in ids]
+        if any(i <= 0 for i in ids):
+            print(f"[ISO-REFRESH] skipped non-cell ids {[i for i in ids if i <= 0]}",
+                  flush=True)
+            ids = [i for i in ids if i > 0]
+        multi = getattr(self, "_multi_label_proxy_set", None)
+        if multi:
+            main_layer = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+            if main_layer is None:
+                return
+            rebuilt, gone, grown = [], [], []
+            for lid in ids:
+                layer = self._multi_label_proxy_layers.get(lid)
+                prior = None
+                if layer is not None:
+                    prior = tuple(
+                        slice(int(t), int(t) + int(n))
+                        for t, n in zip(layer.translate, layer.data.shape))
+                crop = self._label_crop(main_layer, lid, roi_hint, prior)
+                if crop is None:
+                    if lid in multi:
+                        gone.append(lid)
+                    continue
+                if layer is None:
+                    self._build_single_label_subproxy(main_layer, lid, crop)
+                else:
+                    slices, roi_data = crop
+                    layer.data = roi_data
+                    layer.translate = [float(s.start) for s in slices]
+                    layer.selected_label = lid
+                    layer.show_selected_label = True
+                rebuilt.append(lid)
+                if lid not in multi:
+                    grown.append(lid)
+            if grown:
+                self._multi_label_proxy_set = frozenset(multi) | frozenset(grown)
+                label_set = getattr(self, "_isolation_label_set", None)
+                if label_set is not None:
+                    self._isolation_label_set = frozenset(label_set) | frozenset(grown)
+            print(f"[ISO-REFRESH] mode=multi ids={ids} rebuilt={rebuilt} "
+                  f"added={grown} forgotten={gone}", flush=True)
+            if gone:
+                # Forgetting re-sends the colormap of the shrunk set.
+                self._iso_forget(gone)
+            elif rebuilt and push_colormap:
+                self._propagate_multi_label_colormap_to_subviewers(
+                    self._multi_label_proxy_set)
+        elif getattr(self, "_isolation_proxy_active", False) and ids:
+            main_layer = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+            print(f"[ISO-REFRESH] mode=single ids={ids} "
+                  f"proxy_label={self._isolation_proxy_label_id}", flush=True)
+            if main_layer is not None:
+                self._update_isolation_proxy(
+                    ids[0], main_layer, force=True,
+                    roi_hint=getattr(self, "_fragment_refine_roi", None))
+        elif getattr(self, "_isolation_active", False) and ids:
+            # Colour-map isolation: a cell already in the set is covered by
+            # the colour map; a cell that joined (by painting, or an op
+            # outside the bracket) is added and the colour map re-applied.
+            label_set = getattr(self, "_isolation_label_set", None)
+            if label_set is None:
+                return
+            joined = [i for i in ids if i not in label_set]
+            if not joined:
+                return
+            main_layer = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+            if main_layer is None:
+                return
+            # An id with no voxels (the next unused id, a stale request) has
+            # nothing to show and must not join.
+            _region = main_layer.data
+            if roi_hint is not None:
+                try:
+                    _region = main_layer.data[tuple(roi_hint)]
+                except Exception:       # noqa: BLE001
+                    _region = main_layer.data
+            joined = [i for i in joined if bool((_region == i).any())]
+            if not joined:
+                return
+            grown_set = frozenset(label_set) | frozenset(joined)
+            print(f"[ISO-REFRESH] mode=colormap ids={ids} added={joined}",
+                  flush=True)
+            self._apply_multi_isolation_colormap(main_layer, grown_set)
+        else:
+            return
+        print(f"[ISO-PERF] _iso_refresh ids={len(ids)} "
+              f"ms={(_t.perf_counter() - t0) * 1000:.1f}", flush=True)
+
+    def _iso_forget(self, ids) -> None:
+        """Drop *ids* from the live isolation (a deleted or emptied cell).
+
+        Several isolated cells: the sub-proxy goes (hidden before it is
+        removed), the id leaves both sets and the side views get the colormap
+        of what remains.  When the last one goes, or the single isolated cell
+        goes, the isolation is cleared as if the box were unticked.
+        """
+        ids = {int(i) for i in ids}
+        if any(i <= 0 for i in ids):
+            print(f"[ISO-FORGET] skipped non-cell ids {sorted(i for i in ids if i <= 0)}",
+                  flush=True)
+            ids = {i for i in ids if i > 0}
+
+        multi = getattr(self, "_multi_label_proxy_set", None)
+        if multi:
+            layers = self._multi_label_proxy_layers
+            hit = (ids & set(layers)) | (ids & set(multi))
+            if not hit:
+                return
+            with _gc_batch(self):
+                for lid in sorted(ids & set(layers)):
+                    layer = layers.pop(lid)
+                    try:
+                        layer.visible = False
+                        self.viewer.layers.remove(layer)
+                    except (ValueError, KeyError):
+                        pass
+            _refocus_main_layer(self)
+            remaining = frozenset(int(i) for i in multi) - ids
+            print(f"[ISO-FORGET] mode=multi ids={sorted(ids)} "
+                  f"removed={sorted(hit)} remaining={sorted(remaining)}",
+                  flush=True)
+            if not remaining:
+                # The cell is gone, not the user's wish to isolate: the Isolate
+                # box stays as it is.  "forget" tells the controller the clear
+                # comes from here, so the plot does not echo it back.
+                self._on_isolation_changed(set(), reason="forget")
+                return
+            self._multi_label_proxy_set = remaining
+            label_set = getattr(self, "_isolation_label_set", None)
+            if label_set:
+                self._isolation_label_set = frozenset(label_set) - ids
+            self._propagate_multi_label_colormap_to_subviewers(remaining)
+        elif (
+            getattr(self, "_isolation_proxy_active", False)
+            and getattr(self, "_isolation_proxy_label_id", None) in ids
+        ):
+            print(f"[ISO-FORGET] mode=single ids={sorted(ids)} "
+                  f"cleared={self._isolation_proxy_label_id}", flush=True)
+            self._on_isolation_changed(set(), reason="forget")
+        elif getattr(self, "_isolation_active", False):
+            cached = getattr(self, "_isolation_label_set", None)
+            if not cached or not (ids & set(cached)):
+                return
+            remaining = frozenset(int(i) for i in cached) - ids
+            print(f"[ISO-FORGET] mode=colormap ids={sorted(ids)} "
+                  f"remaining={len(remaining)}", flush=True)
+            if not remaining:
+                self._on_isolation_changed(set(), reason="forget")
+                return
+            main_layer = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+            if main_layer is not None:
+                self._apply_multi_isolation_colormap(main_layer, remaining)
 
     # ------------------------------------------------------------------
     # Phase 2: 3D isolation proxy display layer
@@ -3132,6 +4854,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         ):
             print("[XCRASH-5]   NO-OP: same label, returning", flush=True)
             return
+        _pst = _StepTimer("[ISO-PERF] proxy")
+        _was_hidden = _iso_user_hid(self)
 
         # Find bounding box via axis-reduced np.any (avoids materializing
         # a dense (N_voxels, 3) coordinate array from np.argwhere).
@@ -3160,6 +4884,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         y_idx = np.where(y_any)[0]
         x_idx = np.where(x_any)[0]
 
+        _pst.lap("bbox_scan")
         margin = 5
         shape = main_layer.data.shape
         slices = (
@@ -3170,6 +4895,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         roi_data = main_layer.data[slices].copy()
         translate = [float(s.start) for s in slices]
         scale = list(main_layer.scale)
+        _pst.lap("crop")
+        _p_new = self._isolation_proxy_layer is None
+
+        if (
+            self._isolation_proxy_layer is not None
+            and self._isolation_proxy_layer not in self.viewer.layers
+        ):
+            # A reference to a layer that never made it into the viewer.
+            self._isolation_proxy_layer = None
+            self._isolation_proxy_active = False
 
         if self._isolation_proxy_layer is not None:
             # Update existing proxy in-place
@@ -3199,9 +4934,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 proxy.rendering = main_layer.rendering
             except Exception:
                 pass
-            self.viewer.layers.append(proxy)
+            # Recorded before the append: if an ``inserted`` hook raises, the
+            # layer is already in the viewer and the removal must find it.
             self._isolation_proxy_layer = proxy
+            self._isolation_proxy_active = True
+            self.viewer.layers.append(proxy)
 
+        _pst.lap("layer")
         # Do NOT copy DirectLabelColormap from main layer to proxy —
         # DirectLabelColormap has explicit colors for ALL labels, which
         # defeats show_selected_label isolation (all labels render).
@@ -3214,10 +4953,18 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             )
         except Exception:
             pass
+        # The proxy wears the plot's colour for this cell (a new colour map
+        # does not carry show_selected_label over, so it is set again).
+        try:
+            self._isolation_proxy_layer.colormap = _one_label_colormap(
+                self, label_id)
+        except Exception as _exc:       # noqa: BLE001
+            print(f"[ISO-COLOUR] proxy colour not set: {_exc!r}", flush=True)
         # Re-assert show_selected_label after all property setup to
         # ensure it's the final state the renderer sees.
         self._isolation_proxy_layer.show_selected_label = True
 
+        _pst.lap("colour")
         # Hide main layer — proxy handles 3D rendering.
         # Only set visible=False if not already hidden.  Redundant
         # assignments fire events.visible which cascades to subviewers
@@ -3232,16 +4979,20 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             main_layer.visible = False
         self._isolation_proxy_active = True
         self._isolation_proxy_label_id = label_id
+        _pst.lap("hide_main")
         # Single-label takeover: tear down any multi-label sub-proxies
         # (otherwise both would render) and clear the bookkeeping field.
-        if getattr(self, "_multi_label_proxy_layers", None):
-            for lid, layer in list(self._multi_label_proxy_layers.items()):
-                try:
-                    layer.visible = False
-                    self.viewer.layers.remove(layer)
-                except (ValueError, KeyError):
-                    pass
-            self._multi_label_proxy_layers = {}
+        with _gc_batch(self):
+            if getattr(self, "_multi_label_proxy_layers", None):
+                for lid, layer in list(self._multi_label_proxy_layers.items()):
+                    try:
+                        layer.visible = False
+                        self.viewer.layers.remove(layer)
+                    except (ValueError, KeyError):
+                        pass
+                self._multi_label_proxy_layers = {}
+        _pst.lap("multi_teardown")
+        _refocus_main_layer(self)
         self._multi_label_proxy_set = None
 
         # Ensure suppress flag is set (redundant with _on_isolation_changed
@@ -3249,6 +5000,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         sync = getattr(self, "sync_manager", None)
         if sync is not None:
             sync._suppress_show_selected_sync = True
+        # A rebuilt proxy of a hidden isolation stays hidden; the side views
+        # get this cell's map whichever path rebuilt the proxy (a Refine
+        # Further reject rebuilds it here, not through the isolation call).
+        if _was_hidden:
+            self._isolation_proxy_layer.visible = False
+        _sync_single_cell_views(self, main_layer, label_id,
+                                hidden=_was_hidden, write_main=True)
+        _pst.lap("side_views")
+        _pst.line(target=int(label_id), new_layer=_p_new,
+                  crop="x".join(str(s.stop - s.start) for s in slices))
 
     def _remove_isolation_proxy(self, *, restore_visibility: bool = True) -> None:
         """Remove the proxy display layer and optionally restore main layer visibility.
@@ -3268,31 +5029,40 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             f"proxy_active={self._isolation_proxy_active}",
             flush=True,
         )
-        if self._isolation_proxy_layer is not None:
-            try:
-                # Hide before removing — disconnects the vispy visual from
-                # the scene graph so no stale texture references remain when
-                # the layer is destroyed.  Prevents access violations from
-                # the rendering loop accessing freed GPU textures.
-                self._isolation_proxy_layer.visible = False
-                self.viewer.layers.remove(self._isolation_proxy_layer)
-                print("[XCRASH-6]   proxy layer removed cleanly", flush=True)
-            except (ValueError, KeyError) as _exc:
-                print(f"[XCRASH-6]   proxy removal raised: {_exc!r}", flush=True)
-            except Exception as _exc:
-                print(f"[XCRASH-6]   proxy removal UNEXPECTED: {_exc!r}", flush=True)
-            self._isolation_proxy_layer = None
-
-        # Tear down all multi-label sub-proxies (one per selected label).
-        # Same discipline (hide first, then remove) to avoid vispy access violations.
-        if getattr(self, "_multi_label_proxy_layers", None):
-            for lid, layer in list(self._multi_label_proxy_layers.items()):
+        with _gc_batch(self):
+            if self._isolation_proxy_layer is not None:
                 try:
-                    layer.visible = False
-                    self.viewer.layers.remove(layer)
-                except (ValueError, KeyError):
-                    pass
-            self._multi_label_proxy_layers = {}
+                    # Hide before removing — disconnects the vispy visual from
+                    # the scene graph so no stale texture references remain when
+                    # the layer is destroyed.  Prevents access violations from
+                    # the rendering loop accessing freed GPU textures.
+                    self._isolation_proxy_layer.visible = False
+                    self.viewer.layers.remove(self._isolation_proxy_layer)
+                    print("[XCRASH-6]   proxy layer removed cleanly", flush=True)
+                except (ValueError, KeyError) as _exc:
+                    print(f"[XCRASH-6]   proxy removal raised: {_exc!r}", flush=True)
+                except Exception as _exc:
+                    print(f"[XCRASH-6]   proxy removal UNEXPECTED: {_exc!r}", flush=True)
+                self._isolation_proxy_layer = None
+
+            # Tear down all multi-label sub-proxies (one per selected label).
+            # Same discipline (hide first, then remove) to avoid vispy access violations.
+            if getattr(self, "_multi_label_proxy_layers", None):
+                import time as _t
+                _t_rm = _t.perf_counter()
+                _n_rm = len(self._multi_label_proxy_layers)
+                for lid, layer in list(self._multi_label_proxy_layers.items()):
+                    try:
+                        layer.visible = False
+                        self.viewer.layers.remove(layer)
+                    except (ValueError, KeyError):
+                        pass
+                self._multi_label_proxy_layers = {}
+                print(f"[ISO-PERF] remove_proxies n={_n_rm} "
+                      f"ms={(_t.perf_counter() - _t_rm) * 1000:.1f}", flush=True)
+            _sweep_isolation_proxies(self)
+
+        _refocus_main_layer(self)
 
         self._isolation_proxy_active = False
         self._isolation_proxy_label_id = None
@@ -3315,7 +5085,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             except (KeyError, Exception):
                 pass
 
-    def _apply_multi_isolation_colormap(self, main_layer, label_ids) -> None:
+    def _apply_multi_isolation_colormap(self, main_layer, label_ids, *,
+                                        keep_hidden: bool = False) -> None:
         """Build and apply DirectLabelColormap showing only *label_ids*.
 
         Skips rebuild if the isolated label set hasn't changed (e.g.,
@@ -3352,17 +5123,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return
 
         hidden = np.array([0, 0, 0, 0], dtype=np.float32)
-        # Cache the default colormap — no need to recreate on every call.
-        if not hasattr(self, "_cached_label_colormap"):
-            self._cached_label_colormap = label_colormap(49, seed=0.5)
-        default_cmap = self._cached_label_colormap
 
         color_dict = {None: hidden, 0: hidden}
         if label_ids:
-            all_ids = np.array(sorted(label_ids), dtype=np.intp)
-            all_colors = default_cmap.map(all_ids).astype(np.float32)
-            for i, lid in enumerate(all_ids):
-                color_dict[int(lid)] = all_colors[i]
+            color_dict.update(_plot_colour_for(self, label_ids))
 
         # Suppress sync cascade during colormap assignment — the explicit
         # _propagate_colormap_to_subviewers call below handles subviewer
@@ -3385,7 +5149,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # apply (was_visible=True) and proxy→multi transition where main
         # came in invisible (was_visible=False, proxy was hiding it).
         # Mirrors the lasso path in controller._isolate_labels_in_viewer.
-        if main_layer.visible:
+        if main_layer.visible and not keep_hidden:
             main_layer.visible = False
 
         with ctx:
@@ -3400,9 +5164,27 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # Always schedule visibility restore — multi-label steady state
         # needs main visible.  If main is already visible, this is a no-op
         # on next tick.
+        if keep_hidden:
+            return
         from qtpy.QtCore import QTimer
+        import time as _t
         _l = main_layer
-        QTimer.singleShot(0, lambda l=_l: setattr(l, "visible", True))
+        _tok = getattr(self, "_perf_reshow_token", 0)
+        _t_sched = _t.perf_counter()
+
+        def _reshow_main(l=_l, tok=_tok, t_sched=_t_sched):
+            # A per-cell proxy build in between bumps the token and hides
+            # main on purpose: do not un-hide it under the new layers.
+            if getattr(self, "_perf_reshow_token", 0) != tok:
+                return
+            _t1 = _t.perf_counter()
+            l.visible = True
+            print("[ISO-PERF] colormap reshow "
+                  f"wait_ms={(_t1 - t_sched) * 1000:.1f} "
+                  f"show_ms={(_t.perf_counter() - _t1) * 1000:.1f}",
+                  flush=True)
+
+        QTimer.singleShot(0, _reshow_main)
 
         _safe_curation_debug(self,
             "propagate multi-isolation colormap "
@@ -3463,35 +5245,58 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # transition. (The single-label proxy uses _isolation_proxy_layer;
         # multi uses the dict. Don't keep both — tear single down so the
         # one keep_id label gets recreated cleanly as a multi-mode proxy.)
-        if self._isolation_proxy_layer is not None:
-            try:
-                self._isolation_proxy_layer.visible = False
-                self.viewer.layers.remove(self._isolation_proxy_layer)
-            except (ValueError, KeyError):
-                pass
-            self._isolation_proxy_layer = None
-            self._isolation_proxy_label_id = None
+        with _gc_batch(self):
+            if self._isolation_proxy_layer is not None:
+                try:
+                    self._isolation_proxy_layer.visible = False
+                    self.viewer.layers.remove(self._isolation_proxy_layer)
+                except (ValueError, KeyError):
+                    pass
+                self._isolation_proxy_layer = None
+                self._isolation_proxy_label_id = None
 
-        # Diff against current state — only touch labels that changed.
-        current = set(self._multi_label_proxy_layers.keys())
-        target = set(frozen)
-        to_remove = current - target
-        to_add = target - current
+            # Diff against current state — only touch labels that changed.
+            import time as _t
+            _t_all = _t.perf_counter()
+            current = set(self._multi_label_proxy_layers.keys())
+            target = set(frozen)
+            to_remove = current - target
+            to_add = target - current
+            print(f"[ISO-PERF] multi_proxy ENTER n={len(frozen)} "
+                  f"add={len(to_add)} remove={len(to_remove)}", flush=True)
+            self._iso_perf_acc = {"crop": 0.0, "construct": 0.0, "append": 0.0}
 
-        # Remove proxies for labels no longer in the set.
-        for lid in to_remove:
-            layer = self._multi_label_proxy_layers.pop(lid, None)
-            if layer is None:
-                continue
-            try:
-                layer.visible = False
-                self.viewer.layers.remove(layer)
-            except (ValueError, KeyError):
-                pass
+            # Remove proxies for labels no longer in the set.
+            _t_rm = _t.perf_counter()
+            for lid in to_remove:
+                layer = self._multi_label_proxy_layers.pop(lid, None)
+                if layer is None:
+                    continue
+                try:
+                    layer.visible = False
+                    self.viewer.layers.remove(layer)
+                except (ValueError, KeyError):
+                    pass
+            if to_remove:
+                print(f"[ISO-PERF] multi_proxy remove n={len(to_remove)} "
+                      f"ms={(_t.perf_counter() - _t_rm) * 1000:.1f}", flush=True)
 
         # Add a single-label proxy for each newly selected label.
-        for lid in to_add:
+        for _i, lid in enumerate(to_add):
             self._build_single_label_subproxy(main_layer, int(lid))
+            if (_i + 1) % 10 == 0:
+                _a = self._iso_perf_acc
+                print(f"[ISO-PERF] multi_proxy add i={_i + 1} "
+                      f"crop_ms={_a['crop']:.1f} "
+                      f"construct_ms={_a['construct']:.1f} "
+                      f"append_ms={_a['append']:.1f}", flush=True)
+        if to_add:
+            _a = self._iso_perf_acc
+            print(f"[ISO-PERF] multi_proxy add_total n={len(to_add)} "
+                  f"crop_ms={_a['crop']:.1f} "
+                  f"construct_ms={_a['construct']:.1f} "
+                  f"append_ms={_a['append']:.1f}", flush=True)
+        _refocus_main_layer(self)
 
         # Hide main layer — the per-label proxies handle 3D rendering.
         # Cancel any pending perf re-show first (2026-09-02, see
@@ -3512,6 +5317,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         sync = getattr(self, "sync_manager", None)
         if sync is not None:
             sync._suppress_show_selected_sync = True
+        print(f"[ISO-PERF] multi_proxy EXIT n={len(frozen)} "
+              f"ms={(_t.perf_counter() - _t_all) * 1000:.1f}", flush=True)
 
     def _propagate_multi_label_colormap_to_subviewers(self, label_set) -> int:
         """Build a DirectLabelColormap for *label_set* and apply it to
@@ -3530,20 +5337,67 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return 0
 
         hidden = np.array([0, 0, 0, 0], dtype=np.float32)
-        if not hasattr(self, "_cached_label_colormap"):
-            self._cached_label_colormap = label_colormap(49, seed=0.5)
-        default_cmap = self._cached_label_colormap
 
         color_dict = {None: hidden, 0: hidden}
         if label_set:
-            ids = np.array(sorted(int(x) for x in label_set), dtype=np.intp)
-            colors = default_cmap.map(ids).astype(np.float32)
-            for i, lid in enumerate(ids):
-                color_dict[int(lid)] = colors[i]
+            color_dict.update(_plot_colour_for(self, label_set))
         cmap = DirectLabelColormap(color_dict=color_dict)
         return self._propagate_colormap_to_subviewers(cmap)
 
-    def _build_single_label_subproxy(self, main_layer, label_id: int) -> None:
+    def _label_crop(self, main_layer, label_id: int, roi_hint=None, prior_box=None):
+        """Bounding box of *label_id* plus a 5-voxel margin.
+
+        Returns ``(slices, copy of the crop)``, or None when the label has no
+        voxels in the main layer.  With *roi_hint* (slices) only that region,
+        widened by the margin, is scanned.  The whole volume is scanned
+        instead, so the answer is the same as without a region, when the cell
+        is not found in the region, when it touches the edge of the region (it
+        may continue past it), or when *prior_box* (slices: where the cell was
+        drawn before) is not inside the region (another piece of the cell may
+        lie out there).
+        """
+        import numpy as np
+
+        margin = 5
+        shape = main_layer.data.shape
+        if roi_hint is not None:
+            region = []
+            for sl, n in zip(roi_hint, shape):
+                a, b, _ = sl.indices(n)
+                region.append(slice(max(0, a - margin), min(n, b + margin)))
+            region = tuple(region)
+            if prior_box is not None and any(
+                b.start < r.start or b.stop > r.stop
+                for b, r in zip(prior_box, region)
+            ):
+                return self._label_crop(main_layer, label_id)
+        else:
+            region = tuple(slice(0, n) for n in shape)
+
+        mask = main_layer.data[region] == label_id
+        z_any = np.any(mask, axis=(1, 2))
+        if not z_any.any():
+            if roi_hint is not None:
+                return self._label_crop(main_layer, label_id)
+            return None
+        y_any = np.any(mask, axis=(0, 2))
+        x_any = np.any(mask, axis=(0, 1))
+        found = tuple(
+            (int(np.where(a)[0][0]) + r.start, int(np.where(a)[0][-1]) + r.start)
+            for a, r in zip((z_any, y_any, x_any), region)
+        )
+        if roi_hint is not None:
+            for (lo, hi), r, n in zip(found, region, shape):
+                if (lo == r.start and r.start > 0) or (hi == r.stop - 1 and r.stop < n):
+                    return self._label_crop(main_layer, label_id)
+
+        slices = tuple(
+            slice(max(0, lo - margin), min(n, hi + margin + 1))
+            for (lo, hi), n in zip(found, shape)
+        )
+        return slices, main_layer.data[slices].copy()
+
+    def _build_single_label_subproxy(self, main_layer, label_id: int, crop=None) -> None:
         """Create one small proxy Labels layer for *label_id*.
 
         Mirrors the bbox-and-crop pattern of ``_update_isolation_proxy``
@@ -3552,30 +5406,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         sub-proxy uses ``show_selected_label=True`` for the proven 3D
         render path.
         """
-        import numpy as np
         from napari.layers import Labels
+        import time as _t
 
-        mask = main_layer.data == label_id
-        z_any = np.any(mask, axis=(1, 2))
-        if not z_any.any():
+        _acc = getattr(self, "_iso_perf_acc", None)
+        _t0 = _t.perf_counter()
+        if crop is None:
+            crop = self._label_crop(main_layer, label_id)
+        if crop is None:
             return
-        y_any = np.any(mask, axis=(0, 2))
-        x_any = np.any(mask, axis=(0, 1))
-        z_idx = np.where(z_any)[0]
-        y_idx = np.where(y_any)[0]
-        x_idx = np.where(x_any)[0]
-
-        margin = 5
-        shape = main_layer.data.shape
-        slices = (
-            slice(max(0, int(z_idx[0]) - margin),
-                  min(shape[0], int(z_idx[-1]) + margin + 1)),
-            slice(max(0, int(y_idx[0]) - margin),
-                  min(shape[1], int(y_idx[-1]) + margin + 1)),
-            slice(max(0, int(x_idx[0]) - margin),
-                  min(shape[2], int(x_idx[-1]) + margin + 1)),
-        )
-        roi_data = main_layer.data[slices].copy()
+        _t1 = _t.perf_counter()
+        slices, roi_data = crop
         translate = [float(s.start) for s in slices]
         scale = list(main_layer.scale)
 
@@ -3587,6 +5428,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         )
         proxy.editable = False
         proxy.selected_label = label_id
+        try:
+            proxy.colormap = _one_label_colormap(self, label_id)
+        except Exception as _exc:       # noqa: BLE001
+            print(f"[ISO-COLOUR] sub-proxy colour not set: {_exc!r}", flush=True)
         proxy.show_selected_label = True
         # brush_size locked at 1.  Same rationale
         # as the single-label proxy in _update_isolation_proxy.
@@ -3601,8 +5446,131 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             proxy.iso_gradient_mode = main_layer.iso_gradient_mode
         except Exception:
             pass
+        _t2 = _t.perf_counter()
         self.viewer.layers.append(proxy)
         self._multi_label_proxy_layers[label_id] = proxy
+        if _acc is not None:
+            _t3 = _t.perf_counter()
+            _acc["crop"] += (_t1 - _t0) * 1000
+            _acc["construct"] += (_t2 - _t1) * 1000
+            _acc["append"] += (_t3 - _t2) * 1000
+
+    def _iso_recolour(self) -> None:
+        """Repaint the isolation in the plot's current colours.
+
+        Called by the controller when the plot's colours change while the
+        annotator holds the colour map.  Single cell: the proxy and the side
+        views; several cells as proxies: each proxy and the side views;
+        several cells as one colour map: the map again, with the cache
+        cleared (that path hides main and shows it on its timer, so the map
+        is never written to a visible main).  A new colour map object is
+        built every time: nothing is changed in place.
+        """
+        try:
+            self._iso_refresh_saved_colormap()
+        except Exception as exc:        # noqa: BLE001
+            print(f"[ISO-COLOUR] saved colormap not rebuilt: {exc!r}", flush=True)
+        if not getattr(self, "_isolation_active", False):
+            return
+        try:
+            lid = getattr(self, "_isolation_proxy_label_id", None)
+            if getattr(self, "_isolation_proxy_active", False) and lid is not None:
+                proxy = self._isolation_proxy_layer
+                # The hide key hides the proxy and the side views together:
+                # a recolour must not show them again.
+                hidden = not bool(getattr(proxy, "visible", True))
+                proxy.colormap = _one_label_colormap(self, lid)
+                proxy.show_selected_label = True
+                one = _one_label_colormap(self, lid)
+                main = self._layer_by_name(
+                    self.viewer.layers, self._active_labels_name)
+                _write_main_one_label_map(self, main, one)
+                self._propagate_colormap_to_subviewers(one)
+                if hidden:
+                    self._propagate_show_selected_label(
+                        True, label_id=lid, keep_hidden=True)
+                else:
+                    self._propagate_show_selected_label(True, label_id=lid)
+                return
+            subs = getattr(self, "_multi_label_proxy_layers", None)
+            ids = getattr(self, "_multi_label_proxy_set", None)
+            if subs and ids:
+                for sub_id, layer in list(subs.items()):
+                    layer.colormap = _one_label_colormap(self, sub_id)
+                    layer.show_selected_label = True
+                self._propagate_multi_label_colormap_to_subviewers(ids)
+                return
+            ids = getattr(self, "_isolation_label_set", None)
+            if ids:
+                main = self._layer_by_name(
+                    self.viewer.layers, self._active_labels_name)
+                if main is not None:
+                    self._isolation_label_set = None
+                    if getattr(main, "visible", True):
+                        self._apply_multi_isolation_colormap(main, set(ids))
+                    else:
+                        # The user hid it: write the map to the hidden layer
+                        # and leave it hidden.
+                        self._apply_multi_isolation_colormap(
+                            main, set(ids), keep_hidden=True)
+                return
+            # 2D single cell: the shader flag on main, no proxy.
+            main = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+            if main is not None and getattr(main, "show_selected_label", False):
+                sel = int(getattr(main, "selected_label", 0) or 0)
+                cmap = _plot_full_colormap(self, extra_ids=[sel])
+                from contextlib import nullcontext
+                sync = getattr(self, "sync_manager", None)
+                ctx = (sync.suppress_property_sync()
+                       if sync is not None
+                       and hasattr(sync, "suppress_property_sync")
+                       else nullcontext())
+                with ctx:
+                    main.colormap = cmap
+                    self._propagate_colormap_to_subviewers(cmap)
+                main.show_selected_label = True
+                self._propagate_show_selected_label(True, label_id=sel)
+        except Exception as exc:        # noqa: BLE001
+            print(f"[ISO-COLOUR] recolour raised: {exc!r}", flush=True)
+
+    def _iso_refresh_saved_colormap(self) -> None:
+        """Rebuild the colour map the isolation puts back when it ends, so a
+        Colour-by change made during the isolation is not undone by it.
+
+        While an edit has the isolation suspended (the annotator still holds
+        the colours but nothing is isolated), main and the side views get the
+        fresh map directly.
+        """
+        pre = getattr(self, "_pre_isolation_colormap", None)
+        auth = getattr(self, "_colormap_authority", None)
+        if pre is not None:
+            fresh = _plot_full_colormap(self)
+            self._pre_isolation_colormap = fresh
+            if auth is not None:
+                auth.set_restore_point(fresh)
+            return
+        if getattr(self, "_isolation_active", False) or auth is None:
+            return
+        from napari_epicycle.fusion_reconstruction.colormap_authority import (
+            ColormapOwner)
+        if auth.current_owner != ColormapOwner.ANNOTATOR_ISOLATION:
+            return
+        main = self._layer_by_name(self.viewer.layers, self._active_labels_name)
+        if main is None:
+            return
+        fresh = _plot_full_colormap(self)
+        from contextlib import nullcontext
+        sync = getattr(self, "sync_manager", None)
+        ctx = (sync.suppress_property_sync()
+               if sync is not None and hasattr(sync, "suppress_property_sync")
+               else nullcontext())
+        with ctx:
+            # A visible main is not re-coloured (a full map on a visible 3D
+            # layer is a full re-render); the side views take it either way.
+            if not getattr(main, "visible", False):
+                main.colormap = fresh
+            self._propagate_colormap_to_subviewers(fresh)
 
     def _propagate_colormap_to_subviewers(self, colormap) -> int:
         """Explicitly push a colormap to all subviewer label layers.
@@ -3636,7 +5604,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         return matched
 
     def _propagate_show_selected_label(
-        self, show: bool, *, label_id: int | None = None
+        self, show: bool, *, label_id: int | None = None,
+        keep_hidden: bool = False,
     ) -> int:
         """Push show_selected_label (and optionally selected_label) to subviewers.
 
@@ -3676,6 +5645,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     # subviewer label layer is visible.  sync_layer_visibility
                     # propagates main_layer.visible=False to subviewers when
                     # the 3D proxy hides the main layer — restore here.
+                    if show and keep_hidden:
+                        continue
                     if show:
                         layer.visible = True
                         _heal_render(self, None, tag="show-selected-sub")
@@ -3740,8 +5711,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if not getattr(nav, "is_right_click_select_enabled", lambda: True)():
             return False
         refine_state = getattr(self, "_refine_state", None)
-        if refine_state is not None and refine_state.any_op_active:
-            return False
+        if refine_state is not None:
+            if self.staged_kinds() or refine_state.any_op_active:
+                return False
         if (
             getattr(self, "_interp_running", False)
             or getattr(self, "_split_running", False)
@@ -3890,7 +5862,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                                   lambda: True)():
                     reasons.append("toggle off")
                 rs = getattr(self, "_refine_state", None)
-                if rs is not None and rs.any_op_active:
+                if rs is not None and (self.staged_kinds() or rs.any_op_active):
                     reasons.append(f"refine op active ({rs!r})")
                 if getattr(self, "_interp_running", False):
                     reasons.append("interp running")
@@ -4055,7 +6027,22 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 + _liveness(annotator=self, navigator=nav)
             )
 
-            def _fire_select(label_id=label_id, token=_token, layer=layer):
+            # The clicked voxel in the main z,y,x frame (computed once, here).
+            # Each side view is the main data transposed by a permutation that
+            # is its own inverse (XZ swaps axes 0,1; YZ swaps axes 0,2), so
+            # the same permutation maps the click index back.
+            _lname = str(getattr(layer, "name", "") or "")
+            _click_point = None
+            if len(idx) == 3:
+                if _lname.endswith("_XY"):
+                    _click_point = (int(idx[0]), int(idx[1]), int(idx[2]))
+                elif _lname.endswith("_XZ"):
+                    _click_point = (int(idx[1]), int(idx[0]), int(idx[2]))
+                elif _lname.endswith("_YZ"):
+                    _click_point = (int(idx[2]), int(idx[1]), int(idx[0]))
+
+            def _fire_select(label_id=label_id, token=_token, layer=layer,
+                             click_point=_click_point):
                 if not self._rclick_select_alive(token, label_id):
                     return
                 nav_now = getattr(self, "_navigator_widget", None)
@@ -4094,7 +6081,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     + _liveness(annotator=self, navigator=nav_now)
                 )
                 try:
-                    nav_now.select_label(label_id)
+                    if _nav_has_row(nav_now, label_id):
+                        nav_now.select_label(label_id)
+                    else:
+                        # No table row to select (no features for this label,
+                        # or its tier is filtered out): still pan to the cell
+                        # that was clicked.
+                        self._navigator_navigate(label_id, click_point)
                 except Exception as _exc:
                     print(
                         f"[RC-WHY]   nav.select_label raised: {_exc!r}",
@@ -4189,6 +6182,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 l for l in self.viewer.layers if isinstance(l, Labels)
             ]
             next_label = next_unused_label_id(label_layers)
+            # Skip ids that only survive as ghost rows (deleted / merged)
+            # in the controller's df, and ids a Clear removed: the same
+            # floor + 1 rule as Add.
+            next_label = max(next_label,
+                             Curation3DAnnotator._fresh_label_floor(self) + 1)
             self._set_selected_label_all(next_label)
         except Exception as exc:
             try:
@@ -4200,7 +6198,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             except Exception:
                 pass
 
-    def _on_delete_label_from_navigator(self, label_id) -> None:
+    def _on_delete_label_from_navigator(self, label_id):
         """Handle Navigator's "Delete Label" button (Task A, 2026-06-01).
 
         Destructively zero the given label in the shared volume,
@@ -4230,14 +6228,23 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
              ``label_status="deleted"``.
           8. Remove the row from the navigator (mirrors
              ``_handle_manually_deleted_label``).
+
+        Which object goes: Delete Label removes the highlighted row's
+        object.  While objects are isolated, it removes the object your
+        brush is on (the Painting number) if that object is one of the
+        isolated ones; the highlighted row then moves to it, the selection
+        stays and no row callback fires.
+
+        Returns False on every no-op after the cast (nothing was deleted),
+        so the navigator does not auto-advance.
         """
         # 1. Defensive type-cast.
         try:
             lid = int(label_id)
         except (TypeError, ValueError):
-            return
+            return False
         if lid <= 0:
-            return
+            return False
 
         # 2. Op-active gate — silent no-op.  Belt + braces vs the
         #    button-disable gate; covers a programmatic caller that
@@ -4246,31 +6253,87 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             print(
                 f"[DELETE-LABEL] _on_delete_label_from_navigator BLOCKED "
                 f"lid={lid} "
-                f"refine_op={self._refinement_op_active()} "
+                f"open_edit={self.staged_op_kind()} "
                 f"draw_snapshot="
                 f"{getattr(self, '_draw_snapshot', None) is not None} "
                 f"merge_dialog="
                 f"{getattr(self, '_merge_dialog', None) is not None}"
             )
-            return
+            # False tells the navigator nothing was deleted: no auto-advance.
+            return False
 
-        # 3. Resolve shared volume.
+        # 3. Resolve shared volume.  A no-op returns False: the navigator
+        #    must not auto-advance past a row nothing happened to.
         labels_name = self._active_labels_name
         if not labels_name:
-            return
+            return False
         shared_data = self.sync_manager.shared_labels.get(labels_name)
         if shared_data is None:
-            return
+            return False
+
+        # Inside an isolation the brush object wins over the highlighted row
+        # (the rule is in the docstring).  Inline, not a helper: the test
+        # doubles bind this one method.
+        row_lid = lid
+        nav = getattr(self, "_navigator_widget", None)
+        brush = 0
+        show_selected = False
+        try:
+            # The main layer's brush, the number the Painting badge shows.
+            main_layer = self._layer_by_name(self.viewer.layers, labels_name)
+            if main_layer is not None:
+                brush = int(getattr(main_layer, "selected_label", 0) or 0)
+                show_selected = (
+                    getattr(main_layer, "show_selected_label", False) is True)
+        except Exception:  # noqa: BLE001 - a torn-down layer
+            brush = 0
+        live = set(self._iso_live_ids())
+        iso = set(live)
+        if show_selected:
+            iso.add(brush)             # the 2D isolation shows the brush label
+        if not live:
+            # The controller-held isolation: no live set annotator-side, the
+            # navigator's selection under a ticked Isolate box is the set.
+            try:
+                is_ticked = getattr(nav, "is_isolate_checked", None)
+                selected = getattr(nav, "selected_label_ids", None)
+                if (is_ticked is not None and selected is not None
+                        and is_ticked()):
+                    iso.update(int(i) for i in selected())
+            except Exception:  # noqa: BLE001 - a deleted widget
+                pass
+        found = False
+        row_followed = True
+        if brush > 0 and brush != lid and brush in iso:
+            # Never redirect to an object that is no longer in the volume.
+            if (shared_data == brush).any():
+                lid = brush
+                found = True
+                follow = getattr(nav, "set_current_row_silently", None)
+                if follow is not None:
+                    try:
+                        # False: the brush row is filtered out of the table,
+                        # so the highlighted row stays where it is and the
+                        # navigator must not auto-advance past it (see the
+                        # return at the end).
+                        row_followed = bool(follow(brush))
+                    except Exception:  # noqa: BLE001 - a deleted widget
+                        pass
+        iso_head = sorted(iso)[:10]
+        print(
+            f"[DELETE-LABEL] target row={row_lid} brush={brush} "
+            f"isolated_n={len(iso)} first={iso_head} -> deleting {lid}"
+        )
 
         # Verify label exists before snapshot — otherwise the snapshot
         # returns the full volume (fallback path) which would mean
         # the undo entry holds a copy of the entire labels array.
-        if not (shared_data == lid).any():
+        if not found and not (shared_data == lid).any():
             print(
                 f"[DELETE-LABEL] _on_delete_label_from_navigator: "
                 f"lid={lid} not found in volume — no-op"
             )
-            return
+            return False
 
         # 4. Snapshot bbox of the label (split-accept canonical step).
         roi_slices, old_roi_data = self._snapshot_label_roi(
@@ -4291,6 +6354,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         # 6. Sync all views (main + subviewers + isolation proxy).
         self._sync_all_views_after_operation(roi=roi_slices, label_id=lid)
+        # The deleted cell must leave the live isolation before the
+        # controller (and the navigator's auto-advance) look at it.
+        self._iso_forget([lid])
+
+        # The cell is gone on purpose: the next navigation must not find it
+        # "missing" and reconcile it a second time.
+        if getattr(self, "_last_navigated_label_id", None) == lid:
+            self._last_navigated_label_id = None
 
         # 7. Fire callback to controller → commits to undo stack.
         if self._on_delete_label_cb:
@@ -4313,6 +6384,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 nav.remove_item(lid)
             except Exception:
                 pass
+        # A redirected delete whose row the navigator could not follow: the
+        # highlighted row was not touched, so no auto-advance past it.
+        if not row_followed:
+            return False
+        return None
 
     def _on_paint_isolation_toggled(self, enabled: bool) -> None:
         """Handle Navigator's "Isolate while painting" checkbox
@@ -4337,6 +6413,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         new_state = bool(enabled)
         if new_state == self._paint_isolation_enabled:
             return  # no-op
+        blocking = bool(self.staged_kinds() & ISOLATION_BLOCKING)
+        if new_state and blocking:
+            # The open edit owns the isolated layer: refuse and untick.
+            print("[STAGED-OP] paint isolation refused - "
+                  f"{sorted(k.value for k in self.staged_kinds())}")
+            nav = getattr(self, "_navigator_widget", None)
+            if nav is not None:
+                nav.set_paint_isolate_checked(False)
+                nav._show_op_active_status(STAGED_WORK_OPEN)
+            return
         self._paint_isolation_enabled = new_state
 
         if new_state:
@@ -4354,11 +6440,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 # Background — wait for the user to pick a real label
                 # via New Label, navigator click, or a paint stroke.
                 return
+            # Flags first: restoring the colormap inside the isolation
+            # re-emits selected_label, which re-enters _on_paint_label_changed
+            # and must see this label as already handled.
+            self._paint_isolation_active = True
+            self._paint_isolation_label_id = current
             try:
                 self._on_isolation_changed({current})
-                self._paint_isolation_active = True
-                self._paint_isolation_label_id = current
             except Exception as exc:
+                self._paint_isolation_active = False
+                self._paint_isolation_label_id = None
                 print(
                     f"[PAINT-ISO] toggle-ON isolate failed: {exc!r}",
                     flush=True,
@@ -4369,10 +6460,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 return
             self._paint_isolation_active = False
             self._paint_isolation_label_id = None
+            if blocking:
+                # The open edit holds the isolation: only the flags reset.
+                return
+            nav = getattr(self, "_navigator_widget", None)
+            if nav is not None and nav.is_isolate_checked():
+                # The Isolate box is still ticked: show its rows again.
+                # (several rows only render through Render Selected)
+                if len(nav.selected_label_ids()) > 1:
+                    nav._on_render_selected_clicked()
+                else:
+                    nav._fire_isolation_if_active()
+                return
             try:
-                # Clear isolation entirely.  If the navigator-driven
-                # isolation is also active, the navigator can re-fire
-                # at any time; we don't try to restore prior state.
                 self._on_isolation_changed(set())
             except Exception as exc:
                 print(
@@ -4402,19 +6502,30 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return
         if lid <= 0:
             return
+        if self.staged_kinds() & ISOLATION_BLOCKING:
+            # An edit sets the brush label itself; say nothing, log only.
+            print(f"[STAGED-OP] paint label {lid} ignored during an open edit")
+            return
         if lid == self._paint_isolation_label_id:
             return  # dedup — same label already isolated
+        # Flags first (see the toggle-on path): the isolation's colormap
+        # restore re-emits selected_label for this same label.  On a
+        # failure the previous label stays isolated, so put it back.
+        prev_active = self._paint_isolation_active
+        prev_lid = self._paint_isolation_label_id
+        self._paint_isolation_active = True
+        self._paint_isolation_label_id = lid
         try:
             self._on_isolation_changed({lid})
-            self._paint_isolation_active = True
-            self._paint_isolation_label_id = lid
         except Exception as exc:
+            self._paint_isolation_active = prev_active
+            self._paint_isolation_label_id = prev_lid
             print(
                 f"[PAINT-ISO] event isolate({lid}) failed: {exc!r}",
                 flush=True,
             )
 
-    def _on_mark_tier_from_navigator(self, label_id, tier) -> None:
+    def _on_mark_tier_from_navigator(self, label_id, tier):
         """Forward navigator tier-flag click to the controller callback.
 
         Replaces the previous ``_on_mark_good_from_navigator`` and
@@ -4426,9 +6537,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """
         if self._on_mark_tier_cb:
             try:
-                self._on_mark_tier_cb(label_id, tier)
+                # Hand the controller's answer back: False means refused.
+                return self._on_mark_tier_cb(label_id, tier)
             except Exception:
                 pass
+        return None
 
     def _on_merge_from_navigator(self, keep_id, absorb_id) -> None:
         """Legacy single-label merge entry. Kept for backward
@@ -4515,6 +6628,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             except Exception:
                 pass
             self._merge_dialog = None
+
+        # Remember whether the Isolate box was ticked: Accept puts it back.
+        _nav = getattr(self, "_navigator_widget", None)
+        try:
+            self._merge_iso_box_was_ticked = bool(
+                _nav is None or _nav.is_isolate_checked()
+            )
+        except Exception:
+            self._merge_iso_box_was_ticked = True
 
         from napari_epicycle.annotator.merge_dialog import MergeDialog
 
@@ -4649,15 +6771,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 ) or {}
 
                 # 1. Remove sub-proxies for the absorbed labels.
-                for absorb_id in absorb_set:
-                    lyr = proxy_layers.pop(absorb_id, None)
-                    if lyr is None:
-                        continue
-                    try:
-                        lyr.visible = False
-                        self.viewer.layers.remove(lyr)
-                    except (ValueError, KeyError):
-                        pass
+                with _gc_batch(self):
+                    for absorb_id in absorb_set:
+                        lyr = proxy_layers.pop(absorb_id, None)
+                        if lyr is None:
+                            continue
+                        try:
+                            lyr.visible = False
+                            self.viewer.layers.remove(lyr)
+                        except (ValueError, KeyError):
+                            pass
+                _refocus_main_layer(self)
 
                 # 2. Resize the keep sub-proxy's bbox to include the
                 #    merge ROI. New bbox = union(old proxy bbox, ROI).
@@ -4729,6 +6853,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if getattr(self, "_load_locked", False):
             print("[REFINE-ACCEPT] merge accept refused — controller busy (load-locked)")
             return
+        _st = _StepTimer("[MERGE-PERF] accept")
         snapshot = (None, None)
         if (
             getattr(self, "_merge_dialog", None) is not None
@@ -4749,6 +6874,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             except Exception:
                 pass
 
+        _st.lap("controller")
         # Remove absorbed rows from the navigator (keep label row is
         # updated by the controller via re-emit; we just drop ghosts).
         nav = getattr(self, "_navigator_widget", None)
@@ -4759,6 +6885,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 except Exception:
                     pass
 
+        _st.lap("nav_rows")
         # Keep the merged label isolated post-accept so the user can
         # immediately chain split/refine/smooth on it without re-clicking.
         # Single-label set ({keep_id}) routes through
@@ -4769,11 +6896,18 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # transition (idempotent claim).  Cancel still calls
         # _on_isolation_changed(set()) to fully release because Cancel
         # means "abandon the merge entirely".
+        _box_was_ticked = bool(getattr(self, "_merge_iso_box_was_ticked", True))
         try:
-            self._on_isolation_changed({int(keep_id)})
+            if _box_was_ticked:
+                self._on_isolation_changed({int(keep_id)})
+            else:
+                # The box was off before the dialog opened: drop the
+                # dialog's isolation and leave the box off.
+                self._on_isolation_changed(set(), reason="forget")
         except Exception:
             pass
 
+        _st.lap("isolation")
         # Sync the navigator's Isolate checkbox to match the active
         # isolation state.  The merge dialog force-isolates on open
         # regardless of the navigator's prior cb state — so if it was
@@ -4782,18 +6916,26 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # not re-trigger _on_isolate_toggled (which would re-fire
         # isolation and double-dispatch).
         nav = getattr(self, "_navigator_widget", None)
-        if nav is not None and hasattr(nav, "set_isolate_checked"):
+        if _box_was_ticked and nav is not None and hasattr(nav, "set_isolate_checked"):
             try:
                 nav.set_isolate_checked(True)
             except Exception:
                 pass
 
+        _st.lap("box")
+        # The merge is committed: the old draw snapshot must not be able to
+        # zero the absorbed voxels later.
+        self._clear_draw_snapshot()
         # Clear the dialog reference.
         self._merge_dialog = None
         # Merge-dialog gate just lifted — re-enable New/Delete Label
         # buttons if no other gate is up.
         self._refresh_merge_button_state()
         self._refresh_label_action_buttons_state()
+        _st.lap("buttons")
+        _st.line(keep=int(keep_id), absorbed=len(absorb_ids),
+                 box_was_ticked=_box_was_ticked, ndisplay=_ndisplay_of(self))
+
     def _cancel_merge_dialog(self) -> None:
         """Restore the volume from the dialog's snapshot if a merge
         was performed, then drop the dialog reference. No DataFrame
@@ -4915,10 +7057,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         hits those pieces.  Both default to the navigator's own behavior.
         """
         from packages.epicycle_annotator.batch_refine import (
+            BATCH_ADD_OPEN,
             BATCH_ALREADY_OPEN,
             BATCH_BUSY,
             BATCH_NO_VOLUME,
             BATCH_NOT_CLEAN,
+            BATCH_REFINE_OPEN,
+            BATCH_RESHAPE_OPEN,
             BATCH_STILL_STOPPING,
         )
 
@@ -4947,7 +7092,23 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # disabled by set_load_locked (which only gates New/Delete/Merge), so
         # this is the defense-in-depth gate.  _load_locked is set by
         # set_load_locked; absent on a standalone annotator → not load-locked.
+        # Three open edits hold that lock themselves (an Add from Start, a
+        # guided split, a staged Refine): the one open names itself and its
+        # tab, not "busy".  Any other open edit under the lock is beside a
+        # real job, which still says busy (resolving the edit would not
+        # free the lock).
         if getattr(self, "_load_locked", False):
+            try:
+                kinds = self.staged_kinds()
+            except Exception:  # noqa: BLE001 -- a gate never raises
+                kinds = frozenset()
+            for kind, sentence in ((StagedOp.RESHAPE, BATCH_RESHAPE_OPEN),
+                                   (StagedOp.ADD, BATCH_ADD_OPEN),
+                                   (StagedOp.REFINE, BATCH_REFINE_OPEN)):
+                if kind in kinds:
+                    print(f"[BATCH] open refused — a {kind.value} edit is "
+                          "open (the lock is the edit's)")
+                    return sentence
             print("[BATCH] open refused — controller busy (load-locked)")
             return BATCH_BUSY
         # An IDLE dialog already open: the plain door (the navigator)
@@ -5803,11 +7964,23 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
     def _refresh_add_image_combo(self) -> None:
         """Populate the three Add channel combos from the viewer's image
-        layers (blank stays blank), and the page's patch context."""
+        layers (blank stays blank), and the page's patch context.  Each
+        item shows its layer's own colour: the brightest colour of the
+        layer's colormap, as the views draw it (read from the colormap
+        only, never the data)."""
         image_names = self._add_image_channel_names()
+        colours = {}
+        for layer in self.viewer.layers:
+            if layer.name not in image_names or layer.name in colours:
+                continue
+            try:
+                rgb = np.asarray(layer.colormap.colors, dtype=float)[-1][:3]
+                colours[layer.name] = tuple(float(v) for v in rgb)
+            except Exception:  # noqa: BLE001 - a swatch is optional
+                continue
         adv = self._get_advanced_features_widget()
         if adv is not None and hasattr(adv, "refresh_add_image_combo"):
-            adv.refresh_add_image_combo(image_names)
+            adv.refresh_add_image_combo(image_names, colours=colours)
         try:
             self._add_push_context()
         except Exception as exc:  # noqa: BLE001
@@ -5850,7 +8023,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         identity, and dropped at Accept, at every reset and at a realign
         (``_add_forget_volume_max``).  The df floor is always read."""
         shared = self._add_shared_volume()
-        floor = self._add_label_id_floor()
+        # the df floor, and the highest id a Clear removed (with no QC
+        # table the df cannot remember the cleared ids)
+        floor = max(self._add_label_id_floor(), self._add_clear_floor_now())
         if shared is None:
             return floor + 1
         try:
@@ -5926,13 +8101,65 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._push_add_ui(status_text=ADD_BATCH_BUSY, status_kind="warn")
         return True
 
-    def _start_add(self, reuse_box: bool = False) -> None:
+    def _refuse_for_open_edit(self, door, tab, say) -> None:
+        """Refuse a door because an edit is open: nothing has been written.
+
+        Brings the tab of the door forward (when it has one) and says the
+        one sentence where the user clicked.
+        """
+        try:
+            kinds = sorted(k.value for k in self.staged_kinds())
+        except Exception:
+            kinds = []
+        print(f"[STAGED-OP] {door} refused - open edit(s): {kinds}")
+        if tab:
+            adv = self._get_advanced_features_widget()
+            if adv is not None and hasattr(adv, "focus_tab"):
+                adv.focus_tab(tab)
+                # napari's X only hides the dock: never focus a hidden page
+                _show_dock_of(adv)
+        say(STAGED_WORK_OPEN)
+
+    def _add_refused_while_staged(self, door) -> bool:
+        """True (and the sentence in the Add status) while any other edit is
+        open: Add would commit on top of it and a later Reject would paste
+        an old snapshot over the new cell.  Batch keeps its own sentence."""
+        if self._add_refused_while_batch(door):
+            return True
+        if not self.staged_kinds():
+            return False
+        self._refuse_for_open_edit(
+            f"add {door}", "Add",
+            lambda text: self._push_add_ui(status_text=text,
+                                           status_kind="warn"))
+        return True
+
+    def _say_in_navigator_header(self, text) -> None:
+        nav = getattr(self, "_navigator_widget", None)
+        show = getattr(nav, "_show_op_active_status", None)
+        if callable(show):
+            show(text)
+
+    def _add_refresh_label_buttons(self) -> None:
+        """New / Delete / Merge follow Add: grey while it holds the surface,
+        back when it lets go."""
+        for name in ("_refresh_label_action_buttons_state",
+                     "_refresh_merge_button_state"):
+            try:
+                getattr(self, name)()
+            except Exception:
+                pass
+
+    def _start_add(self, reuse_box: bool = False, whole: bool = False) -> None:
         """Enter Add mode: drop a box at the crosshair (or volume centre) +
         tune.  ``reuse_box`` ("+ Add another") re-places the retained box
-        and skips the crosshair."""
+        and skips the crosshair.  ``whole`` (Whole patch) makes the box the
+        patch, never clamped."""
         if self._add_refused_while_batch("start"):
             return
         if getattr(self, "_add_running", False):
+            return
+        if self._add_refused_while_staged("start"):
             return
         # re-point shared at the main layer first, as split / smooth /
         # merge do: a Commit Triage, Discard or undo may have reassigned
@@ -5946,17 +8173,30 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return
         from packages.epicycle_annotator.roi_box import BoxRec
 
+        # a Markers source picked on another patch or run is forgotten
+        self._add_forget_source_if_moved()
         # a new box starts with the outline tick down
         self._add_put_outline_down()
         shape = main.data.shape
-        if not reuse_box or getattr(self, "_add_box", None) is None:
+        if not whole and (not reuse_box
+                          or getattr(self, "_add_box", None) is None):
             # the preset used last in this workspace (Nuclei the first time)
+            # -- not for Whole patch: it takes the page as it stands (the
+            # run picked under Markers, Inside each cell), and the preset's
+            # defaults would put the markers back to their default source;
+            # one rule with Whole patch on a box
             self._add_restore_preset()
+        else:
+            # ... but "Update as I click" is the workspace's on every start
+            self._add_restore_live_tick()
         # Drop the box where the user is looking — the crosshair intersection —
         # falling back to the volume centre when no crosshair position is known.
         # Reuse the last box size (sticky) so repeated adds keep the size you set.
         kept = getattr(self, "_add_box", None) if reuse_box else None
-        if kept is not None:
+        was_whole = bool(getattr(self, "_add_whole_patch", False))
+        if whole:
+            box = self._add_whole_box(shape)
+        elif kept is not None:
             box = kept.clamped(shape)
         else:
             box = BoxRec.centered(shape,
@@ -5969,8 +8209,20 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             box = self._add_clamp_box(box, shape)
         self._add_box = box
         self._add_roi = self._add_box.bounds_slices(shape)
+        # a new session has no box from before a whole patch
+        self._add_box_before_whole = None
+        # the whole patch: by the button, or "+ Add another" after one (a
+        # choice that cannot fill it greys Preview, as on the first box)
+        self._add_whole_patch = bool(whole) or (
+            kept is not None and was_whole
+            and self._add_box == self._add_whole_box(shape))
         self._add_running = True
         self._add_review = False
+        self._add_box_cleared = False
+        self._add_refresh_label_buttons()
+        # Spread from each marker's solver: asked once per process, on a
+        # worker, before it is first needed
+        self._add_ensure_numba_check()
         self._add_threshold_value = None
         self._add_threshold_touched = False
         self._add_threshold_auto_written = None
@@ -5992,6 +8244,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._refresh_add_image_combo()
             self._render_add_box()
             self._install_add_side_callbacks()
+            # (a whole patch takes markers as a box does: Place markers is
+            # left as it is)
             b = self._add_box
             self._push_add_ui(
                 box_active=True,
@@ -6005,15 +8259,22 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 accept_count=0,
                 reject_enabled=True,
                 footer_text="",
+                whole_patch=bool(self._add_whole_patch),
             )
             self._add_transient = None
             self._add_info = None
             self._add_brightness_channel_seen = self._add_brightness_channel()
             self._push_add_ui(threshold_pending=True)
+            # the result's colour map: compiled once per process, off the
+            # main thread, before the first Preview can finish
+            self._add_ensure_cmap_warm()
             # Populate the histogram + Otsu line only — the watershed runs on the
             # Preview click, not live (keeps box placement snappy).
             self._compute_add_histogram(reset_threshold=True)
             self._request_add_box_info()
+            # the picked run (Inside each cell, or Cells' Markers) is read
+            # for this box or whole patch when it is not in memory yet
+            self._add_ensure_run_guide()
             self._add_refresh_ui(nuclei_auto=float("nan"), run_count=())
         except Exception as exc:
             print(f"[ADD] _start_add failed: {exc!r}")
@@ -6053,6 +8314,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         wireframe, stale-preview reset, and histogram all update identically."""
         if not getattr(self, "_add_running", False) or self._add_box is None:
             return
+        if getattr(self, "_add_whole_patch", False):
+            # the whole patch does not move (the button is grey too)
+            return
         if self._add_refuse_busy("recenter"):
             return
         main = self._add_main_label_layer()
@@ -6078,10 +8342,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             status_kind="ready",
         )
 
-    def _on_add_box_changed(self, cz, cy, cx, sz, sy, sx) -> None:
+    def _on_add_box_changed(self, cz, cy, cx, sz, sy, sx, whole=False,
+                            clamped=False) -> None:
         """Slider edit → update box + wireframe + histogram.  Does NOT run the
         watershed — that only happens on an explicit Preview click (keeps box
-        tuning snappy; the live watershed was the lag the user hit)."""
+        tuning snappy; the live watershed was the lag the user hit).
+
+        Any change that is not Whole patch itself (a Numbers… slider, S /
+        M / L) makes a whole-patch box an ordinary box again; on Cells that
+        box is shrunk to the Cells limit and S1 says so (``clamped``: the
+        caller -- S / M / L -- already shrank it)."""
         if not getattr(self, "_add_running", False):
             return
         if self._add_refuse_busy("box change"):
@@ -6093,18 +8363,95 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         main = self._add_main_label_layer()
         if main is None:
             return
+        from packages.epicycle_annotator import add_preview as AP
         from packages.epicycle_annotator.roi_box import BoxRec
 
+        # leaving a whole patch that holds markers asks first; "Remove
+        # them" removes every marker (none of them was placed for the new
+        # box), "Go back" leaves the whole patch and its markers as they were
+        gone = []
+        if (getattr(self, "_add_whole_patch", False) and not whole
+                and self._add_markers()):
+            n = len(self._add_markers())
+            if not self._add_leave_whole_confirm(AP.count_phrase(
+                    n, AP.ADD_LEAVE_WHOLE_CONFIRM_ONE,
+                    AP.ADD_LEAVE_WHOLE_CONFIRM)):
+                b = self._add_box
+                if b is not None:     # put the Numbers... sliders back
+                    self._push_add_ui(box_center=(b.cz, b.cy, b.cx),
+                                      box_size=(b.sz, b.sy, b.sx))
+                return
+            if not (getattr(self, "_add_running", False)
+                    and getattr(self, "_add_whole_patch", False)):
+                return          # an exit while the confirm was open
+            gone = list(self._add_markers())
         shape = main.data.shape
+        box_before = self._add_box
         self._add_box = BoxRec(int(cz), int(cy), int(cx),
                                int(sz), int(sy), int(sx))
-        self._add_last_size = (int(sz), int(sy), int(sx))  # sticky size
+        was_whole = bool(getattr(self, "_add_whole_patch", False))
+        left_cells_whole = (was_whole and not whole
+                            and self._add_preset() == "cells")
+        if left_cells_whole:
+            c = self._add_clamp_box(self._add_box, shape)
+            if (c.sz, c.sy, c.sx) != (self._add_box.sz, self._add_box.sy,
+                                      self._add_box.sx):
+                clamped = True
+            self._add_box = c
+        if bool(whole) != bool(getattr(self, "_add_whole_patch", False)):
+            self._add_whole_patch = bool(whole)
+            print("[ADD] whole patch {}".format("on" if whole else "off"))
+            # the box from before the whole patch, for S / M / L to go back
+            # to; leaving the whole patch uses it up
+            self._add_box_before_whole = box_before if whole else None
+            # a whole patch takes markers as a box does: Place markers is
+            # left as it is, and the markers already placed are kept
+            self._push_add_ui(whole_patch=bool(whole))
+        if not whole:
+            # the whole patch is not a size to remember for the next box;
+            # the box as it became (a Cells box leaving a whole patch is
+            # shrunk to the limit above)
+            b = self._add_box
+            self._add_last_size = (int(b.sz), int(b.sy), int(b.sx))
         self._add_roi = self._add_box.bounds_slices(shape)
         self._render_add_box()       # cheap — just updates the Shapes geometry
         self._invalidate_add_preview()  # the box moved → any preview is stale
         self._add_drop_info()           # ... and so is the box info
-        self._add_keep_clicks_in_box()  # after the invalidate: it says so
+        if gone:
+            self._add_click_markers = []
+            self._add_after_marker_removal(gone)
+        else:
+            self._add_keep_clicks_in_box()  # after the invalidate: says so
         self._schedule_add_histogram()  # debounced; intensity only, no watershed
+        if left_cells_whole and clamped:
+            b = self._add_box
+            # the Numbers... sliders show the box it became
+            self._push_add_ui(box_center=(b.cz, b.cy, b.cx),
+                              box_size=(b.sz, b.sy, b.sx))
+        if gone or (left_cells_whole and clamped):
+            # after the invalidate, which clears a transient; the removed
+            # markers are the sentence when both apply
+            self._add_transient = (AP.ADD_S1_WHOLE_MARKERS_CLEARED if gone
+                                   else AP.ADD_S1_LEFT_WHOLE_CLAMPED)
+            self._add_refresh_ui()
+
+    def _add_leave_whole_confirm(self, text) -> bool:
+        """The red themed confirm before a whole patch holding markers
+        becomes a box, on the Advanced dock.  A seam for the tests."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        try:
+            from napari_epicycle.ui_shell.theme import themed_confirm
+
+            parent = self._get_advanced_features_widget() or self
+            return bool(themed_confirm(
+                parent, AP.ADD_LEAVE_WHOLE_TITLE, str(text),
+                confirm_text=AP.ADD_LEAVE_WHOLE_OK,
+                cancel_text=AP.ADD_LEAVE_WHOLE_BACK, accent="red",
+                default="cancel"))     # Enter = Go back
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] leave-whole confirm failed: {exc!r}")
+            return False
 
     def _set_add_box_size_fraction(self, frac: float) -> None:
         """Preset: resize the box to *frac* of each patch axis (keeps centre).
@@ -6123,14 +8470,23 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         sy = max(1, int(round(Y * frac)))
         sx = max(1, int(round(X * frac)))
         b = self._add_box
+        if getattr(self, "_add_whole_patch", False):
+            # leaving a whole patch: back to the box from before it -- the
+            # same size is exactly that box, another size is centred on
+            # it -- so the markers inside it stay (none: the patch centre)
+            b = getattr(self, "_add_box_before_whole", None) or b
         # on Cells only, scaled uniformly to the budget
         from packages.epicycle_annotator.roi_box import BoxRec
 
         c = self._add_clamp_box(BoxRec(b.cz, b.cy, b.cx, sz, sy, sx),
                                 main.data.shape)
+        shrunk = (c.sz, c.sy, c.sx) != (sz, sy, sx)
         sz, sy, sx = c.sz, c.sy, c.sx
-        self._on_add_box_changed(b.cz, b.cy, b.cx, sz, sy, sx)
+        self._on_add_box_changed(b.cz, b.cy, b.cx, sz, sy, sx,
+                                 clamped=shrunk)
         nb = self._add_box
+        if nb is None:          # the box closed while a confirm was open
+            return
         self._push_add_ui(
             box_center=(nb.cz, nb.cy, nb.cx),
             box_size=(nb.sz, nb.sy, nb.sx),
@@ -6146,28 +8502,81 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             t.setSingleShot(True)
             t.timeout.connect(self._do_add_histogram)
             self._add_box_timer = t
+        # on a Cells whole patch with an outline a finished Bridge gaps /
+        # Dark below re-measures the outline over the whole patch (seconds):
+        # wait for the arrow steps to stop (an answer in flight is not
+        # cancelled)
+        slow = (getattr(self, "_add_whole_patch", False)
+                and self._add_preset() == "cells"
+                and self._add_outline_mode() != "none")
+        t.start(300 if slow else 150)
+
+    def _schedule_add_ball_redraw(self) -> None:
+        """A Ball radius change redraws the balls once the arrow steps stop
+        (debounced like the histogram: holding the key gives one redraw);
+        with no marker there is nothing to draw."""
+        if not self._add_markers():
+            return
+        from qtpy.QtCore import QTimer
+
+        t = getattr(self, "_add_ball_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._do_add_ball_redraw)
+            self._add_ball_timer = t
         t.start(150)
+
+    def _do_add_ball_redraw(self) -> None:
+        """The whole ball layer again at the new radius -- only when markers
+        exist and the radius differs from the one drawn."""
+        if not getattr(self, "_add_running", False) or not self._add_markers():
+            return
+        if self._add_ball_radius_vox() == getattr(self, "_add_balls_radius",
+                                                  None):
+            return
+        self._render_add_balls()
+        self._add_refresh_ui()
+
+    def _stop_add_ball_timer(self) -> None:
+        t = getattr(self, "_add_ball_timer", None)
+        if t is not None:
+            try:
+                t.stop()
+            except Exception:  # noqa: BLE001 - teardown never raises
+                pass
 
     def _do_add_histogram(self) -> None:
         if not getattr(self, "_add_running", False):
             return
         self._request_add_box_info()
+        # the strip names the reader that just started (the change's own
+        # refresh ran before it, with nothing running yet)
+        self._add_refresh_ui()
         self._compute_add_histogram(
             reset_threshold=self._add_threshold_value is None
         )
 
-    def _invalidate_add_preview(self) -> None:
+    def _invalidate_add_preview(self, live_schedule: bool = True) -> None:
         """Drop any stale preview when an input changes.
+
+        With "Update as I click" on, the change also schedules one run
+        (``live_schedule=False``: a live run's own refusal, which must not
+        schedule itself again).
 
         The watershed only runs on an explicit Preview click, so whenever the
         box / threshold / parameters change we clear the old candidate + disable
-        Accept and prompt for a re-Preview.  Cheap (candidate removal no-ops when
-        none exists)."""
+        Accept and prompt for a re-Preview.  Cheap: the candidate layer is
+        zeroed where the result was and hidden, not removed (it is made once
+        per box; the exits remove it)."""
         if getattr(self, "_add_busy", False):
             # every change is refused while a preview runs;
             # reaching here busy is a missing refusal upstream
             print("[ADD] _invalidate_add_preview called while busy - ignored")
             return
+        # a finish launched on the inputs before this change is stale
+        self._add_settings_epoch = int(
+            getattr(self, "_add_settings_epoch", 0)) + 1
         self._add_transient = None
         # the box info is NOT dropped here: it depends on the box, the
         # channels, the source and the Advanced knobs -- the callers that
@@ -6176,20 +8585,631 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # nothing to ask again: Cells' S1 sat at "Measuring the box..." and
         # "Preview again" was refused (live-shot fix F9)
         self._drop_add_walls(keep_intent=True)
-        had = getattr(self, "_add_candidate_layer", None) is not None \
+        had = getattr(self, "_add_drawn_roi", None) is not None \
             or getattr(self, "_add_preview_result", None) is not None
         self._add_preview_result = None
         self._add_preview_res = None
         self._add_preview_roi = None
-        if getattr(self, "_add_candidate_layer", None) is not None:
-            self._remove_add_candidate()
+        # the prepared patch stays; nothing drawn answers a solution now
+        self._add_drawn_marker_solution = None
+        # zero and hide, never remove: the candidate is made once per box
+        self._add_hide_candidate()
         if had:
             self._push_add_ui(
                 accept_enabled=False, accept_count=0,
                 candidate_ids=[],  # clear the stale candidate checklist
                 footer_text="",
             )
+        if live_schedule:
+            self._add_live_schedule()
+            # an Accept waiting with nothing left to draw ends here
+            if getattr(self, "_add_accept_pending", False):
+                self._add_live_settle_accept()
+                if not getattr(self, "_add_accept_pending", False):
+                    return             # the cancel refreshed the page
         self._add_refresh_ui()
+
+    # --- "Update as I click" ------------------------------------------------
+    def _add_live_on(self) -> bool:
+        """The "Update as I click" tick (the orchestrator's copy)."""
+        return bool(getattr(self, "_add_live_enabled", False))
+
+    def _add_live_possible(self) -> bool:
+        """A live run can follow a change now: the tick on, a box session,
+        Nuclei ▸ At the markers I place (on a box or the whole patch) or
+        Cells ▸ Click markers on a box of at most
+        ``ADD_LIVE_CELLS_MAX_VOXELS`` or on a whole patch whose walls the
+        click fill redoes (:meth:`_add_cells_live_whole`), and at least one
+        ticked marker."""
+        if not self._add_live_on():
+            return False
+        if (not getattr(self, "_add_running", False)
+                or getattr(self, "_add_review", False)
+                or getattr(self, "_add_box", None) is None
+                or getattr(self, "_add_roi", None) is None):
+            return False
+        from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_preset() == "cells":
+            if self._add_marker_source()[0] != AP.SOURCE_CLICKS:
+                return False
+            if getattr(self, "_add_whole_patch", False):
+                # a whole patch runs as you click with the walls the click
+                # fill redoes (the box rule); others wait for Preview
+                if not self._add_cells_live_whole():
+                    return False
+            elif self._add_roi_voxels() > int(AP.ADD_LIVE_CELLS_MAX_VOXELS):
+                # a larger box waits for Preview (S1 row 13.5 says so)
+                return False
+        elif self._add_look_for()[0] != AP.LOOK_MARKERS:
+            return False
+        return any(m["ticked"] for m in self._add_markers())
+
+    def _add_roi_voxels(self) -> int:
+        """The voxels in the box (0 with none)."""
+        roi = getattr(self, "_add_roi", None)
+        if roi is None:
+            return 0
+        return int(np.prod([int(sl.stop - sl.start) for sl in roi]))
+
+    def _add_half_factor(self) -> int:
+        """The session's half-size factor (1 when missing or unreadable)."""
+        try:
+            return int(self._reshape_context().get("downsample_factor")
+                       or 1)
+        except (TypeError, ValueError, OverflowError):
+            return 1
+
+    def _add_marker_engine_on(self) -> bool:
+        """Nuclei ▸ At the markers I place on a whole patch with "Update as
+        I click" on: every run -- a Preview press too -- prepares the patch
+        once and solves only the pieces whose markers changed.  The tick
+        off (or a box) runs the one-go way."""
+        if not (self._add_live_on()
+                and getattr(self, "_add_whole_patch", False)):
+            return False
+        if self._add_preset() == "cells":
+            return False
+        from packages.epicycle_annotator import add_preview as AP
+
+        return self._add_look_for()[0] == AP.LOOK_MARKERS
+
+    def _add_marker_stage_key(self):
+        """What the prepared patch depends on: the labels (the volume and
+        its write epoch), the session, the channel, Local contrast and its
+        clip, the threshold, the click radius, Separate and the markers'
+        Spacing, Smallest object and the box.  ``None`` with no box."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        shared = self._add_shared_volume()
+        roi = getattr(self, "_add_roi", None)
+        if shared is None or roi is None:
+            return None
+        params = self._add_params()
+        thr = getattr(self, "_add_threshold_value", None)
+        return (id(shared), int(getattr(self, "_add_volume_epoch", 0)),
+                self._add_session_key(), str(params.get("channel") or ""),
+                bool(params.get("clahe", False)),
+                float(params.get("clahe_clip", 0.01)),
+                "otsu" if thr is None else float(thr),
+                float(params.get("click_radius_um", 1.0)),
+                bool(params.get("separate", True)),
+                int(params.get("marker_spacing",
+                               AP.ADD_MARKER_SPACING_DEFAULT)),
+                self._add_half_factor(), int(params.get("min_size", 0)),
+                tuple((int(sl.start or 0), int(sl.stop)) for sl in roi))
+
+    def _add_marker_sigma(self):
+        """The smoothing the markers' run would use (``None``: off), as the
+        Preview's gather computes it."""
+        params = self._add_params()
+        if not params.get("auto_smooth", True):
+            return None
+        sigma = float(params.get("smooth_sigma", 1.5))
+        factor = self._add_half_factor()
+        return sigma / factor if factor > 1 else sigma
+
+    def _add_marker_drawn_current(self) -> bool:
+        """The result drawn already answers the ticked markers on this
+        prepared patch with this smoothing: a Preview has nothing to run."""
+        drawn = getattr(self, "_add_drawn_marker_solution", None)
+        cache = getattr(self, "_add_marker_cache", None)
+        if (drawn is None or not cache
+                or getattr(self, "_add_preview_result", None) is None
+                or not self._add_marker_engine_on()):
+            return False
+        if (cache.get("key") != self._add_marker_stage_key()
+                or drawn.stage is not cache.get("stage")):
+            return False
+        starts = [int(sl.start or 0) for sl in self._add_roi]
+        ticked = [m for m in self._add_markers() if m["ticked"]]
+        pts = tuple(tuple(int(m["zyx"][a]) - starts[a] for a in range(3))
+                    for m in ticked)
+        ids = tuple(int(m["id"]) for m in ticked)
+        return (tuple(drawn.points) == pts and tuple(drawn.click_ids) == ids
+                and drawn.smooth_sigma == self._add_marker_sigma())
+
+    def _add_keep_marker_stage(self, res) -> None:
+        """The prepared patch and the solution of a finished run are kept
+        for the next click -- a stale run's too (its solution is still a
+        valid start) -- when the page's key now is the launch's."""
+        stage = getattr(res, "marker_stage", None)
+        sol = getattr(res, "marker_solution", None)
+        key = getattr(self, "_add_launch_marker_key", None)
+        if stage is None or sol is None or key is None:
+            return
+        # the tick off, another preset or Look for meanwhile: not kept
+        if not self._add_marker_engine_on():
+            return
+        if key != self._add_marker_stage_key():
+            return
+        self._add_marker_cache = {"key": key, "stage": stage,
+                                  "solution": sol}
+
+    def _add_drop_marker_cache(self, why) -> None:
+        """Let the prepared patch go (``why`` for the console)."""
+        if getattr(self, "_add_marker_cache", None) is not None:
+            print(f"[ADD] prepared whole patch dropped: {why}")
+        self._add_marker_cache = None
+        self._add_drawn_marker_solution = None
+
+    def _add_cells_live_whole_rule(self) -> bool:
+        """Cells ▸ Click markers on a whole patch of at most
+        ``ADD_LIVE_CELLS_WHOLE_MAX_VOXELS`` with "Update as I click" on and
+        walls the click fill redoes (Membrane sheets, Intensity edges):
+        every run there -- a Preview press too -- fills by the box rule (to
+        the walls, bounded by the tissue outline and the dark rule, no
+        background marker, the patch's faces open) through the click
+        fill's prepared patch.  The tick off, other walls or a larger patch
+        keep the whole-patch fill with a background marker."""
+        if not (self._add_live_on()
+                and getattr(self, "_add_whole_patch", False)
+                and self._add_preset() == "cells"):
+            return False
+        from packages.epicycle_annotator import add_preview as AP
+        from packages.epicycle_annotator.reshape.incremental import (
+            CLICK_FILL_WALLS,
+        )
+
+        if self._add_marker_source()[0] != AP.SOURCE_CLICKS:
+            return False
+        if self._add_roi_voxels() > int(AP.ADD_LIVE_CELLS_WHOLE_MAX_VOXELS):
+            return False
+        return (str(self._add_wall_params().get("wall_kind") or "")
+                in CLICK_FILL_WALLS)
+
+    def _add_cells_whole_fell_back(self) -> bool:
+        """The kept prepared patch says the click fill could not take this
+        key (its flat spots, the flood not compiled, a failure): until the
+        key changes no click runs the whole patch by itself -- a full flood
+        of it takes many seconds -- and S1 says to press Preview."""
+        kept = getattr(self, "_add_cells_stage", None)
+        if not kept or not (kept.get("full") or kept.get("fallback")):
+            return False
+        key = self._add_cells_stage_key()
+        return key is not None and kept.get("key") == key
+
+    def _add_cells_live_whole(self) -> bool:
+        """:meth:`_add_cells_live_whole_rule`, and the click fill can take
+        the patch (:meth:`_add_cells_whole_fell_back`): clicks run it as you
+        click.  A Preview press still fills it by the box rule."""
+        return (self._add_cells_live_whole_rule()
+                and not self._add_cells_whole_fell_back())
+
+    def _add_cells_engine_params(self) -> dict:
+        """The Cells run's settings as the engine reads them, as the page
+        holds them now: the gather's ``params`` less the finish's settings
+        and the nuclei threshold (what ``add_preview.cells_spec`` reads)."""
+        from packages.epicycle_annotator import add_preview as AP
+        from packages.epicycle_annotator.reshape.spec import (
+            DEFAULT_PARAMS as _RS_DEFAULTS,
+        )
+
+        params = self._add_params()
+        kind, _run_id = self._add_marker_source()
+        wall = self._add_wall_params()
+        out = dict(
+            source=kind, wall_kind=wall.get("wall_kind", "membrane"),
+            wall_chain=wall.get("chain", "none"),
+            dark_outside=bool(params.get("dark_outside", True)),
+            dark_otsu_factor=float(params.get("dark_otsu_factor", 0.5)),
+            dark_clearance_um=float(params.get("dark_clearance_um", 2.0)),
+            core_erode_um=float(params.get("core_erode_um", 1.0)),
+            click_radius_um=float(params.get("click_radius_um", 1.0)),
+            box_budget=int(params.get("box_budget", 4_000_000)),
+            # the Grow by pick as the page holds it: a whole patch is
+            # filled to the walls whatever it says (cells_growth decides)
+            growth=str(params.get("growth") or AP.GROW_FLOOD),
+            wall_cost=float(params.get("wall_cost", 40.0)),
+            growth_limit=float(params.get(
+                "growth_limit", _RS_DEFAULTS["growth_limit"])),
+            include_membrane=bool(params.get("include_membrane", True)),
+            outline=self._add_outline_mode(),
+            bridge_um=float(params.get("bridge_um", AP.ADD_BRIDGE_UM)))
+        if self._add_cells_live_whole_rule():
+            # a whole patch filled as you click: the box rule
+            out.update(whole_patch=True, box_rule=True)
+        return out
+
+    def _add_cells_stage_key(self):
+        """What the click-by-click Cells fill's prepared box depends on --
+        everything but the clicks: the box's wall picture key (the patch,
+        the run, the wall channel, kind and chain, the spacing, the
+        half-size factor, the box), the labels (the volume, its write epoch,
+        the labels layer), the engine's spec, the dark threshold and the
+        dark channels, the tissue outline.  On a whole patch filled as you
+        click (:meth:`_add_cells_live_whole`) the whole patch's wall picture
+        key stands for the box's.  ``None`` when no stage serves the page:
+        not Cells ▸ Click markers, no box, a whole patch with the tick off
+        or other walls, a box over ``ADD_LIVE_CELLS_MAX_VOXELS``, or a fill
+        the click fill does not redo (Spread, a wall picture other than
+        membrane / gradient)."""
+        from packages.epicycle_annotator import add_preview as AP
+        from packages.epicycle_annotator.reshape import incremental as INC
+
+        if self._add_preset() != "cells":
+            return None
+        if getattr(self, "_add_whole_patch", False):
+            base = (self._add_elev_key() + ("whole patch",)
+                    if self._add_cells_live_whole_rule() else None)
+        else:
+            base = self._add_box_elev_key()
+        shared = self._add_shared_volume()
+        if base is None or shared is None:
+            return None
+        params = self._add_cells_engine_params()
+        if params["source"] != AP.SOURCE_CLICKS:
+            return None
+        spec = AP.cells_spec(params)
+        if not INC.is_click_fill(spec):
+            return None
+        dark = spec.params["outside"] == "faces+dark"
+        return base + (
+            id(shared), int(getattr(self, "_add_volume_epoch", 0)),
+            str(getattr(self, "_active_labels_name", "") or ""), spec,
+            self._add_cached_dark() if dark else None,
+            tuple(sorted(self._add_image_channel_names())) if dark else (),
+            self._add_outline_key())
+
+    def _add_keep_cells_stage(self, res) -> None:
+        """The prepared box a finished run took is kept for the next click
+        -- a stale run's too (the stage does not read the clicks it ran
+        on) -- when it was prepared for the launch's key and the page's
+        key now is the launch's."""
+        holder = getattr(self, "_add_launch_cells_holder", None)
+        key = getattr(self, "_add_launch_cells_key", None)
+        self._add_launch_cells_holder = None
+        if (holder is None or key is None
+                or getattr(res, "preset", "") != "cells"
+                or holder.get("key") != key):
+            return
+        if key != self._add_cells_stage_key():
+            return
+        self._add_cells_stage = holder
+
+    def _add_cells_sig(self):
+        """What a Cells result the click fill answers: the prepared box's
+        key (a whole patch filled as you click, or a box at or under
+        ``ADD_LIVE_CELLS_MAX_VOXELS``), the ticked markers and their ids,
+        the finish's settings and the half-size factor (the smoothing).
+        ``None`` when no prepared box serves the page."""
+        key = self._add_cells_stage_key()
+        if key is None:
+            return None
+        ticked = [m for m in self._add_markers() if m["ticked"]]
+        params = self._add_params()
+        return (key, tuple(tuple(int(v) for v in m["zyx"]) for m in ticked),
+                tuple(int(m["id"]) for m in ticked),
+                tuple(params.get(k, d) for k, d in (
+                    ("min_size", 0), ("clear_border", True),
+                    ("edge_margin", 3), ("auto_smooth", True),
+                    ("smooth_sigma", 1.5))),
+                self._add_half_factor())
+
+    def _add_cells_drawn_current(self) -> bool:
+        """Cells ▸ Click markers filled by the click fill: the result drawn
+        already answers the ticked markers with these settings -- a Preview
+        has nothing to run.  On a whole patch filled as you click; on a box
+        at or under ``ADD_LIVE_CELLS_MAX_VOXELS`` only while its prepared
+        box is kept for the same key (the next run would reuse it)."""
+        drawn = getattr(self, "_add_drawn_cells_sig", None)
+        if (drawn is None
+                or getattr(self, "_add_preview_result", None) is None):
+            return False
+        sig = self._add_cells_sig()
+        if sig is None or drawn != sig:
+            return False
+        if self._add_cells_live_whole_rule():
+            return True
+        # the next run would reuse what is kept: the stage, or the full
+        # run the flat-spot rule chose (a fallback would try again)
+        kept = getattr(self, "_add_cells_stage", None)
+        return (bool(kept) and kept.get("key") == sig[0]
+                and (kept.get("stage") is not None or bool(kept.get("full"))))
+
+    def _add_drop_cells_stage(self, why) -> None:
+        """Let the Cells click fill's prepared box go (``why`` for the
+        console) -- the kept one and the one a run took."""
+        if getattr(self, "_add_cells_stage", None) is not None:
+            print(f"[ADD] cells click stage dropped: {why}")
+        self._add_cells_stage = None
+        self._add_let_go_launch_cells()
+
+    def _add_let_go_launch_cells(self) -> None:
+        """The prepared box a run took is let go (about 40 bytes a voxel):
+        only a run that finishes keeps it (``_add_keep_cells_stage``); a
+        Stop, an error, a launch that failed, a closed box, the session's
+        end and the patch going away let it go.  The worker holds the same
+        dict; emptying it is safe from here (it only reads it again to put
+        the stage back, and an answer let go is never kept)."""
+        holder = getattr(self, "_add_launch_cells_holder", None)
+        self._add_launch_cells_holder = None
+        if holder:
+            holder.clear()
+
+    def _add_live_in_flight(self) -> bool:
+        """A run (live or manual) whose answer has not landed yet."""
+        return (getattr(self, "_add_thread", None) is not None
+                and not getattr(self, "_add_answer_landed", False))
+
+    def _add_live_schedule(self) -> bool:
+        """After a marker or a setting change: (re)start the quiet before one
+        live run, or -- a run in flight -- mark it dirty (one more run
+        follows its finish).  False when no live run can follow: then a
+        quiet already running ends too (it would run nothing)."""
+        if not self._add_live_possible():
+            t = getattr(self, "_add_live_timer", None)
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._add_live_dirty = False
+            return False
+        if self._add_live_in_flight() or getattr(self, "_add_busy", False):
+            self._add_live_dirty = True
+            return True
+        from qtpy.QtCore import QTimer
+
+        from packages.epicycle_annotator.add_preview import (
+            ADD_LIVE_DEBOUNCE_MS,
+        )
+
+        t = getattr(self, "_add_live_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._add_live_fire)
+            self._add_live_timer = t
+        t.start(int(ADD_LIVE_DEBOUNCE_MS))
+        return True
+
+    def _add_live_timer_active(self) -> bool:
+        t = getattr(self, "_add_live_timer", None)
+        try:
+            return t is not None and bool(t.isActive())
+        except Exception:  # noqa: BLE001 - a torn-down timer is not active
+            return False
+
+    def _add_live_stop(self, *, say=False, keep_owed=False) -> None:
+        """Every exit, Discard and the tick going off: the quiet ends, no run
+        follows (``keep_owed``: a manual Preview pressed during a live run
+        still happens) and an Accept waiting ends -- with its sentence when
+        ``say`` (the box stays), silently at an exit.  Never raises."""
+        t = getattr(self, "_add_live_timer", None)
+        if t is not None:
+            try:
+                t.stop()
+            except Exception:  # noqa: BLE001 - teardown never raises
+                pass
+        self._add_live_dirty = False
+        if not keep_owed:
+            self._add_manual_owed = False
+        if getattr(self, "_add_accept_pending", False):
+            if say:
+                self._add_live_cancel_accept("the update was dropped")
+            else:
+                self._add_accept_pending = False
+                self._push_add_ui(accept_waiting=False)
+
+    def _add_forget_user_ticks(self) -> None:
+        """The box's work is over (Accept, Close box, every reset): the
+        rows the user ticked or unticked are forgotten."""
+        self._add_unticked_ids = set()
+        self._add_user_ticked_ids = set()
+        self._add_last_checked = set()
+
+    def _add_live_unsettled(self) -> bool:
+        """The drawn result may not be the last change's yet: the quiet is
+        running, a run is in flight, or one more run is due."""
+        if not self._add_live_on():
+            return False
+        return (self._add_live_timer_active() or self._add_live_in_flight()
+                or bool(getattr(self, "_add_live_dirty", False)))
+
+    def _add_live_settle_accept(self) -> None:
+        """An Accept waiting with no run left to draw (none in flight, none
+        due) ends, with its sentence: it never outlives its run."""
+        if (getattr(self, "_add_accept_pending", False)
+                and not self._add_live_unsettled()):
+            self._add_live_cancel_accept("no update is coming")
+
+    def _add_live_fire(self) -> None:
+        """The quiet ended, or a run finished owing one more: one live run,
+        unless a run is in flight (dirty again).  When no live run can run
+        any more, a manual Preview pressed meanwhile runs the manual way."""
+        if not self._add_live_possible():
+            self._add_live_dirty = False
+            if getattr(self, "_add_manual_owed", False):
+                self._add_manual_owed = False
+                print("[ADD] the Preview pressed during the update runs now")
+                self._preview_add()
+            self._add_live_settle_accept()
+            return
+        if (self._add_live_in_flight() or getattr(self, "_add_busy", False)
+                or getattr(self, "_add_thread", None) is not None
+                or self._add_parked_preview_running()):
+            self._add_live_dirty = True
+            if self._add_parked_preview_running():
+                # the parked thread's end fires it
+                self._add_watch_parked()
+            return
+        self._add_live_dirty = False
+        try:
+            kwargs, why = self._add_gather_preview(live=True)
+        except Exception as exc:  # noqa: BLE001 - never strand the page
+            print(f"[ADD] live run gather FAILED: {exc!r}")
+            from packages.epicycle_annotator.add_preview import ADD_S1_FAILED
+
+            kwargs, why = None, ADD_S1_FAILED
+        if kwargs is None:
+            self._add_live_refused(why)
+            return
+        self._launch_add_worker(kwargs, live=True)
+
+    def _add_live_refused(self, why) -> None:
+        """A live run that cannot run: the drawn box is zeroed and the model
+        dropped in the same step (so "a result is on screen" stays true to
+        the screen); an Accept waiting ends with its sentence.  Never
+        schedules again."""
+        from packages.epicycle_annotator.add_preview import preview_block
+
+        print(f"[ADD] live run refused: {why}")
+        kept = getattr(self, "_add_transient", None)
+        self._invalidate_add_preview(live_schedule=False)
+        # S1's own row already says a blocking reason; anything else (a
+        # channel that cannot be read) is said here
+        if why and why != preview_block(self._add_s1_state()):
+            self._add_transient = why
+        elif kept is not None:
+            # a refusal S1's own row says (the box being measured) leaves
+            # the sentence set before it standing -- "Accept was cancelled"
+            # after a preset switch would otherwise vanish a moment later
+            self._add_transient = kept
+        if getattr(self, "_add_accept_pending", False):
+            self._add_live_cancel_accept(f"the update refused: {why}")
+            return
+        self._add_refresh_ui()
+
+    def _add_live_cancel_accept(self, why) -> None:
+        """An Accept waiting ends without a drawn result: S1 says so, the
+        button reads Accept again and is live when rows are ticked."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_ACCEPT_WAIT_OFF,
+        )
+
+        print(f"[ADD] accept wait cancelled - {why}")
+        self._add_accept_pending = False
+        self._add_transient = ADD_S1_ACCEPT_WAIT_OFF
+        ok = False
+        if getattr(self, "_add_preview_result", None) is not None:
+            adv = self._get_advanced_features_widget()
+            try:
+                ok = bool(adv.get_checked_add_pieces())
+            except Exception:  # noqa: BLE001
+                ok = False
+        self._push_add_ui(accept_waiting=False, accept_enabled=ok)
+        self._add_refresh_ui()
+
+    def _add_marker_input_changed(self) -> None:
+        """A marker placed, removed or (un)ticked.  Live: the drawn result
+        stays until the next one replaces it, and a run is scheduled.
+        Otherwise the result is dropped, as every input change does."""
+        if self._add_live_possible():
+            self._add_transient = None
+            self._add_live_schedule()
+            return
+        self._invalidate_add_preview()
+
+    def _add_refuse_accept_wait(self, what) -> bool:
+        """True (and the waiting sentence) while an Accept waits for the
+        last change to be drawn: no new marker input meanwhile."""
+        if not getattr(self, "_add_accept_pending", False):
+            return False
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_ACCEPT_WAIT_CLICK,
+        )
+
+        print(f"[ADD] {what} refused - Accept is waiting for the last "
+              "update")
+        self._add_transient = ADD_S1_ACCEPT_WAIT_CLICK
+        self._add_refresh_ui()
+        return True
+
+    def _add_restore_live_tick(self) -> None:
+        """"Update as I click" as kept for this workspace (on the first
+        time), put on the tick with its signals blocked.  Every start of a
+        session -- a box or the whole patch."""
+        adv = self._get_advanced_features_widget()
+        lcb = getattr(adv, "add_live_cb", None)
+        if lcb is None:
+            return
+        live = self._add_load_setting("live_update", True)
+        live = str(live).lower() not in ("false", "0", "no")
+        try:
+            lcb.blockSignals(True)
+            lcb.setChecked(bool(live))
+            lcb.blockSignals(False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] live tick not restored: {exc!r}")
+            return
+        self._add_live_enabled = bool(live)
+
+    def _on_add_live_toggled(self, checked) -> None:
+        """The tick: kept per workspace.  Off: the quiet ends, an Accept
+        waiting ends with its sentence, and a result that may not match the
+        markers any more is dropped (a Preview pressed during the update
+        still runs).  On: a run follows when markers are placed and nothing
+        is drawn, or when the drawn result was filled by another rule than
+        the live one (a whole patch's fill with a background marker): it is
+        zeroed first, the markers kept.  A result the live rule would make
+        too (a box, a Preview with the tick on) stays and nothing runs."""
+        on = bool(checked)
+        self._add_save_setting("live_update", on)
+        unsettled = self._add_live_unsettled()
+        self._add_live_enabled = on
+        if not on:
+            self._add_drop_marker_cache("the tick went off")
+            self._add_drop_cells_stage("the tick went off")
+            self._add_live_stop(say=True, keep_owed=True)
+            if unsettled and getattr(self, "_add_running", False):
+                keep = getattr(self, "_add_transient", None)
+                self._invalidate_add_preview()
+                if keep is not None:
+                    self._add_transient = keep
+                    self._add_refresh_ui()
+            return
+        if (getattr(self, "_add_running", False)
+                and getattr(self, "_add_preview_result", None) is None):
+            self._add_live_schedule()
+            return
+        if (getattr(self, "_add_running", False)
+                and not getattr(self, "_add_busy", False)
+                and self._add_drawn_by_another_rule()):
+            # the drawn result was filled by the rule the tick-off page
+            # uses (a whole patch's fill with a background marker); the
+            # live rule fills by the box rule: it goes, the markers stay,
+            # and one live run redoes it
+            print("[ADD] the drawn result was filled by another rule - "
+                  "redone as you click")
+            self._invalidate_add_preview()
+
+    def _add_drawn_by_another_rule(self) -> bool:
+        """Cells: the drawn result's growth rule (its ``growth`` tag) is
+        not the one a run would use now -- a whole patch filled with a
+        background marker while the live rule fills by the box rule.
+        False with nothing drawn, an untagged result or another preset."""
+        res = getattr(self, "_add_preview_res", None)
+        drawn = str(getattr(res, "growth", "") or "")
+        if (not drawn or self._add_preset() != "cells"
+                or getattr(self, "_add_preview_result", None) is None):
+            return False
+        from packages.epicycle_annotator import add_preview as AP
+
+        params = dict(self._add_cells_engine_params())
+        if getattr(self, "_add_whole_patch", False):
+            params["whole_patch"] = True
+        return drawn != str(AP.cells_growth(params))
 
     def _add_drop_info(self) -> None:
         """An INPUT of the box info changed (the box, a channel, the source,
@@ -6316,6 +9336,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._invalidate_add_preview()
         self._add_drop_info()           # dark factor / shrink feed the info
         self._schedule_add_histogram()
+        self._schedule_add_ball_redraw()  # a Ball change redraws the balls
 
     # ======================================================================
     # Add rebuild B2.4 -- presets, sources, the run guide, the box limit
@@ -6380,9 +9401,1003 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 cb.blockSignals(True)
                 cb.setChecked(bool(dark))
                 cb.blockSignals(False)
+            # "Update as I click" (on the first time), kept the same way
+            self._add_restore_live_tick()
             adv._apply_add_visibility()
         except Exception as exc:
             print(f"[ADD] preset restore failed: {exc!r}")
+
+    # --- Nuclei inside each cell of another run / the whole patch ---------
+    def _add_look_for_entries(self):
+        """The Nuclei preset's "Look for nuclei" items after Anywhere: one
+        "Inside each cell of run ▸ name · target" per other run of this
+        patch (the run listing the Markers combo read, curated first, then
+        by name), or one disabled item when there is none.  A 4th entry says
+        the run's target is nuclei (the help then asks for a cells run)."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        srcs = list((getattr(self, "_add_run_sources", None) or {}).values())
+        srcs.sort(key=lambda s: (
+            0 if getattr(s, "which_file", "") == "labels_curated.tif" else 1,
+            str(getattr(s, "display_name", "")).lower()))
+        entries = []
+        for s in srcs:
+            name = str(s.display_name or s.run_id)
+            if len(name) > 28:
+                name = name[:13] + "…" + name[-13:]
+            target = str(getattr(s, "target", "") or "")
+            text = AP.look_inside_text(
+                name, target, curated=(getattr(s, "which_file", "")
+                                       == "labels_curated.tif"))
+            entries.append((text, True, (AP.LOOK_INSIDE, s.run_id),
+                            AP.target_is_nuclei(target)))
+        if not srcs:
+            entries.append((AP.ADD_LOOK_NO_RUN, False, (AP.LOOK_INSIDE, None),
+                            False))
+        return entries
+
+    def _add_look_for(self):
+        """``("anywhere", None)`` or ``("inside", run_id)`` -- the Nuclei
+        preset's Look for nuclei; Anywhere on Cells or without the combo."""
+        from packages.epicycle_annotator.add_preview import LOOK_ANYWHERE
+
+        if self._add_preset() == "cells":
+            return LOOK_ANYWHERE, None
+        adv = self._get_advanced_features_widget()
+        if adv is not None and hasattr(adv, "get_add_look_for"):
+            try:
+                kind, run_id = adv.get_add_look_for()
+                return kind, run_id
+            except Exception:
+                pass
+        return LOOK_ANYWHERE, None
+
+    def _add_inside(self) -> bool:
+        from packages.epicycle_annotator.add_preview import LOOK_INSIDE
+
+        return self._add_look_for()[0] == LOOK_INSIDE
+
+    def _add_look_markers(self) -> bool:
+        """Nuclei ▸ Look for nuclei ▸ At the markers I place.  Read from
+        Look for nuclei, never from the Markers source (whose fallback
+        reads clicks on the Nuclei preset too); a panel without Look for
+        nuclei reads Anywhere."""
+        from packages.epicycle_annotator.add_preview import LOOK_MARKERS
+
+        return self._add_look_for()[0] == LOOK_MARKERS
+
+    def _add_drop_marks(self) -> None:
+        """Forget what the last Preview said about the markers (on a kept
+        object, on dim stain, too small) and clear their rows' marks -- a
+        preset or Look-for change: the next Preview judges them again.  The
+        list is pushed again only when there were marks to clear."""
+        seed = dict(self._add_seed_whys())
+        apart = [m for m in self._add_markers() if self._add_apart_rec(m)]
+        had = bool(getattr(self, "_add_absorbed_ids", None)
+                   or getattr(self, "_add_marker_why", None) or seed
+                   or apart)
+        self._add_absorbed_ids = set()
+        self._add_marker_why = {}
+        self._add_seed_why = {}
+        self._add_apart_seeds = []
+        if apart:
+            # a refused seed is a plain ball again until it is judged
+            self._render_add_balls(changed=apart)
+        if had and self._add_markers():
+            self._push_add_ui(**self._add_marker_push())
+
+    def _add_picked_run_is_nuclei(self) -> bool:
+        """Inside each cell of a run whose target says nuclei: the open run
+        then probably holds the cells, so no sentence may advise clearing
+        the objects here.  (Read from the run's free-text target, as the
+        Look for nuclei item shows it.)"""
+        from packages.epicycle_annotator.add_preview import target_is_nuclei
+
+        if not self._add_inside():
+            return False
+        run_id = self._add_look_for()[1]
+        src = (getattr(self, "_add_run_sources", None) or {}).get(run_id)
+        return src is not None and target_is_nuclei(
+            getattr(src, "target", ""))
+
+    def _add_spacing_unknown(self) -> bool:
+        """True when Step 3's spacing was never set (the 1.0 um fallback).
+        The context's own word when it gives one -- a half-size session of
+        0.5 um voxels IS 1.0 um per voxel, and is known -- else the
+        numbers."""
+        from packages.epicycle_annotator.add_preview import spacing_is_default
+
+        try:
+            ctx = self._reshape_context()
+        except Exception:
+            ctx = {}
+        src = ctx.get("spacing_source")
+        if src is not None:
+            return str(src) == "unknown"
+        return spacing_is_default(ctx.get("spacing"))
+
+    def _add_levels_key(self):
+        """What the patch's brightness levels depend on: the patch and run,
+        the Brightness channel, the other run, the spacing and the session's
+        factor."""
+        ctx = self._reshape_context()
+        try:
+            sp = tuple(round(float(v), 9) for v in self._refine_spacing())
+        except Exception:
+            sp = None
+        return (ctx.get("patch_name"), ctx.get("run_epoch"),
+                self._add_brightness_channel(), self._add_look_for()[1], sp,
+                int(ctx.get("downsample_factor") or 1))
+
+    def _add_cached_levels(self):
+        cache = getattr(self, "_add_levels_cache", None) or {}
+        return cache.get(self._add_levels_key())
+
+    def _add_levels_error(self):
+        """The plain reason the patch's levels refused the CURRENT key (the
+        Brightness channel, mostly), or ``None``."""
+        errs = getattr(self, "_add_levels_errors", None) or {}
+        try:
+            return errs.get(self._add_levels_key())
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _add_ensure_run_guide(self) -> None:
+        """The run the page picked must be in memory while a box (or the
+        whole patch) is up: read it when it is picked but neither read nor
+        being read.  One rule for both pickers -- Nuclei ▸ Look for nuclei
+        ▸ Inside each cell, and Cells ▸ Markers ▸ Objects from run -- and
+        for every start: a box, Whole patch with no box, a switch back to
+        the preset.  A run picked with no box up is not read then, and a
+        combo that keeps its run fires nothing, so the start reads it."""
+        from packages.epicycle_annotator.add_preview import SOURCE_RUN
+
+        if not getattr(self, "_add_running", False):
+            return
+        if self._add_preset() == "cells":
+            kind, run_id = self._add_marker_source()
+            if kind != SOURCE_RUN:
+                return
+        elif self._add_inside():
+            run_id = self._add_look_for()[1]
+        else:
+            return
+        if (getattr(self, "_add_run_guide", None) is not None
+                or getattr(self, "_add_run_state", None) in ("loading",
+                                                             "refused")):
+            return
+        if run_id:
+            self._add_load_run_guide(run_id)
+
+    def _on_add_look_for_changed(self, key) -> None:
+        """Look for nuclei changed: the other run is dropped, a picked run is
+        read on a worker (read-only, never a layer); any preview and the box
+        info are stale.  Refused while busy (the panel greys the combo).
+
+        The run is read only while a box (or the whole patch) is up: a pick
+        with no box reads nothing, and the box start reads it
+        (``_add_ensure_run_guide``) -- an idle read had no page to land on
+        and left S1 on "Reading that run's objects…" for good.  Anywhere
+        runs on boxes only in this version: on a whole patch the box stays
+        the whole patch, Preview is grey and S1 says so (only S, M, L or a
+        Numbers... slider make it a box again)."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_refuse_busy("look-for change"):
+            return
+        # a click on Anywhere or Inside must never place a hidden marker;
+        # the balls show with the markers only; the marks of the last
+        # Preview go (the markers themselves are kept, ids and ticks)
+        self._add_place_markers_off()
+        self._add_update_ball_visibility()
+        self._add_drop_marks()
+        self._add_run_guide_reset()
+        kind, run_id = (tuple(key) + (None, None))[:2]
+        running = bool(getattr(self, "_add_running", False))
+        if kind == AP.LOOK_INSIDE and run_id and running:
+            self._add_load_run_guide(run_id)
+        if running:
+            self._invalidate_add_preview()
+            self._add_drop_info()
+            self._schedule_add_histogram()
+        self._add_refresh_ui()
+
+    def _add_derive_note_text(self) -> str:
+        """The one amber slot, first match: a half-size session reading
+        another run, a box mostly full, a slow whole patch.  ``""`` when
+        none applies, with no box, over candidates and in REVIEW."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        if (not getattr(self, "_add_running", False)
+                or getattr(self, "_add_review", False)
+                or getattr(self, "_add_preview_result", None) is not None):
+            return ""
+        if self._add_preset() == "cells":
+            return self._add_cells_note_text()
+        inside = self._add_inside()
+        try:
+            factor = int(self._reshape_context().get("downsample_factor")
+                         or 1)
+        except Exception:
+            factor = 1
+        if inside and factor >= 2:
+            return AP.ADD_NOTE_HALFSIZE_BOXED
+        info = getattr(self, "_add_info", None)
+        empty = None if info is None else info.empty_share
+        if (inside and empty is not None
+                and float(empty) < AP.ADD_MOSTLY_FULL_SHARE):
+            # a run marked nuclei: the objects here are probably the cells
+            # -- never advise clearing them
+            tpl = (AP.ADD_AMBER_BOX_MOSTLY_FULL_NUCLEI_RUN
+                   if self._add_picked_run_is_nuclei()
+                   else AP.ADD_AMBER_BOX_MOSTLY_FULL)
+            return tpl.format(p=int(round(100.0 * float(empty))))
+        roi = getattr(self, "_add_roi", None)
+        if getattr(self, "_add_whole_patch", False) and roi is not None:
+            n = int(np.prod([int(sl.stop - sl.start) for sl in roi]))
+            if n > AP.ADD_SLOW_PATCH_VOXELS:
+                # with "Update as I click" on, no Preview is pressed: the
+                # first update reads the patch once
+                return AP.nuclei_patch_slow_line(
+                    n, live=self._add_marker_engine_on())
+        return ""
+
+    def _add_cells_note_text(self) -> str:
+        """The one amber slot on Cells, first match: a half-size session
+        reading another run, one channel with markers from a run, more than
+        5 % of the run's markers outside the tissue outline, a ridge wall
+        type's slow wall picture, a slow whole patch."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        kind, _run_id = self._add_marker_source()
+        try:
+            factor = int(self._reshape_context().get("downsample_factor")
+                         or 1)
+        except Exception:
+            factor = 1
+        if kind == "labels" and factor >= 2:
+            return AP.ADD_NOTE_HALFSIZE_BOXED
+        if (kind == "labels" and len(self._add_image_channel_names()) < 2
+                and _ADD_NUMBA["ok"] is not False):
+            # the advice names only what is on the page: Spread (picked
+            # already or not) and Bridge gaps (with the shrink-wrap); on a
+            # whole patch, where Grow by and Wall cost are hidden, a box is
+            # the way; where Spread cannot run there is none to give
+            params = self._add_params()
+            return AP.one_channel_note(
+                spread=params.get("growth") == AP.GROW_SPREAD,
+                shrink=self._add_outline_mode() == AP.OUTLINE_SHRINK,
+                whole=bool(getattr(self, "_add_whole_patch", False)))
+        info = getattr(self, "_add_info", None)
+        mode = self._add_outline_mode()
+        if (info is not None and info.run_count
+                and getattr(info, "n_outside_outline", None) is not None
+                and mode != "none"):
+            line = AP.outline_drops_line(info.n_outside_outline,
+                                         info.run_count[1], mode)
+            if line:
+                return line
+        ridge = self._add_ridge_note_text()
+        if ridge:
+            return ridge
+        roi = getattr(self, "_add_roi", None)
+        if getattr(self, "_add_whole_patch", False) and roi is not None:
+            from packages.epicycle_annotator.reshape import region as _R
+
+            n = int(np.prod([int(sl.stop - sl.start) for sl in roi]))
+            # over the fill's ceiling S1 refuses: no "may take minutes"
+            if (AP.ADD_SLOW_PATCH_VOXELS < n
+                    <= int(_R.WHOLE_FILL_MAX_VOXELS)
+                    and self._add_cells_live_whole()):
+                # filled as you click: no Preview is pressed; the first
+                # update prepares the patch once
+                return AP.ADD_NOTE_PATCH_SLOW_LIVE_CELLS.format(
+                    m=AP.millions(n))
+            if (AP.ADD_SLOW_PATCH_VOXELS < n
+                    <= int(_R.WHOLE_FILL_MAX_VOXELS)):
+                # a ridge wall picture already kept is not built again, so
+                # the wait counts it only when it is still to be built
+                wall_kind = self._add_wall_params().get("wall_kind")
+                kept = ((getattr(self, "_add_elev_cache", None) or {})
+                        .get("key") == self._add_elev_key())
+                return AP.patch_slow_line(n, wall_kind, picture_kept=kept)
+        return ""
+
+    def _add_ridge_note_text(self) -> str:
+        """A ridge wall type (Vessel ridges, Thin-faint ridges) builds its
+        wall picture slowly: on a whole patch until it is kept (under the
+        fill's ceiling), and on a large box at every Preview.  ``""``
+        otherwise."""
+        from packages.epicycle_annotator import add_preview as AP
+        from packages.epicycle_annotator.reshape import region as _R
+
+        kind = str(self._add_wall_params().get("wall_kind") or "")
+        roi = getattr(self, "_add_roi", None)
+        if kind not in ("frangi", "meijering") or roi is None:
+            return ""
+        from napari_epicycle.annotator.advanced_features_widget import (
+            WALL_KINDS,
+            WALLS_FROM_LABELS,
+        )
+
+        words = WALLS_FROM_LABELS[WALL_KINDS.index(kind)]
+        n = int(np.prod([int(sl.stop - sl.start) for sl in roi]))
+        if getattr(self, "_add_whole_patch", False):
+            kept = (getattr(self, "_add_elev_cache", None) or {}).get("key")
+            if (n <= int(_R.WHOLE_FILL_MAX_VOXELS)
+                    and kept != self._add_elev_key()):
+                return AP.ridges_whole_line(words, n, kind)
+            return ""
+        if n >= int(AP.ADD_RIDGE_BOX_VOXELS):
+            return AP.ADD_NOTE_RIDGES_BOX.format(kind=words)
+        return ""
+
+    # --- Cells: the tissue outline, the whole patch's wall picture ---------
+    def _add_outline_mode(self) -> str:
+        """The tissue outline the page asks for: "cleared" / "shrink" /
+        "none".  Cells: its Walls card's pick.  Nuclei: its own card's pick
+        on Anywhere and the markers (the page's snapshot carries it only
+        when one is chosen, so a panel without the card reads none); "none"
+        on Inside each cell and on a whole patch.  "none" too for the
+        cleared-objects outline while no Clear is in force (the page greys
+        that item)."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_preset() != "cells":
+            if self._add_inside() or getattr(self, "_add_whole_patch", False):
+                return AP.OUTLINE_NONE
+            # read from the Nuclei card itself (a panel without it: none)
+            adv = self._get_advanced_features_widget()
+            if adv is None or not hasattr(adv, "get_add_nuc_outline"):
+                return AP.OUTLINE_NONE
+            try:
+                mode = str(adv.get_add_nuc_outline() or AP.OUTLINE_NONE)
+            except Exception:  # noqa: BLE001
+                return AP.OUTLINE_NONE
+        else:
+            mode = str(self._add_params().get("outline") or AP.OUTLINE_NONE)
+        if mode not in AP.OUTLINE_KEYS:
+            return AP.OUTLINE_NONE
+        if mode == AP.OUTLINE_CLEARED and not self._add_cleared_in_force():
+            return AP.OUTLINE_NONE
+        return mode
+
+    def _add_session_key(self):
+        """``(patch, run epoch, spacing, session factor)`` -- what every
+        per-patch measure of this session depends on."""
+        ctx = self._reshape_context()
+        try:
+            sp = tuple(round(float(v), 9) for v in self._refine_spacing())
+        except Exception:  # noqa: BLE001
+            sp = None
+        return (ctx.get("patch_name"), ctx.get("run_epoch"), sp,
+                int(ctx.get("downsample_factor") or 1))
+
+    def _add_outline_key(self, mode=None):
+        """What the tissue outline depends on, or ``None`` with no outline:
+        the shrink-wrap on the patch, its channels, Dark below and Bridge
+        gaps; the cleared outline on the patch and the Clears in force."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        mode = mode or self._add_outline_mode()
+        patch, epoch, sp, factor = self._add_session_key()
+        if mode == AP.OUTLINE_SHRINK:
+            p = self._add_params()
+            return ("shrink", patch, epoch,
+                    tuple(sorted(self._add_image_channel_names())),
+                    round(float(p.get("dark_otsu_factor", 0.5)), 6),
+                    round(float(p.get("bridge_um", AP.ADD_BRIDGE_UM)), 6),
+                    sp, factor)
+        if mode == AP.OUTLINE_CLEARED:
+            return ("cleared", patch, epoch,
+                    tuple(seq for seq, _ids in self._add_cleared_in_force()),
+                    sp, factor)
+        return None
+
+    def _add_cached_outline(self, shell=False):
+        """The cached outline (or its display skin) for the CURRENT key, or
+        ``None`` (not measured yet, measured for other inputs, or kept
+        packed since the last session -- the box-info worker unpacks it)."""
+        key = self._add_outline_key()
+        cache = getattr(self, "_add_outline_cache", None)
+        if key is None or not cache or cache.get("key") != key:
+            return None
+        return cache.get("shell") if shell else cache.get("outline")
+
+    def _add_park_outline_cache(self) -> None:
+        """At the end of a session: the outline is kept packed for the next
+        one on this patch (1 bit per voxel), its skin dropped."""
+        cache = getattr(self, "_add_outline_cache", None)
+        if not cache or cache.get("outline") is None:
+            if cache:
+                cache["shell"] = None
+            return
+        from packages.epicycle_annotator.add_preview import pack_mask
+
+        t0 = _time.perf_counter()
+        try:
+            self._add_outline_cache = {
+                "key": cache.get("key"), "outline": None, "shell": None,
+                "packed": pack_mask(cache["outline"])}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] outline not kept: {exc!r}")
+            self._add_outline_cache = None
+            return
+        print("[ADD-PERF] outline pack voxels={} {:.0f}ms".format(
+            int(np.asarray(cache["outline"]).size),
+            (_time.perf_counter() - t0) * 1000.0), flush=True)
+
+    def _add_prune_caches(self) -> None:
+        """The tissue outline, the whole patch's wall picture and a box's
+        own wall picture are dropped when what they were measured from
+        changes (the channels, Dark below, Bridge gaps, the Clears in force,
+        the wall channel and its preparation, the spacing, the half-size
+        factor, the patch, the run; for the box's picture, the box too).  A
+        pick of another outline (or none) keeps them.  Off Cells both wall
+        pictures (~292 MB at 73 Mvox for the whole patch's) are dropped; the
+        packed outline is small and stays.  The outline is the same for
+        both presets (its key names no preset), so Nuclei prunes it by the
+        same rule."""
+        cells = self._add_preset() == "cells"
+        if not cells and getattr(self, "_add_elev_cache", None):
+            self._add_elev_cache = None
+            print("[ADD] whole-patch wall picture dropped: the preset "
+                  "left Cells")
+        cache = getattr(self, "_add_outline_cache", None)
+        if cache:
+            key = self._add_outline_key()
+            old = cache.get("key")
+            if key is not None and old is not None and old[0] == key[0] \
+                    and old != key:
+                self._add_outline_cache = None
+                names = (("patch", "run", "channels", "dark below",
+                          "bridge gaps", "spacing", "half-size")
+                         if key[0] == "shrink" else
+                         ("patch", "run", "clears", "spacing", "half-size"))
+                changed = [n for n, a, b in zip(names, old[1:], key[1:])
+                           if a != b]
+                print("[ADD] tissue outline dropped: its inputs changed ({})"
+                      .format(", ".join(changed) or "?"))
+        ecache = getattr(self, "_add_elev_cache", None)
+        if ecache and ecache.get("key") != self._add_elev_key():
+            self._add_elev_cache = None
+            print("[ADD] whole-patch wall picture dropped: its inputs changed")
+        # the markers' prepared whole patch: off Nuclei ▸ At the markers I
+        # place (or the tick, or the whole patch), or once its inputs changed
+        mcache = getattr(self, "_add_marker_cache", None)
+        if mcache and not self._add_marker_engine_on():
+            self._add_drop_marker_cache("the Nuclei markers on a whole "
+                                        "patch were left")
+        elif mcache and mcache.get("key") != self._add_marker_stage_key():
+            self._add_drop_marker_cache("its inputs changed")
+        # the Cells click fill's prepared box: off Cells (its key is then
+        # None) or once anything but the clicks changed
+        cstage = getattr(self, "_add_cells_stage", None)
+        if cstage and cstage.get("key") != self._add_cells_stage_key():
+            self._add_drop_cells_stage(
+                "the preset left Cells" if not cells
+                else "its inputs changed")
+        # a box's own wall picture: off Cells, or once the box or the walls
+        # changed (a box move changes its key)
+        bcache = getattr(self, "_add_box_elev_cache", None)
+        if bcache and (not cells
+                       or bcache.get("key") != self._add_box_elev_key()):
+            self._add_box_elev_cache = None
+            print("[ADD] box wall picture dropped: "
+                  + ("the preset left Cells" if not cells
+                     else "the box or its walls changed"))
+
+    def _add_outline_job(self):
+        """The box-info worker's outline job for the current choice (the
+        whole-patch arrays, read on the worker), or ``None``."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        cache = getattr(self, "_add_outline_cache", None)
+        if (cache and cache.get("outline") is None
+                and cache.get("packed") is not None
+                and cache.get("key") == self._add_outline_key()):
+            # kept packed since the last session: unpacked on the worker
+            shape, packed = cache["packed"]
+            return {"mode": "packed", "shape": shape, "packed": packed}
+        mode = self._add_outline_mode()
+        if mode == AP.OUTLINE_SHRINK:
+            chans = {}
+            for name in self._add_image_channel_names():
+                data = self._refine_channel_source(name)
+                if data is not None:
+                    chans[name] = data
+            if not chans:
+                return None
+            p = self._add_params()
+            return {"mode": mode, "channels": chans,
+                    "factor": float(p.get("dark_otsu_factor", 0.5)),
+                    "bridge_um": float(p.get("bridge_um", AP.ADD_BRIDGE_UM))}
+        if mode == AP.OUTLINE_CLEARED:
+            shared = self._add_shared_volume()
+            if shared is None:
+                return None
+            masks = getattr(self, "_add_clear_masks", None) or {}
+            recs = [masks[seq] for seq, _ids in self._add_cleared_in_force()
+                    if seq in masks]
+            return {"mode": mode, "shape": tuple(shared.shape),
+                    "cleared": recs}
+        return None
+
+    def _add_show_outline_wanted(self) -> bool:
+        """Show the tissue outline is ticked -- the CURRENT preset's tick
+        (Nuclei's card has its own; a panel without it: not wanted)."""
+        adv = self._get_advanced_features_widget()
+        name = ("add_show_outline_cb" if self._add_preset() == "cells"
+                else "add_nuc_show_outline_cb")
+        cb = getattr(adv, name, None)
+        try:
+            return bool(cb is not None and cb.isChecked())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _add_elev_key(self):
+        """What the whole patch's wall picture depends on: the patch, the
+        wall channel and how it is prepared."""
+        wall = self._add_wall_params()
+        patch, epoch, sp, factor = self._add_session_key()
+        return (patch, epoch, str(wall.get("channel") or ""),
+                str(wall.get("wall_kind") or ""), str(wall.get("chain") or ""),
+                sp, factor)
+
+    def _add_box_elev_key(self):
+        """The key of a box's own wall picture: the whole patch's key plus
+        the box.  ``None`` on a whole patch, with no box, or on a box over
+        ``ADD_LIVE_CELLS_MAX_VOXELS``.  It is kept for any Cells box at or
+        under that limit, the tick on or off, whatever the marker source:
+        the walls do not depend on the markers, and the drawn result is the
+        same."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_LIVE_CELLS_MAX_VOXELS,
+        )
+
+        roi = getattr(self, "_add_roi", None)
+        if (roi is None or getattr(self, "_add_whole_patch", False)
+                or self._add_roi_voxels() > int(ADD_LIVE_CELLS_MAX_VOXELS)):
+            return None
+        return self._add_elev_key() + (
+            tuple((int(sl.start), int(sl.stop)) for sl in roi),)
+
+    # --- the tissue outline: the main view and the three side views ---------
+    def _add_outline_side_copies(self) -> list:
+        """The outline's copies the side views hold now (looked up by name,
+        so a copy is found even when the main layer is already gone)."""
+        sub_mgr = getattr(self, "subviewer_manager", None)
+        if sub_mgr is None:
+            return []
+        out = []
+        for orient in ("XY", "XZ", "YZ"):
+            try:
+                sub = sub_mgr.get_subviewer_layer(
+                    _ADD_OUTLINE_LAYER_NAME, orient)
+            except Exception:  # noqa: BLE001
+                sub = None
+            if sub is not None:
+                out.append(sub)
+        return out
+
+    def _add_mirror_outline_layer(self, layer) -> int:
+        """Copy the outline's main-view layer into the three side views
+        through the subviewer manager's image path (the one every image
+        channel takes): each copy is a transposed VIEW of the same array,
+        never a new volume, and each view slices it along its own axis.
+        The side look is not the main view's: cyan with a transparent zero,
+        painted over the slice at half opacity (the main view's additive
+        tint vanishes on bright stain in a slice).  Flagged temporary;
+        never a Labels layer, so the label sync and the brush lock never
+        see it.  Returns how many copies exist: 3, or 0 (a partial set is
+        dropped, so the legend never claims views that lack it)."""
+        sub_mgr = getattr(self, "subviewer_manager", None)
+        if sub_mgr is None or layer is None:
+            return 0
+        try:
+            sub_mgr.add_image_to_subviewers(layer)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] tissue outline side copies failed: {exc!r}")
+            self._add_drop_outline_side()
+            return 0
+        copies = self._add_outline_side_copies()
+        if len(copies) != 3:
+            print("[ADD] tissue outline side copies failed: "
+                  f"{len(copies)} of 3 side views took it")
+            self._add_drop_outline_side()
+            return 0
+        cmap = _add_outline_side_colormap()
+        for sub in copies:
+            sub._epicycle_temporary = True
+            try:
+                sub.colormap = cmap
+                sub.opacity = _ADD_OUTLINE_SIDE_LOOK["opacity"]
+                sub.blending = _ADD_OUTLINE_SIDE_LOOK["blending"]
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD] outline side look not set: {exc!r}")
+            try:
+                # bounds only (cheap); a copy would be its own buffer
+                if not np.may_share_memory(sub.data, layer.data):
+                    print("[ADD] outline side copy is NOT a view of the "
+                          "main array")
+            except Exception:  # noqa: BLE001
+                pass
+        # napari makes an appended layer active; the side views' own
+        # callbacks need the labels copy back as the active layer
+        self._restore_side_active_layers()
+        return len(copies)
+
+    def _add_drop_outline_side(self) -> None:
+        """Hide, then remove, the outline's side copies (idempotent; a
+        no-op when there are none)."""
+        copies = self._add_outline_side_copies()
+        if not copies:
+            return
+        for sub in copies:
+            try:
+                sub.visible = False
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            with _gc_batch(self):
+                self.subviewer_manager.remove_layer_from_subviewers(
+                    _ADD_OUTLINE_LAYER_NAME)
+            print("[ADD] tissue outline removed from the side views")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] outline side copies removal raised: {exc!r}")
+
+    def _add_drop_outline_layer(self) -> None:
+        """Hide, then remove, the outline's side copies and then its main
+        layer (idempotent).  Its own row in every Add exit; the side copies
+        are looked for even when the main layer is already gone.
+
+        One batch around both removals: the side copies' batch and the main
+        layer's batch nest inside it, so a drop pays napari's garbage
+        collection once, as it did before the side copies existed.  Every
+        caller runs while the four canvases are alive (the close runs this
+        before the side views are torn down), and nothing inside turns the
+        event loop."""
+        with _gc_batch(self):
+            self._add_drop_outline_side()
+            if (getattr(self, "_add_outline_layer_key", None) is None
+                    and getattr(self, "_add_outline_layer", None) is None):
+                return
+            self._add_outline_layer_key = None
+            self._add_outline_layer = None
+            try:
+                self._remove_temp_layer("add_outline")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD] outline layer removal raised: {exc!r}")
+
+    def _add_drop_outline_full(self) -> None:
+        """A full exit: the layer goes and Show the tissue outline goes down
+        on both presets (quietly: not a user untick)."""
+        self._add_drop_outline_layer()
+        adv = self._get_advanced_features_widget()
+        for name in ("add_show_outline_cb", "add_nuc_show_outline_cb"):
+            cb = getattr(adv, name, None)
+            if cb is None:
+                continue
+            try:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                try:
+                    cb.blockSignals(False)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _add_sync_outline_layer(self) -> None:
+        """The outline's skin in the main view and the three side views
+        while Show the tissue outline is ticked, an outline is chosen and
+        measured and a box is up; otherwise none.  Added only when its
+        outline changed (built hidden, then shown).  It stays on screen
+        over the new objects, in every view: with "Update as I click" a
+        result is on screen after every click, and the outline is what
+        the cells grow to, so hiding it behind them left it unseen.  An
+        Image layer, never a labels-key target."""
+        if getattr(self, "_add_outline_syncing", False):
+            # re-entered from a layer-list event while its layer is added
+            return
+        running = bool(getattr(self, "_add_running", False))
+        review = bool(getattr(self, "_add_review", False))
+        want = (running and not review and self._add_show_outline_wanted()
+                and self._add_outline_mode() != "none")
+        shell = self._add_cached_outline(shell=True) if want else None
+        if shell is None:
+            self._add_drop_outline_layer()
+            return
+        key = self._add_outline_key()
+        layer = getattr(self, "_add_outline_layer", None)
+        _st = None
+        n_side = 0
+        if (getattr(self, "_add_outline_layer_key", None) != key
+                or layer is None):
+            self._add_drop_outline_layer()
+            main = self._add_main_label_layer()
+            placement = {}
+            if main is not None:
+                try:
+                    placement = dict(
+                        scale=tuple(float(v) for v in main.scale[-3:]),
+                        translate=tuple(float(v) for v in main.translate[-3:]))
+                except Exception:  # noqa: BLE001
+                    placement = {}
+            _st = _StepTimer("[ADD-PERF] outline draw")
+            self._add_outline_syncing = True
+            try:
+                # the draw holds the main thread: its words are painted
+                # first, whatever the page said before (the skin may have
+                # been measured long ago, so nothing else says it)
+                self._add_paint_outline_drawing(True)
+                _st.lap("paint")
+                layer = self._add_temp_layer(
+                    "add_outline", shell, kind="image",
+                    name=_ADD_OUTLINE_LAYER_NAME,
+                    image_kw=dict(opacity=0.3, blending="additive",
+                                  colormap="cyan", contrast_limits=(0, 1),
+                                  visible=False),
+                    **placement)
+                _st.lap("main_layer")
+                if layer is not None:
+                    n_side = self._add_mirror_outline_layer(layer)
+                    _st.lap("side_copies")
+            finally:
+                try:
+                    self._add_paint_outline_drawing(False)
+                finally:
+                    self._add_outline_syncing = False
+            if layer is None:
+                return
+            self._add_outline_layer_key = key
+            self._add_outline_layer = layer
+            print("[ADD] tissue outline drawn in the main view and "
+                  f"{n_side} side views")
+        # set only on a change: napari's ``visible = True`` refreshes the
+        # layer every time, and this runs at every page refresh
+        for target in [layer] + self._add_outline_side_copies():
+            try:
+                if not bool(target.visible):
+                    target.visible = True
+            except Exception:  # noqa: BLE001
+                pass
+        if _st is not None:
+            # after the visibility change; Qt's paint (and the GL upload of
+            # the planes) comes later, outside this line
+            _st.lap("visible")
+            _st.line(voxels=int(getattr(shell, "size", 0)), side=n_side)
+
+    def _add_paint_outline_drawing(self, on) -> None:
+        """``on``: S1 and the Show legend say "Drawing the tissue outline…"
+        and are painted NOW, before the layers are added on the main thread
+        (a zero timer does not paint; the labels' own repaint does).  Off:
+        the legend's word is lifted; the caller's page refresh sets S1."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_OUTLINE_DRAWING,
+        )
+
+        if not on:
+            self._push_add_ui(outline_drawing=False)
+            return
+        self._push_add_ui(outline_drawing=True,
+                          status_text=ADD_OUTLINE_DRAWING,
+                          status_kind="busy")
+        adv = self._get_advanced_features_widget()
+        legend = ("_add_show_outline_legend" if self._add_preset() == "cells"
+                  else "_add_nuc_show_outline_legend")
+        for name in ("add_status_label", legend):
+            w = getattr(adv, name, None) if adv is not None else None
+            if w is not None:
+                try:
+                    w.repaint()
+                except Exception:  # noqa: BLE001 - a torn-down widget
+                    pass
+
+    def _on_add_show_outline(self, checked) -> None:
+        """Show the tissue outline: its skin is measured (once) on the
+        box-info worker if it is not yet, then drawn."""
+        if (checked and getattr(self, "_add_running", False)
+                and self._add_outline_mode() != "none"
+                and self._add_cached_outline(shell=True) is None):
+            self._request_add_box_info()
+        self._add_sync_outline_layer()
+        self._add_refresh_ui()
+
+    def _on_add_outline_changed(self, _key=None) -> None:
+        """Tissue outline changed: any preview is stale; the outline is
+        measured (once per patch) with the box info; the drawn one goes."""
+        if not getattr(self, "_add_running", False):
+            self._add_refresh_ui()
+            return
+        if self._add_refuse_busy("outline change"):
+            return
+        self._invalidate_add_preview()
+        self._add_drop_info()
+        self._schedule_add_histogram()
+        self._add_sync_outline_layer()
+        self._add_refresh_ui()
+
+    def _add_ensure_cmap_warm(self) -> None:
+        """Start the colour warm-up (``_ADD_CMAP_WARM``) for the label data
+        type of this session, once per type and only on a thread-safe numba
+        layer.  Never waits for it; when it cannot run (another layer,
+        napari's cast missing) one log line says so and the first Preview
+        compiles on the main thread, as napari itself would."""
+        main = self._add_main_label_layer()
+        dtype = getattr(getattr(main, "data", None), "dtype", None)
+        if dtype is None:
+            dtype = np.dtype(np.int32)
+        key = np.dtype(dtype).str
+        done = _ADD_CMAP_WARM.setdefault("dtypes", set())
+        if key in done:
+            return
+        done.add(key)
+        if _ADD_CMAP_WARM.get("safe") is None:
+            _ADD_CMAP_WARM["safe"] = _add_cmap_warm_safe()
+        ok, why = _ADD_CMAP_WARM["safe"]
+        if not ok:
+            print("[ADD] colour warm-up skipped: {} (the first Preview "
+                  "compiles napari's colour loop)".format(why))
+            return
+        try:
+            from napari.utils.colormaps import colormap as _napari_cm
+
+            cast = getattr(_napari_cm,
+                           "_cast_labels_data_to_texture_dtype_direct", None)
+            cast_auto = getattr(_napari_cm,
+                                "_cast_labels_data_to_texture_dtype_auto", None)
+        except Exception:  # noqa: BLE001
+            cast = cast_auto = None
+        if cast is None:
+            print("[ADD] colour warm-up skipped: napari's direct colour-map "
+                  "cast is not there (the first Preview pays its compile)")
+            return
+        try:
+            import threading
+
+            th = threading.Thread(target=_add_cmap_warm_body,
+                                  args=(cast, dtype, cast_auto), daemon=True,
+                                  name="epicycle-add-colour-warm-up")
+            _ADD_CMAP_WARM["thread"] = th
+            th.start()
+        except Exception as exc:  # noqa: BLE001
+            _ADD_CMAP_WARM["thread"] = None
+            print(f"[ADD] colour warm-up not started: {exc!r}")
+
+    def _add_ensure_numba_check(self) -> None:
+        """Ask once per process, on a worker, whether Spread from each
+        marker can run here (it imports numba: about a second).  The thread
+        is the module's, not this page's: Cancel, Done and a close never
+        wait for it, and its answer is kept whatever page is open."""
+        if (_ADD_NUMBA["ok"] is not None
+                or _ADD_NUMBA_JOB.get("thread") is not None):
+            return
+        try:
+            from qtpy.QtCore import QThread
+
+            from napari_epicycle.annotator.reshape_worker import RefineWorker
+            from packages.epicycle_annotator.add_preview import numba_answer
+
+            th = QThread()
+            w = RefineWorker(numba_answer, {}, kind="add_numba")
+            _ADD_NUMBA_JOB["thread"] = th
+            _ADD_NUMBA_JOB["worker"] = w
+            w.moveToThread(th)
+            th.started.connect(w.run)
+            # the module keeps the answer first; then this page (if it is
+            # still there) says it
+            w.finished.connect(_add_numba_answered)
+            w.error.connect(_add_numba_failed)
+            w.finished.connect(self._on_add_numba_finished)
+            w.error.connect(self._on_add_numba_error)
+            w.finished.connect(th.quit)
+            w.error.connect(th.quit)
+            th.start()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] solver check not started: {exc!r}")
+            _ADD_NUMBA_JOB["thread"] = None
+            _ADD_NUMBA_JOB["worker"] = None
+
+    def _on_add_numba_finished(self, _outcome=None) -> None:
+        """The page's part of the answer (the module kept it already)."""
+        if not self._add_widget_alive():
+            return
+        if getattr(self, "_add_running", False) or _ADD_NUMBA["ok"] is False:
+            self._add_refresh_ui()
+
+    def _on_add_numba_error(self, _message=None) -> None:
+        if not self._add_widget_alive():
+            return
+        self._add_refresh_ui()
+
+    def _add_check_outline_choice(self) -> None:
+        """No Clear behind "Outline of the objects you cleared" is in force
+        any more while it is the choice: it falls back -- to the shrink-wrap
+        on a whole patch (the outline is the only outside there, picked or
+        not), else to "No outline (as before)".  S1 says so once, and only
+        when the cleared objects came back (an Undo); otherwise quietly."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        adv = self._get_advanced_features_widget()
+        cells = self._add_preset() == "cells"
+        # Cells: its Walls card's pick; Nuclei: its own card's (which falls
+        # back to No outline: it is never on a whole patch)
+        getter, setter = (("get_add_outline", "set_add_outline") if cells
+                          else ("get_add_nuc_outline", "set_add_nuc_outline"))
+        if (adv is None or not hasattr(adv, getter)
+                or not hasattr(adv, setter)):
+            return
+        if not cells:
+            # on Nuclei the "objects are back" word is kept for Cells unless
+            # Nuclei's own pick is the cleared outline
+            try:
+                if getattr(adv, getter)() != AP.OUTLINE_CLEARED:
+                    return
+            except Exception:  # noqa: BLE001
+                return
+        in_force = self._add_cleared_in_force()
+        back = bool(getattr(self, "_add_clears_back", False))
+        try:
+            if getattr(adv, getter)() != AP.OUTLINE_CLEARED:
+                # the word is kept for the other preset's pick (an Undo
+                # seen on Cells is still said back on Nuclei)
+                return
+        except Exception:  # noqa: BLE001
+            return
+        self._add_clears_back = False
+        if in_force:
+            return
+        whole = bool(getattr(self, "_add_whole_patch", False))
+        fallback = (AP.OUTLINE_SHRINK if whole and cells
+                    else AP.OUTLINE_NONE)
+        getattr(adv, setter)(fallback)
+        print("[ADD] the cleared-objects outline is gone ({}); Tissue "
+              "outline -> {}".format("its objects are back" if back
+                                     else "no Clear on this patch", fallback))
+        if getattr(self, "_add_running", False):
+            if back:
+                self._add_transient = AP.ADD_S1_OUTLINE_CLEARED_GONE.format(
+                    choice=AP.outline_item_text(fallback))
+            # the box info (the run count) was measured with that outline:
+            # asked again (quietly -- this runs inside the refresh)
+            self._add_info = None
+            self._schedule_add_histogram()
+
+    def _add_whole_box(self, shape):
+        """The box that IS the patch."""
+        from packages.epicycle_annotator.roi_box import BoxRec
+
+        Z, Y, X = (int(s) for s in shape)
+        return BoxRec(Z // 2, Y // 2, X // 2, Z, Y, X)
+
+    def _start_add_whole(self, *_a) -> None:
+        """Whole patch (beside Place box, or Whole on the box row): with no
+        box, start a session whose box is the patch; with a box, make the box
+        the patch.  ALWAYS -- the buttons are never grey.  A choice that
+        cannot fill a whole patch (Cells with neither another run's objects
+        nor Click markers, or without Spread from each marker; Nuclei ▸
+        Anywhere in the box) greys Preview, and S1 says why
+        (``add_preview.preview_block``)."""
+        if not getattr(self, "_add_running", False):
+            self._start_add(whole=True)
+            return
+        if getattr(self, "_add_review", False):
+            return
+        if self._add_refuse_busy("whole patch"):
+            return
+        main = self._add_main_label_layer()
+        if main is None:
+            return
+        shape = tuple(int(s) for s in main.data.shape)
+        box = self._add_whole_box(shape)
+        self._on_add_box_changed(box.cz, box.cy, box.cx, box.sz, box.sy,
+                                 box.sx, whole=True)
+        b = self._add_box
+        self._push_add_ui(box_center=(b.cz, b.cy, b.cx),
+                          box_size=(b.sz, b.sy, b.sx), whole_patch=True)
+        self._add_refresh_ui()
 
     def _add_marker_source_entries(self):
         """The Markers source combo's items: the other runs
@@ -6436,6 +10451,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                   single_channel=len(self._add_image_channel_names()) < 2)
         if sources:
             kw["marker_sources"] = self._add_marker_source_entries()
+            # the same run listing, as the Nuclei preset's Look for nuclei
+            kw["look_for_items"] = self._add_look_for_entries()
         self._push_add_ui(**kw)
 
     def _add_budget(self) -> int:
@@ -6471,11 +10488,38 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_save_setting("last_preset", str(preset))
         self._add_place_markers_off()
         self._add_update_ball_visibility()
+        # the last Preview's marks on the markers go (the markers are kept)
+        self._add_drop_marks()
+        # a whole patch stays whole across a preset switch (only S, M, L or
+        # a Numbers... slider make it a box again); a preset that cannot
+        # fill it here greys Preview and S1 says why
         if getattr(self, "_add_running", False):
             self._add_run_guide_reset()
-            self._invalidate_add_preview()
+            if (getattr(self, "_add_drawn_roi", None) is not None
+                    or getattr(self, "_add_preview_result", None)
+                    is not None):
+                from packages.epicycle_annotator.add_preview import (
+                    ADD_S1_REMOVING_RESULT,
+                )
+
+                self._add_paint_status(ADD_S1_REMOVING_RESULT,
+                                       stage="add_discard")
+            try:
+                self._invalidate_add_preview()
+            except BaseException:
+                self._add_refresh_ui()    # the wait's words never stick
+                raise
+            if getattr(self, "_add_accept_pending", False):
+                # Accept was pressed for the other preset's objects: it
+                # never commits what this preset finds as you click
+                self._add_live_cancel_accept("the preset changed")
             self._add_drop_info()
             self._schedule_add_histogram()
+            # the preset's picked run (Inside each cell, or Cells' Markers)
+            # is read again: the combo kept it and fires nothing
+            self._add_ensure_run_guide()
+        if str(preset) == "cells":
+            self._add_ensure_numba_check()
         self._add_push_context(sources=False)
         self._add_refresh_ui()
 
@@ -6488,8 +10532,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_place_markers_off()
         self._add_run_guide_reset()
         kind, run_id = (tuple(key) + (None, None))[:2]
-        if kind == "labels" and run_id:
+        if kind == "labels" and run_id and getattr(self, "_add_running",
+                                                   False):
             self._add_load_run_guide(run_id)
+        # a Cells whole patch stays whole on another source: Preview is
+        # grey and S1 asks for markers from another run
         if getattr(self, "_add_running", False):
             self._invalidate_add_preview()
             self._add_drop_info()
@@ -6507,6 +10554,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # Local contrast toggle)
             self._add_brightness_channel_seen = chan
             self._add_clear_threshold()
+        # a channel the patch's levels refused is measured again after any
+        # channel change (the refusal was the channel's, not the run's)
+        self._add_levels_errors = {}
         self._invalidate_add_preview()
         self._add_drop_info()
         self._schedule_add_histogram()
@@ -6545,27 +10595,103 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_nuclei_threshold_typed = True
         self._invalidate_add_preview()
 
-    def _add_secondary(self, _checked=False) -> None:
-        """The footer's secondary: Done in REVIEW, Discard with candidates
-        up (drops them, keeps the box and markers --), Cancel
-        otherwise (ends the session)."""
+    def _add_primary(self, _checked=False) -> None:
+        """The footer's primary: Done in REVIEW (closes the session and
+        keeps the objects -- the main Undo still takes each Accept back),
+        Accept otherwise."""
         if getattr(self, "_add_review", False):
             self._reject_add()
             return
-        if (getattr(self, "_add_preview_result", None) is not None
-                and not getattr(self, "_add_busy", False)):
+        self._accept_add()
+
+    def _add_secondary(self, _checked=False) -> None:
+        """The footer's secondary, one word per meaning: Undo all in REVIEW,
+        Discard with candidates up (drops them, keeps the box and markers),
+        Close box otherwise -- which ends the session, or, in a box opened
+        by "+ Add another" (the session holds Accepts), goes back to the
+        review with the session kept.  Refused while a preview runs (the
+        button is grey: Stop is the one exit; this is the belt)."""
+        if self._add_refuse_busy("close box"):
+            return
+        if getattr(self, "_add_review", False):
+            self._undo_add_all()
+            return
+        if getattr(self, "_add_preview_result", None) is not None:
             self._discard_add_candidates()
+            return
+        if getattr(self, "_add_session", None):
+            self._add_resume_review()
             return
         self._reject_add()
 
+    def _add_resume_review(self) -> None:
+        """Close box in a box opened by "+ Add another": this box's own
+        work goes (its markers, side callbacks, walls, outline layer and
+        Numbers…; nothing was added in it) and the session's review comes
+        back -- Undo all still takes back every Accept.  A Clear made in
+        this box stays (the main Undo takes it back, once the box is
+        closed).  Mirrors the teardown of an Accept into REVIEW."""
+        self._invalidate_add_preview()
+        self._remove_add_candidate()
+        self._drop_add_walls()
+        self._add_drop_outline_layer()
+        self._remove_add_side_callbacks()
+        self._remove_add_marker_layer()
+        self._add_click_markers = []
+        self._add_markers_base = None
+        self._add_absorbed_ids = set()
+        self._add_marker_why = {}
+        self._add_seed_why = {}
+        self._add_bump_markers_epoch()
+        self._add_place_markers_off()
+        self._close_add_numbers()
+        _t = getattr(self, "_add_box_timer", None)
+        if _t is not None:
+            try:
+                _t.stop()
+            except Exception:
+                pass
+        self._stop_add_ball_timer()
+        self._add_live_stop()
+        self._add_forget_user_ticks()
+        self._add_drop_cells_stage("the box was closed")
+        self._add_box_before_whole = None
+        self._add_abandon_workers()
+        self._add_transient = None
+        self._add_box_cleared = False         # the box is closed
+        self._add_push_review()
+        self._add_running = False
+        self._fire_add_mode_lock(False)
+        self._add_refresh_label_buttons()
+        try:
+            self._restore_ready_to_draw_state()
+        except Exception:
+            pass
+        print("[ADD] close box: back to the review ({} objects)".format(
+            len(getattr(self, "_add_piece_ids", []) or [])))
+        self._add_refresh_ui()
+
     def _discard_add_candidates(self) -> None:
         """Discard (candidates up): back to the box state; the side views
-        stay locked for the session (grill E-L10)."""
-        self._invalidate_add_preview()
-        self._add_transient = None
-        self._push_add_ui(candidate_ids=[], accept_enabled=False,
-                          accept_count=0, footer_text="")
-        self._add_refresh_ui()
+        stay locked for the session.  Taking the result off
+        the screen holds the main thread for a moment: S1 says so first."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_REMOVING_RESULT,
+        )
+
+        self._add_paint_status(ADD_S1_REMOVING_RESULT, stage="add_discard")
+        try:
+            self._invalidate_add_preview()
+            # Discard is an exit: the kept candidate goes with the result
+            self._remove_add_candidate()
+            self._add_transient = None
+            # the markers stay, the result goes: no live run brings it back
+            # until the next change; an Accept waiting ends, saying so
+            self._add_live_stop(say=True)
+            self._push_add_ui(candidate_ids=[], accept_enabled=False,
+                              accept_count=0, footer_text="")
+        finally:
+            self._add_refresh_ui()
 
     # --- the run guide (a picked run's labels, read on a worker) -----------
     def _add_run_guide_reset(self) -> None:
@@ -6601,11 +10727,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_guide_worker = w
             w.moveToThread(th)
             th.started.connect(w.run)
-            w.finished.connect(self._on_add_guide_loaded)
-            w.refused.connect(self._on_add_guide_refused)
+            w.finished.connect(_from_sender(
+                self, w, self._on_add_guide_loaded))
+            w.refused.connect(_from_sender(
+                self, w, self._on_add_guide_refused))
             # an error is not a refusal: raw text to the log, a fixed
             # sentence on the page (B2 fix pass U-M4)
-            w.error.connect(self._on_add_guide_error)
+            w.error.connect(_from_sender(
+                self, w, self._on_add_guide_error))
             th.start()
             print(f"[ADD] reading run {run_id!r} for markers")
         except Exception as exc:  # noqa: BLE001
@@ -6615,15 +10744,31 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_guide_worker = None
 
     def _add_guide_is_stale(self) -> bool:
+        if _signal_sender_gone(self):
+            # a dropped read's late answer: never the current one (the
+            # live worker below would lend it ITS token)
+            return True
         w = self._signal_sender() or getattr(self, "_add_guide_worker", None)
         tok = getattr(w, "_epicycle_token", None)
         return tok is not None and tok != getattr(
             self, "_add_run_guide_token", 0)
 
+    def _add_guide_landed_idle(self, what) -> bool:
+        """A read that lands with no box up has no page to land on: the
+        array (or the refusal) is dropped and the run is "not read" again,
+        never "loading" -- the next box start reads it
+        (``_add_ensure_run_guide``)."""
+        if getattr(self, "_add_running", False):
+            return False
+        print(f"[ADD] run read landed with no box ({what}) - dropped")
+        self._add_run_guide = None
+        self._add_run_state = None
+        return True
+
     def _on_add_guide_loaded(self, array, _notes=None) -> None:
         stale = self._add_guide_is_stale()
         self._add_guide_thread_cleanup()
-        if stale or not getattr(self, "_add_running", False):
+        if stale or self._add_guide_landed_idle("read"):
             return
         self._add_run_guide = array
         self._add_run_state = None
@@ -6634,7 +10779,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _on_add_guide_refused(self, message) -> None:
         stale = self._add_guide_is_stale()
         self._add_guide_thread_cleanup()
-        if stale:
+        if stale or self._add_guide_landed_idle("refused"):
             return
         print(f"[ADD] run refused: {message}")
         from packages.epicycle_annotator.add_preview import plain_reason
@@ -6646,7 +10791,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         ``ADD_RUN_READ_FAILED`` on the page (B2 fix pass U-M4)."""
         stale = self._add_guide_is_stale()
         self._add_guide_thread_cleanup()
-        if stale:
+        if stale or self._add_guide_landed_idle("error"):
             return
         print(f"[ADD] run read FAILED: {message}")
         from packages.epicycle_annotator.add_preview import (
@@ -6704,7 +10849,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         not the box."""
         self._add_walls_wanted = bool(checked)
         if checked:
-            self._show_add_walls()
+            if getattr(self, "_add_preview_res", None) is not None:
+                from packages.epicycle_annotator.add_preview import (
+                    ADD_S1_DRAWING_WALLS,
+                )
+
+                self._add_paint_status(ADD_S1_DRAWING_WALLS,
+                                       stage="add_walls")
+            try:
+                self._show_add_walls()
+            finally:
+                self._add_refresh_ui()
         else:
             self._drop_add_walls(keep_intent=True)
 
@@ -6748,10 +10903,70 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         except Exception as exc:
             print(f"[ADD] walls picture cannot be placed: {exc!r}")
             return False
+        # ONE slice of the wall picture in the 3D view, at the XY view's
+        # depth (the whole volume drawn at once hides the honeycomb); it
+        # follows the XY view (napari draws a plain slice in 2D)
+        self._add_walls_z0 = int(start[0])
+        self._add_walls_nz = int(crop.shape[0])
+        depth = self._add_walls_depth()
+        plane = {"normal": (1.0, 0.0, 0.0),
+                 "position": (depth, crop.shape[1] / 2.0,
+                              crop.shape[2] / 2.0)}
         layer = self._add_temp_layer("add_walls", crop, kind="image",
                                      name="guide_add_walls",
-                                     translate=translate, scale=scale)
-        return layer is not None
+                                     translate=translate, scale=scale,
+                                     image_kw={"depiction": "plane",
+                                               "plane": plane})
+        if layer is None:
+            return False
+        vm = getattr(self, "viewer_model_xy", None)
+        if vm is not None:
+            try:
+                vm.dims.events.point.connect(self._on_add_walls_xy_point)
+                self._add_walls_follows = vm
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD] walls slice cannot follow the XY view: "
+                      f"{exc!r}")
+        return True
+
+    def _add_walls_depth(self) -> float:
+        """The walls slice's depth in the picture: the XY view's slice less
+        the box's z start, kept inside the picture (its middle when the XY
+        view says nothing)."""
+        nz = int(getattr(self, "_add_walls_nz", 1) or 1)
+        z = self._add_side_slice("XY")
+        if z is None:
+            return float(nz // 2)
+        z = float(z) - float(getattr(self, "_add_walls_z0", 0) or 0)
+        return float(min(max(z, 0.0), float(nz - 1)))
+
+    def _on_add_walls_xy_point(self, _event=None) -> None:
+        """The XY view moved: the walls slice goes to its depth (written
+        only when the depth changes).  Never raises."""
+        layer = (getattr(self, "_temp_guide_layers", None) or {}).get(
+            "add_walls")
+        if layer is None:
+            return
+        try:
+            z = self._add_walls_depth()
+            pos = tuple(float(v) for v in layer.plane.position)
+            if abs(pos[0] - z) < 1e-9:
+                return
+            layer.plane.position = (z, pos[1], pos[2])
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] walls slice did not follow the XY view: {exc!r}")
+
+    def _add_walls_unfollow(self) -> None:
+        """The walls slice stops following the XY view (its layer is going).
+        Idempotent; never raises."""
+        vm = getattr(self, "_add_walls_follows", None)
+        self._add_walls_follows = None
+        if vm is None:
+            return
+        try:
+            vm.dims.events.point.disconnect(self._on_add_walls_xy_point)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _drop_add_walls(self, keep_intent=False) -> None:
         try:
@@ -6772,6 +10987,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         )
 
         if self._add_preset() != "cells":
+            if self._add_inside():
+                from packages.epicycle_annotator.add_preview import (
+                    ADD_WALLS_INSIDE,
+                )
+
+                return False, ADD_WALLS_INSIDE
             return False, WALLS_TOGGLE_NO_WALLS
         res = getattr(self, "_add_preview_res", None)
         if res is None or res.elevation is None:
@@ -6789,11 +11010,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
     def _add_toggle_targets(self) -> list:
         """The Add artefacts the labels key toggles: the candidate, the ball
-        layer and their side-view copies."""
+        layer and their side-view copies.  The candidate only while a result
+        is drawn on it (it is kept, zeroed and hidden, between Previews)."""
         out = []
         sub_mgr = getattr(self, "subviewer_manager", None)
-        for layer in (getattr(self, "_add_candidate_layer", None),
-                      getattr(self, "_add_marker_layer", None)):
+        cand = (getattr(self, "_add_candidate_layer", None)
+                if getattr(self, "_add_drawn_roi", None) is not None else None)
+        for layer in (cand, getattr(self, "_add_marker_layer", None)):
             if layer is None:
                 continue
             out.append(layer)
@@ -6824,6 +11047,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._push_add_ui(place_markers_on=False)
             return
         self._add_place_markers_on = bool(on)
+        # S1's no-markers line names the button only while it is off
+        self._add_refresh_ui()
 
     def _add_place_markers_off(self) -> None:
         self._add_place_markers_on = False
@@ -6832,7 +11057,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _add_ball_radius_vox(self):
         """The click ball radius per axis, in voxels (at the true spacing)."""
         params = self._add_params()
-        r = float(params.get("click_radius_um", 2.0))
+        r = float(params.get("click_radius_um", 1.0))
         sp = self._refine_spacing()
         return tuple(max(0.5, r / max(float(s), 1e-6)) for s in sp)
 
@@ -6887,6 +11112,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if absorbed:
             # the last Preview's absorbed markers keep their marks (B-M1)
             self._add_absorbed_ids = {int(i) + d for i in absorbed}
+        why = getattr(self, "_add_marker_why", None)
+        if why:
+            # ... and so do the markers it made nothing from
+            self._add_marker_why = {int(i) + d: w for i, w in why.items()}
+        # ... and the rows the user ticked or unticked, and the ticks the
+        # list last showed (an untick stays on its own object)
+        for attr in ("_add_unticked_ids", "_add_user_ticked_ids",
+                     "_add_last_checked"):
+            kept = getattr(self, attr, None)
+            if kept:
+                setattr(self, attr, {int(i) + d for i in kept})
         self._add_bump_markers_epoch()
         # S1 says why every colour just changed (B-M2): taken as a
         # transient by the caller AFTER its own invalidation, which would
@@ -6914,54 +11150,324 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
     def _add_marker_push(self) -> dict:
         """The marker list as the panel shows it (a VIEW,  M4),
-        with the last Preview's absorbed markers marked (B-M1)."""
+        with the last Preview's absorbed markers marked (B-M1), and the
+        markers it made nothing from for another reason (on dim stain, too
+        small) carrying that reason as their row's tooltip."""
+        from packages.epicycle_annotator.add_preview import marker_why_tip
+
         markers = self._add_markers()
         ids = {int(m["id"]) for m in markers}
         absorbed = {int(i) for i in (getattr(self, "_add_absorbed_ids", None)
                                      or ())} & ids
-        return dict(click_count=len(markers),
+        tips = {}
+        for i, why in (getattr(self, "_add_marker_why", None) or {}).items():
+            tip = marker_why_tip(why)
+            if int(i) in ids and int(i) not in absorbed and tip:
+                tips[int(i)] = tip
+        # one row per OBJECT on the page: the count is of objects, and each
+        # object's status words name what its seeds made at the last result
+        # (a refused seed, one off the stain, one inside a kept object)
+        from packages.epicycle_annotator.add_preview import seed_status_words
+
+        seed_why = self._add_seed_whys()
+        whys = {}
+        for m in markers:
+            whys.setdefault(int(m["id"]), []).append(
+                "apart" if self._add_apart_rec(m)
+                else seed_why.get(tuple(int(v) for v in m["zyx"])))
+        obj_why = getattr(self, "_add_marker_why", None) or {}
+        status = {}
+        for i, ws in whys.items():
+            if i in absorbed:
+                ws = ws + ["kept"]
+            if obj_why.get(i) == "dim":
+                ws = ws + ["dim"]
+            words = seed_status_words(ws)
+            if words:
+                status[i] = words
+        return dict(click_count=len(whys),
                     click_markers=[(int(m["id"]), tuple(m["zyx"]),
                                     bool(m["ticked"])) for m in markers],
-                    click_absorbed_ids=sorted(absorbed))
+                    click_absorbed_ids=sorted(absorbed),
+                    click_absorbed_tips=tips,
+                    click_status=status)
+
+    def _add_seed_whys(self) -> dict:
+        """What each seed made at the last result, ``{(z, y, x): "dim" |
+        "kept"}``, for the seeds still placed (a removed seed's entry goes,
+        so a new marker on the same voxel starts clean).  A refused seed is
+        not here: ``_add_apart_rec`` reads it, by record."""
+        why = getattr(self, "_add_seed_why", None) or {}
+        if not why:
+            return {}
+        here = {tuple(int(v) for v in m["zyx"]) for m in self._add_markers()}
+        if not set(why) <= here:
+            why = {k: w for k, w in why.items() if k in here}
+            self._add_seed_why = why
+        return why
+
+    def _add_take_seed_whys(self, res) -> None:
+        """A result landed: each seed it was handed keeps what it made
+        off the stain or inside a kept object (``seed_why``, by position).
+        Refused seeds are ``_add_note_apart``'s."""
+        pts = list(getattr(res, "seed_zyx", None) or ())
+        ws = list(getattr(res, "seed_why", None) or ())
+        self._add_seed_why = {tuple(int(v) for v in p): str(w)
+                              for p, w in zip(pts, ws)
+                              if w and w != "apart"}
+
+    def _add_result_seeds(self, res):
+        """The result rows' seed counts and status words, ``({id: n},
+        {id: [words]})``: the seeds the result was handed, matched to the
+        markers by position (an object of one seed has no count)."""
+        from packages.epicycle_annotator.add_preview import seed_status_words
+
+        pts = list(getattr(res, "seed_zyx", None) or ())
+        ws = list(getattr(res, "seed_why", None) or ())
+        ws += [None] * (len(pts) - len(ws))
+        by_zyx = {tuple(int(v) for v in m["zyx"]): int(m["id"])
+                  for m in self._add_markers()}
+        seeds, whys = {}, {}
+        for p, w in zip(pts, ws):
+            i = by_zyx.get(tuple(int(v) for v in p))
+            if i is None:
+                continue
+            seeds[i] = seeds.get(i, 0) + 1
+            whys.setdefault(i, []).append(w)
+        counts = {i: n for i, n in seeds.items() if n > 1}
+        status = {i: seed_status_words(w) for i, w in whys.items()
+                  if seed_status_words(w)}
+        return counts, status
 
     def _add_in_ball(self, p, m, rv=None) -> bool:
         rv = self._add_ball_radius_vox() if rv is None else rv
         return sum(((a - b) / r) ** 2
                    for a, b, r in zip(p, m["zyx"], rv)) <= 1.0
 
-    def _add_marker_click(self, zyx, ctrl=False) -> bool:
+    # --- the extend gesture: the current object -----------------------------
+    def _add_current_rec(self):
+        """The current object: a reference to one of its seed records (the
+        last one placed or kept), never a bare id -- the re-base shifts the
+        record's id, so the reference follows.  ``None`` when there is no
+        current object, or its record is no longer in the marker list (an
+        exit cleared the list)."""
+        cur = getattr(self, "_add_current", None)
+        if cur is None:
+            return None
+        if not any(m is cur for m in self._add_markers()):
+            self._add_current = None
+            return None
+        return cur
+
+    def _add_repoint_current(self, gone) -> None:
+        """Seeds were removed: when the current object's record is among
+        them it moves to the object's last seed still placed; with none
+        left the object is gone and nothing is current."""
+        cur = getattr(self, "_add_current", None)
+        if cur is None or not any(m is cur for m in gone):
+            return
+        left = [m for m in self._add_markers()
+                if int(m["id"]) == int(cur["id"])]
+        self._add_current = left[-1] if left else None
+        print("[ADD] current object {}".format(
+            "#{} ({} seeds)".format(int(cur["id"]), len(left)) if left
+            else "cleared - its last seed went"))
+
+    def _add_esc_current(self) -> bool:
+        """Esc: no object is current (the next Shift+click makes a new
+        one).  No marker changes, so nothing is run again and the result on
+        screen stays, live or not."""
+        if self._add_current_rec() is None:
+            return False
+        cur = self._add_current
+        self._add_current = None
+        print("[ADD] Esc - no object current (was #{})".format(
+            int(cur["id"])))
+        self._add_refresh_ui()
+        return True
+
+    def _add_pick_object(self, mid) -> bool:
+        """A click on an object's row, or an Alt+click on it: that object is
+        current (its last seed holds the reference), so the next Shift+click
+        adds to it.  No input of the engine changes: nothing runs."""
+        if not self._add_clicks_are_markers():
+            # another source's result: its ids are not the clicks' ids
+            print(f"[ADD] pick declined - the clicks are not the markers "
+                  f"(object {mid})")
+            return False
+        recs = [m for m in self._add_markers() if int(m["id"]) == int(mid)]
+        if not recs:
+            print(f"[ADD] pick declined - no marker makes object {mid}")
+            return False
+        if not any(m["ticked"] for m in recs):
+            # its balls are off the view: a Shift+click would add an unseen
+            # seed (Alt+click cannot pick it either)
+            print(f"[ADD] pick declined - object {mid} is unticked")
+            return False
+        self._add_current = recs[-1]
+        print("[ADD] current object #{} ({} seeds) - picked".format(
+            int(mid), len(recs)))
+        # "That spot is not touching #A" was about the object current then:
+        # a pick (a row, or Alt+click) takes it off S1
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_NOT_CONNECTED,
+        )
+
+        said = str(getattr(self, "_add_transient", None) or "")
+        if said and said.startswith(ADD_S1_NOT_CONNECTED.split("{")[0]):
+            self._add_transient = None
+        self._add_refresh_ui()
+        return True
+
+    def _add_alt_pick(self, p) -> bool:
+        """Alt+click at ``p``: the object whose drawn voxels are there --
+        the result on screen, else a ticked ball -- becomes current."""
+        mid = None
+        res = getattr(self, "_add_preview_result", None)
+        roi = getattr(self, "_add_preview_roi", None)
+        if res is not None and roi is not None and all(
+                sl.start <= v < sl.stop for sl, v in zip(roi, p)):
+            try:
+                v = int(res[tuple(v - sl.start for sl, v in zip(roi, p))])
+            except Exception:
+                v = 0
+            if v and any(int(m["id"]) == v for m in self._add_markers()):
+                mid = v
+        if mid is None:
+            rv = self._add_ball_radius_vox()
+            for m in self._add_markers():
+                # placement order: the earlier ball keeps a shared voxel
+                if m.get("ticked", True) and self._add_in_ball(p, m, rv):
+                    mid = int(m["id"])
+                    break
+        if mid is None:
+            print(f"[ADD] Alt+click at {p} - no object drawn there")
+            return False
+        return self._add_pick_object(mid)
+
+    def _add_apart_rec(self, m) -> bool:
+        """True when the last result refused marker ``m`` as not touching
+        its object (and it has not moved since)."""
+        return any(r is m and z == tuple(m["zyx"])
+                   for r, z in (getattr(self, "_add_apart_seeds", None)
+                                or ()))
+
+    def _add_note_apart(self, res) -> list:
+        """The markers the result ``res`` refused as not touching their
+        object, kept for the next click; returns the ones refused for the
+        first time (a marker refused again after it moved counts as new).
+        The result's per-seed reasons follow the ticked markers in order
+        (a stale result never lands here)."""
+        why = list(getattr(res, "seed_why", None) or ())
+        ticked = [m for m in self._add_markers() if m["ticked"]]
+        refused = ([m for m, w in zip(ticked, why) if w == "apart"]
+                   if len(why) == len(ticked) else [])
+        old = [m for m in self._add_markers() if self._add_apart_rec(m)]
+        new = [m for m in refused if not self._add_apart_rec(m)]
+        self._add_apart_seeds = [(m, tuple(m["zyx"])) for m in refused]
+        # the balls whose refused (hollow) look changed are redrawn
+        flip = new + [m for m in old if not any(m is r for r in refused)]
+        if flip:
+            self._render_add_balls(changed=flip)
+        return new
+
+    def _add_drop_apart(self, ids):
+        """The refused marks of objects ``ids`` go (their first seed went:
+        what was refused against it is judged again at the next result);
+        returns the records whose balls change."""
+        ids = {int(i) for i in ids}
+        gone = [m for m in self._add_markers()
+                if int(m["id"]) in ids and self._add_apart_rec(m)]
+        if gone:
+            self._add_apart_seeds = [
+                e for e in (getattr(self, "_add_apart_seeds", None) or ())
+                if not any(e[0] is m for m in gone)]
+        return gone
+
+    def _add_clicks_are_markers(self) -> bool:
+        """The clicks are the markers: Cells ▸ Click markers, Nuclei ▸ At
+        the markers I place (``_add_current_id_shown``'s condition)."""
+        if self._add_preset() == "cells":
+            return self._add_marker_source()[0] == "paint"
+        return self._add_look_markers()
+
+    def _add_marker_key(self, orient, name, dry=False) -> bool:
+        """Ctrl+Z / Esc from a side view's key filter (see
+        ``_add_marker_key_route``).  True when Add takes the key:
+        a box session on the Add tab with Place markers on -- then Ctrl+Z
+        is Undo last marker and Esc clears the current object, and the key
+        never reaches napari.  ``dry``: only say whether Add would take it."""
+        if not (self._add_side_ready()
+                and getattr(self, "_add_place_markers_on", False)):
+            return False
+        if dry:
+            return True
+        print(f"[ADD] {name} in {orient}")
+        if name == "Undo":
+            self._add_click_undo()
+        elif name == "Esc":
+            self._add_esc_current()
+        return True
+
+    def _add_marker_click(self, zyx, ctrl=False, shift=False,
+                          alt=False) -> bool:
         """One click in a side view (B3 calls this).  Returns True
-        when a marker was placed or removed."""
+        when a marker was placed or removed.  A plain click makes a new
+        object, which becomes current; Shift+click adds a seed to the
+        current object wherever it lands (with none current it is a plain
+        click); Ctrl+click removes a marker (it wins over Shift)."""
         from packages.epicycle_annotator import add_preview as AP
 
         if (not getattr(self, "_add_running", False)
                 or getattr(self, "_add_review", False)
                 or getattr(self, "_add_box", None) is None):
+            print("[ADD] marker click declined - no box session "
+                  f"(running={getattr(self, '_add_running', False)} "
+                  f"review={getattr(self, '_add_review', False)})")
             return False
         if not self._add_tab_current():
+            print("[ADD] marker click declined - the Add tab is not current")
             return False
         if not getattr(self, "_add_place_markers_on", False):
-            return False
-        if self._add_refuse_busy("marker click"):
+            print("[ADD] marker click declined - Place markers is off")
             return False
         p = tuple(int(round(float(v))) for v in zyx)
+        if alt and not ctrl:
+            # Alt+click picks the object drawn there; it places nothing and
+            # changes no input of the engine
+            return self._add_alt_pick(p)
+        if self._add_refuse_busy("marker click"):
+            return False
+        if self._add_refuse_accept_wait("marker click"):
+            return False
         if ctrl:
             return self._add_remove_marker_near(p)
         roi = self._add_roi
         inside = all(sl.start <= v < sl.stop for sl, v in zip(roi, p))
         if not inside:
+            print(f"[ADD] marker click declined - {p} is outside the box "
+                  f"{tuple((sl.start, sl.stop) for sl in roi)}")
             self._add_transient = AP.ADD_S1_CLICK_OUTSIDE
             self._add_refresh_ui()
             return False
         shared = self._add_shared_volume()
         kept = int(shared[p]) if shared is not None else 0
         if kept != 0:
+            print(f"[ADD] marker click declined - {p} is on object {kept}")
             self._add_transient = AP.ADD_S1_CLICK_ON_KEPT.format(id=kept)
             self._add_refresh_ui()
             return False
         markers = self._add_markers()
         rv = self._add_ball_radius_vox()
+        # a plain click on a marker the last result refused as not touching
+        # its object (what that refusal advises) replaces it: the refused
+        # marker made nothing, so it goes and the click is placed
+        dead = ([] if shift else
+                [m for m in markers
+                 if self._add_apart_rec(m) and self._add_in_ball(p, m, rv)])
         for m in markers:
+            if any(m is d for d in dead):
+                continue
             # ticked or not: rasterise_points lets the EARLIER ball keep a
             # shared voxel, so a click here would be shadowed and every
             # later id would shift
@@ -6976,19 +11482,58 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     print("[ADD] double click's second press ignored - "
                           "marker {} was just placed".format(int(m["id"])))
                     return False
+                print(f"[ADD] marker click declined - {p} is inside "
+                      f"marker {int(m['id'])}")
                 tpl = (AP.ADD_S1_CLICK_SAME_SPOT if m["ticked"]
                        else AP.ADD_S1_CLICK_SAME_SPOT_UNTICKED)
                 self._add_transient = tpl.format(id=int(m["id"]))
                 self._add_refresh_ui()
                 return False
+        if dead:
+            markers[:] = [m for m in markers
+                          if not any(m is d for d in dead)]
+            left = {int(m["id"]) for m in markers}
+            self._add_forget_marks(int(m["id"]) for m in dead
+                                   if int(m["id"]) not in left)
+            self._add_repoint_current(dead)
+            self._add_apart_seeds = [
+                e for e in (getattr(self, "_add_apart_seeds", None) or ())
+                if not any(e[0] is d for d in dead)]
+            self._add_transient = None
+            print("[ADD] the refused marker {} at {} replaced by a new "
+                  "object".format([int(m["id"]) for m in dead],
+                                  [tuple(m["zyx"]) for m in dead]))
+        cur = self._add_current_rec() if shift else None
+        if cur is not None:
+            # a seed of the current object: its id (re-based first, as a
+            # new id would be) and its tick; it becomes the record the
+            # current reference holds
+            rebased = self._add_rebase_markers(
+                int(self._add_next_label(cached=True)), markers)
+            rec = {"zyx": p, "id": int(cur["id"]),
+                   "ticked": bool(cur["ticked"])}
+            markers.append(rec)
+            self._add_click_markers = markers
+            self._add_current = rec
+            self._add_last_placed = (rec, _time.monotonic())
+            print(f"[ADD] marker {rec['id']} seed at {p} ("
+                  f"{sum(1 for m in markers if m['id'] == rec['id'])} "
+                  "seeds)")
+            self._add_bump_markers_epoch()
+            self._add_after_click_change(changed=None if rebased else [rec])
+            return True
         mid, rebased = self._add_reserve_marker_id(markers)
+        # a reused id never carries a gone marker's mark
+        self._add_forget_marks([mid])
         rec = {"zyx": p, "id": int(mid), "ticked": True}
         markers.append(rec)
         self._add_click_markers = markers
+        self._add_current = rec
         self._add_last_placed = (rec, _time.monotonic())
         print(f"[ADD] marker {rec['id']} at {p}")
         self._add_bump_markers_epoch()
-        self._add_after_click_change(changed=None if rebased else [rec])
+        self._add_after_click_change(
+            changed=None if rebased else [rec] + dead)
         return True
 
     def _add_double_click_s(self) -> float:
@@ -7017,13 +11562,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 best, best_d = i, d
         if best is None:
             return False
+        first = not any(int(m["id"]) == int(markers[best]["id"])
+                        for m in markers[:best])
         gone = markers.pop(best)
         print(f"[ADD] marker {gone['id']} removed")
-        self._add_after_marker_removal([gone])
+        # the object's first seed: what was refused against it is not
+        # refused now (it may be the object's only seed)
+        freed = self._add_drop_apart([gone["id"]]) if first else []
+        self._add_after_marker_removal([gone], redraw=freed)
         return True
 
     def _add_click_undo(self, _checked=False) -> None:
-        if self._add_refuse_busy("undo marker"):
+        if (self._add_refuse_busy("undo marker")
+                or self._add_refuse_accept_wait("undo marker")):
             return
         markers = self._add_markers()
         if markers:
@@ -7031,7 +11582,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_after_marker_removal([gone])
 
     def _add_click_clear(self, _checked=False) -> None:
-        if self._add_refuse_busy("clear markers"):
+        if (self._add_refuse_busy("clear markers")
+                or self._add_refuse_accept_wait("clear markers")):
             return
         markers = self._add_markers()
         if markers:
@@ -7039,11 +11591,34 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_click_markers = []
             self._add_after_marker_removal(gone)
 
-    def _add_after_marker_removal(self, gone) -> None:
+    def _add_forget_marks(self, ids) -> None:
+        """Markers that are gone take the last Preview's marks with them
+        (on a kept object, on dim stain, too small): the id the next marker
+        reserves again starts with a plain row."""
+        ids = {int(i) for i in ids}
+        absorbed = getattr(self, "_add_absorbed_ids", None)
+        if ids and absorbed:
+            self._add_absorbed_ids = {int(i) for i in absorbed} - ids
+        why = getattr(self, "_add_marker_why", None)
+        if ids and why:
+            self._add_marker_why = {int(k): w for k, w in why.items()
+                                    if int(k) not in ids}
+        # ... and the user's tick on its row (a reused id starts plain)
+        for attr in ("_add_unticked_ids", "_add_user_ticked_ids"):
+            kept = getattr(self, attr, None)
+            if ids and kept:
+                setattr(self, attr, {int(i) for i in kept} - ids)
+
+    def _add_after_marker_removal(self, gone, redraw=()) -> None:
+        # an object's marks go with its LAST seed only
+        left = {int(m["id"]) for m in self._add_markers()}
+        self._add_forget_marks(int(m["id"]) for m in gone
+                               if int(m["id"]) not in left)
+        self._add_repoint_current(gone)
         if not self._add_click_markers:
             self._add_markers_base = None      # Clear / the last one: reset
         self._add_bump_markers_epoch()
-        self._add_after_click_change(changed=gone)
+        self._add_after_click_change(changed=list(gone) + list(redraw))
 
     def _on_add_click_tick(self, marker_id, ticked) -> None:
         """A row ticked or unticked in the marker list.  The
@@ -7053,27 +11628,33 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # holds it -- a view never keeps a tick nobody owns (B-L4)
             self._push_add_ui(**self._add_marker_push())
             return
-        if self._add_refuse_busy("marker tick"):
+        if (self._add_refuse_busy("marker tick")
+                or self._add_refuse_accept_wait("marker tick")):
             # nothing moves: the list is pushed back as it was
             self._add_refresh_ui(**self._add_marker_push())
             return
-        rec = next((m for m in self._add_markers()
-                    if int(m["id"]) == int(marker_id)), None)
+        # every seed of the object takes the tick (one tick per object)
+        recs = [m for m in self._add_markers()
+                if int(m["id"]) == int(marker_id)]
+        rec = recs[0] if recs else None
         if rec is None or bool(rec["ticked"]) == bool(ticked):
             self._push_add_ui(**self._add_marker_push())
             return
-        rec["ticked"] = bool(ticked)
+        for m in recs:
+            m["ticked"] = bool(ticked)
         print("[ADD] marker {} {}".format(
             rec["id"], "ticked" if rec["ticked"] else "unticked"))
         self._add_bump_markers_epoch()
         # the list is hidden over candidates, so there is none to drop in
-        # practice -- the call is the invariant, not the hope
-        self._invalidate_add_preview()
-        self._render_add_balls(changed=[rec])
+        # practice -- the call is the invariant, not the hope (live: a run
+        # is scheduled instead)
+        self._add_marker_input_changed()
+        self._render_add_balls(changed=recs)
         self._add_refresh_ui(**self._add_marker_push())
 
     def _add_after_click_change(self, changed=None) -> None:
-        self._invalidate_add_preview()
+        # live: the drawn result stays and a run is scheduled; else dropped
+        self._add_marker_input_changed()
         self._add_take_rebase_note()       # after the invalidation (B-M2)
         self._render_add_balls(changed=changed)
         self._add_refresh_ui(**self._add_marker_push())
@@ -7093,6 +11674,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_click_markers = keep
         n = len(gone)
         if n > 0:
+            left = {int(m["id"]) for m in keep}
+            self._add_forget_marks(int(m["id"]) for m in gone
+                                   if int(m["id"]) not in left)
+            self._add_repoint_current(gone)
             if not keep:
                 self._add_markers_base = None
             self._add_bump_markers_epoch()
@@ -7134,13 +11719,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         erased and redrawn in placement order -- the same voxels a full
         redraw gives, without zeroing a 73 MB array per tick (invariant
         23).  ``None`` redraws everything (a new layer, a re-base)."""
-        from packages.epicycle_annotator.add_preview import ball_value
+        from packages.epicycle_annotator.add_preview import (
+            ADD_BALL_APART_VALUE,
+            ball_value,
+        )
 
         main = self._add_main_label_layer()
         if main is None:
             return
         markers = self._add_markers()
         layer = self._add_ball_layer()
+        _st = _StepTimer("[ADD-PERF] ball")
         if layer is None:
             if not markers:
                 return
@@ -7148,8 +11737,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             if layer is None:
                 return
             changed = None                     # a new layer: draw it all
+        _st.lap("build")
         data = layer.data
         rv = self._add_ball_radius_vox()
+        if changed is not None and rv != getattr(self, "_add_balls_radius",
+                                                 None):
+            # the balls on screen were drawn at another radius: a partial
+            # draw at this one would leave the layer mixed, and the Ball
+            # redraw would later find the radius it compares with unchanged
+            changed = None
         regions = {}
 
         def region(m):
@@ -7183,21 +11779,44 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 view = data[sl]
                 view[ball] = 0
             redraw = [m for m in markers if any(m is t for t in touched)]
+        _st.lap("erase")
         for m in redraw:
             if not m.get("ticked", True):
                 continue
             sl, ball = region(m)
             view = data[sl]
+            if self._add_apart_rec(m):
+                # refused (not connected): hollow, in its own red
+                view[_add_shell(ball) & (view == 0)] = ADD_BALL_APART_VALUE
+                continue
             view[ball & (view == 0)] = ball_value(m["id"])
+        if changed is None:
+            # every ball is at this radius now (a partial redraw is not:
+            # the Ball redraw compares with this)
+            self._add_balls_radius = rv
+        _st.lap("draw")
         self._refresh_add_ball_views()
+        _st.lap("views")
         self._add_update_ball_visibility()
+        _st.lap("visible")
+        _st.line(n=len(redraw), full=int(changed is None))
 
     def _build_add_ball_layer(self, main):
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_DRAWING_MARKERS,
+        )
         from packages.epicycle_annotator.sync import lock_brush_size_to_1
+
+        # the first marker of a box builds a full-volume layer (over a
+        # second on a large patch): S1 says so first.  Every caller of the
+        # ball drawing refreshes the page after it.
+        self._add_paint_status(ADD_S1_DRAWING_MARKERS, stage="add_balls")
 
         try:
             layer = Labels(np.zeros(main.data.shape, np.uint8),
                            name=self._ADD_BALL_LAYER, opacity=0.9)
+            # napari's own 49 object colours, and one more: a refused seed
+            layer.colormap = _add_ball_colormap()
             layer._epicycle_temporary = True          # flag, THEN append
             layer.editable = False
             try:
@@ -7222,6 +11841,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     try:
                         sub.editable = False
                         sub.mode = "pan_zoom"
+                    except Exception:
+                        pass
+                    try:
+                        # the refused red in the side views too
+                        sub.colormap = _add_ball_colormap()
                     except Exception:
                         pass
                     if not np.shares_memory(sub.data, layer.data):
@@ -7258,11 +11882,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
     def _add_update_ball_visibility(self) -> None:
         """Cells -> Nuclei HIDES the balls (the clicks are kept); Nuclei ->
-        Cells shows them again."""
+        Cells shows them again.  On Nuclei they show while Look for nuclei
+        is the markers (on a whole patch too, as on Cells)."""
         layer = self._add_ball_layer()
         if layer is None:
             return
-        show = self._add_preset() == "cells"
+        show = self._add_preset() == "cells" or self._add_look_markers()
         targets = [layer]
         sub_mgr = getattr(self, "subviewer_manager", None)
         if sub_mgr is not None:
@@ -7293,26 +11918,27 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 sm.disconnect_label_sync(layer)
             except Exception:
                 pass
-        try:
-            self.subviewer_manager.remove_layer_from_subviewers(name)
-        except Exception:
-            pass
-        if sm is not None:
+        with _gc_batch(self):
             try:
-                sm.unregister_layer(name)
+                self.subviewer_manager.remove_layer_from_subviewers(name)
             except Exception:
                 pass
-        try:
-            layer.visible = False
-            if layer in self.viewer.layers:
-                self.viewer.layers.remove(layer)
-        except Exception:
-            pass
+            if sm is not None:
+                try:
+                    sm.unregister_layer(name)
+                except Exception:
+                    pass
+            try:
+                layer.visible = False
+                if layer in self.viewer.layers:
+                    self.viewer.layers.remove(layer)
+            except Exception:
+                pass
 
     def _restore_side_active_layers(self) -> None:
         """napari makes an appended layer ACTIVE and runs mouse callbacks
         for the active layer only, so right-click select dies in a side
-        view whose active layer is a mirrored Add copy (grill E-M11).  Put
+        view whose active layer is a mirrored Add copy.  Put
         each side view's active layer back to the main labels copy."""
         sub_mgr = getattr(self, "subviewer_manager", None)
         name = getattr(self, "_active_labels_name", "")
@@ -7573,7 +12199,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             pass
         print(f"[ADD] double-click in {orient} -> marker click")
         self._add_defer_marker_click(getattr(self, "_add_drag_token", 0),
-                                     zyx, self._add_event_ctrl(event))
+                                     zyx, self._add_event_ctrl(event),
+                                     **self._add_event_mods(event))
         return True
 
     def _add_side_ready(self) -> bool:
@@ -7663,7 +12290,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         box0 = self._add_box
         bounds = box0.bounds_dict(shape)
         tol = self._add_outline_tol(vm, bounds, orient)
-        if BD.outline_hit(bounds, orient, zyx, tol):
+        # the whole patch does not move: its outline is the patch's own
+        # edge, and a press there pans as anywhere else
+        if (not getattr(self, "_add_whole_patch", False)
+                and BD.outline_hit(bounds, orient, zyx, tol)):
             if self._add_refuse_busy("box drag"):
                 yield from self._add_refused_press(event)
                 return
@@ -7703,6 +12333,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         except Exception:
             return False
 
+    def _add_event_mods(self, event) -> dict:
+        """Shift and Alt held at a click, as the marker click's keywords
+        (Ctrl travels on its own, as it always has)."""
+        try:
+            mods = tuple(getattr(event, "modifiers", None) or ())
+        except Exception:
+            mods = ()
+        return {"shift": "Shift" in mods, "alt": "Alt" in mods}
+
     def _add_pan_truth(self, vm) -> bool:
         """What napari's own state says the camera's pan should be: the
         active layer's ``mouse_pan``, or True with no active layer (napari's
@@ -7741,6 +12380,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         event.handled = True
         px0 = self._add_event_px(event)
         ctrl = self._add_event_ctrl(event)
+        mods = self._add_event_mods(event)
         try:          # the named fallback: no pan for this drag
             cam.mouse_pan = False
         except Exception:
@@ -7789,7 +12429,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                   and getattr(self, "_add_place_markers_on", False)
                   and BD.is_click(px0, self._add_event_px(event))):
                 # a click in the grab band is still a marker click
-                self._add_defer_marker_click(token, zyx0, ctrl)
+                self._add_defer_marker_click(token, zyx0, ctrl, **mods)
         finally:
             st = getattr(self, "_add_drag_state", None)
             if st is not None and st.get("token") == token:
@@ -7811,23 +12451,31 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         px0 = self._add_event_px(event)
         ctrl = self._add_event_ctrl(event)
+        mods = self._add_event_mods(event)
         token = getattr(self, "_add_drag_token", 0)
         yield
         while getattr(event, "type", None) == "mouse_move":
             yield
         if not BD.is_click(px0, self._add_event_px(event)):
+            print(f"[ADD] press in {orient} moved more than a click "
+                  f"({px0} -> {self._add_event_px(event)}) - a pan, no marker")
             return
-        self._add_defer_marker_click(token, zyx0, ctrl)
+        print(f"[ADD] click in {orient} -> marker click")
+        self._add_defer_marker_click(token, zyx0, ctrl, **mods)
 
-    def _add_defer_marker_click(self, token, zyx, ctrl) -> None:
-        """The marker click, one event-loop turn later, behind *token*."""
+    def _add_defer_marker_click(self, token, zyx, ctrl, shift=False,
+                                alt=False) -> None:
+        """The marker click, one event-loop turn later, behind *token*;
+        the modifiers held at the press travel with it."""
+        extra = {k: True for k, v in (("shift", shift), ("alt", alt)) if v}
+
         def _fire():
             if (token != getattr(self, "_add_drag_token", 0)
                     or not self._add_widget_alive()
                     or not self._add_side_ready()):
                 print("[ADD] marker click dropped (session moved on)")
                 return
-            self._add_marker_click(zyx, ctrl=ctrl)
+            self._add_marker_click(zyx, ctrl=ctrl, **extra)
 
         self._add_defer(_fire)
 
@@ -7900,7 +12548,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if getattr(self, "_add_drag_state", None):
             return
         on = False
-        if self._add_side_ready():
+        # the whole patch does not move: no move cursor over its outline
+        if (self._add_side_ready()
+                and not getattr(self, "_add_whole_patch", False)):
             zyx = self._add_event_zyx(orient, vm, event)
             shape = self._add_volume_shape()
             if zyx is not None and shape is not None:
@@ -7956,6 +12606,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return False
         # Add was ready: from here on the key is Add's, even if the nudge
         # fails (LOW-7) -- it must never ALSO navigate
+        if getattr(self, "_add_whole_patch", False):
+            # the whole patch does not move: the key is taken, nothing moves
+            return True
         try:
             if self._add_refuse_busy("box nudge"):
                 return True
@@ -8071,41 +12724,76 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         return cache.get(self._add_dark_key())
 
     def _add_default_spacing(self) -> bool:
-        """True when Step 3's spacing is the default (1, 1, 1) -- Cells runs
-        on it as it is and the page says so in amber.  Reads the context itself, not ``_refine_spacing_known``, which
-        is Refine's gate and stays Refine's."""
-        from packages.epicycle_annotator.add_preview import spacing_is_default
-
-        try:
-            spacing = self._reshape_context().get("spacing")
-        except Exception:
-            spacing = None
-        return spacing_is_default(spacing)
+        """True when Step 3's spacing was never set -- Cells runs on the
+        1.0 um default as it is and the page says so in amber.  Follows the
+        context's own word about where the spacing came from (a half-size
+        session of 0.5 um voxels hands over (1, 1, 1) and is known), and the
+        numbers only when the context does not say."""
+        return self._add_spacing_unknown()
 
     def _add_s1_state(self) -> dict:
         """Everything :func:`add_preview.s1_sentence` reads."""
         shared = self._add_shared_volume()
         preset = self._add_preset()
         params = self._add_params()
-        kind, _run_id = self._add_marker_source()
+        kind, run_id = self._add_marker_source()
         box = getattr(self, "_add_box", None)
         shape = None
         if getattr(self, "_add_roi", None) is not None:
             shape = tuple(int(sl.stop - sl.start) for sl in self._add_roi)
         info = getattr(self, "_add_info", None)
         dark_on = bool(params.get("dark_outside", True))
+        # a tissue outline turns the dark plumbing on whatever the tick says
+        # (Cells); on Nuclei it is the outline alone ("none" unless chosen)
+        mode = self._add_outline_mode()
+        dark_needed = dark_on or mode != "none"
+        whole = bool(getattr(self, "_add_whole_patch", False))
         info_pending = False
         if preset == "cells":
             if info is None:
                 info_pending = True
-            elif dark_on and self._add_cached_dark() is None:
+            elif dark_needed and self._add_cached_dark() is None:
                 info_pending = True
             elif kind == "labels" and info.run_count is None:
                 info_pending = True
+        outline_pending = False
+        outline_error = None
+        if mode != "none" and box is not None:
+            err = (getattr(self, "_add_outline_errors", None) or {}).get(
+                self._add_outline_key(mode))
+            if err:
+                from packages.epicycle_annotator.add_preview import (
+                    ADD_S1_OUTLINE_FAILED,
+                    ADD_S1_OUTLINE_FAILED_NUCLEI,
+                )
+
+                # the same failure, said without "under Walls" on Nuclei
+                outline_error = (ADD_S1_OUTLINE_FAILED_NUCLEI
+                                 if preset != "cells"
+                                 and err == ADD_S1_OUTLINE_FAILED else err)
+            elif self._add_cached_outline() is None:
+                outline_pending = True
+        inside = preset != "cells" and self._add_inside()
+        run_state = getattr(self, "_add_run_state", None)
+        if inside:
+            # Inside each cell waits for the patch levels and the cell count
+            # (both measured on the box-info worker)
+            if (info is None or info.inside_count is None
+                    or self._add_cached_levels() is None):
+                info_pending = True
+            if (run_state is None
+                    and getattr(self, "_add_run_guide", None) is None):
+                run_state = "loading"
         state = {
             "has_patch": shared is not None,
-            "transient": getattr(self, "_add_transient", None),
+            # a live run is never busy: its warm-up stands as a transient
+            "transient": (getattr(self, "_add_transient", None)
+                          or (getattr(self, "_add_warm_text", None)
+                              if getattr(self, "_add_live_run", False)
+                              else None)),
             "busy": bool(getattr(self, "_add_busy", False)),
+            "busy_text": (self._add_clear_busy_text()
+                          or getattr(self, "_add_warm_text", None)),
             "has_box": box is not None and getattr(self, "_add_running", False),
             "preset": preset,
             "box_shape": shape,
@@ -8114,14 +12802,57 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             "wall_channel": str(self._add_wall_params().get("channel") or ""),
             "nuclei_channel": self._add_nuclei_channel(),
             "source": kind,
-            "run_state": getattr(self, "_add_run_state", None),
-            "n_clicks": len(self._add_markers()),
+            "run_state": run_state,
+            # counted per OBJECT (the seeds of one object are one)
+            "n_clicks": len({int(m["id"]) for m in self._add_markers()}),
             # 4.9a row 12b and the "k of n ticked" tail
-            "n_ticked": sum(1 for m in self._add_markers() if m["ticked"]),
+            "n_ticked": len({int(m["id"]) for m in self._add_markers()
+                             if m["ticked"]}),
+            # the current object, named by S1 while the clicks are the
+            # markers (and Place markers is on)
+            "current_id": self._add_current_id_shown(preset, kind),
             "info_pending": info_pending,
             "empty_share": None if info is None else info.empty_share,
             "user_emptied": bool(getattr(self, "_add_user_emptied", False)),
+            # Inside each cell and the whole patch
+            "look_for": self._add_look_for()[0],
+            # the micron knobs of Inside each cell and of a Cells whole
+            # patch refuse at the never-set 1.0 um default
+            "spacing_unknown": ((inside or (preset == "cells" and whole))
+                                and self._add_spacing_unknown()),
+            "outline_pending": outline_pending,
+            "outline_error": outline_error,
+            "numba_ok": _ADD_NUMBA["ok"] is not False,
+            "numba_why": _ADD_NUMBA.get("why"),
+            "levels_error": inside and self._add_levels_error() is not None,
+            "inside_count": (None if info is None or not inside
+                             else info.inside_count),
+            "whole_patch": bool(getattr(self, "_add_whole_patch", False)),
+            # Markers ▸ From: the run picked (None: a whole patch's blank
+            # combo) and whether this patch has another run at all
+            "run_id": run_id,
+            "has_other_run": bool(getattr(self, "_add_run_sources", None)),
+            # the run count's markers (the Preview's own seed finder) and
+            # the outline's share of the drop: no marker greys Preview
+            "n_run_markers": self._add_run_markers_counted(info),
+            "n_run_found": self._add_run_markers_counted(info, found=True),
+            "dark_outside": dark_on,
+            "n_outside_outline": getattr(info, "n_outside_outline", None),
+            "outline": mode,
+            "place_markers_on": bool(getattr(self, "_add_place_markers_on",
+                                             False)),
+            # "Update as I click" (S1 row 13.5 on a whole patch, which a
+            # Cells whole patch with walls the click fill redoes skips)
+            "live_on": self._add_live_on(),
+            "live_whole_ok": self._add_cells_live_whole(),
         }
+        if getattr(self, "_add_review", False):
+            from packages.epicycle_annotator.add_preview import cells_with_two
+
+            # keyed by (run, cell): cell 5 of one run is not cell 5 of another
+            owners, _cells = self._add_session_owners()
+            state["review_two"] = cells_with_two(
+                getattr(self, "_add_piece_ids", []) or [], owners)
         if getattr(self, "_add_review", False):
             sizes = {}
             for e in getattr(self, "_add_session", []) or []:
@@ -8158,7 +12889,26 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             else:
                 state["candidates"] = (len(res.ids), 0, 0, 0, len(ticked),
                                        len(off))
+            # Inside each cell: "k cells hold two nuclei" after the count
+            state["n_two"] = int(getattr(res, "n_two_in_cell", 0) or 0)
         return state
+
+    def _add_current_id_shown(self, preset, kind):
+        """The current object's id while the clicks are the markers (Cells
+        ▸ Click markers, Nuclei ▸ At the markers I place), else ``None``."""
+        clicks = ((kind == "paint") if preset == "cells"
+                  else self._add_look_markers())
+        cur = self._add_current_rec() if clicks else None
+        return None if cur is None else int(cur["id"])
+
+    def _add_run_markers_counted(self, info, found=False):
+        """How many markers the box-info run count left (its second
+        number) -- or, with ``found``, how many of the run's objects it
+        found here (its first) -- or None when the run was not counted."""
+        rc = getattr(info, "run_count", None)
+        if isinstance(rc, (tuple, list)) and len(rc) >= 2:
+            return int(rc[0] if found else rc[1])
+        return None
 
     def _add_refresh_ui(self, **extra) -> None:
         """Push S1 (the 4.9a table), Preview's enable and the strip."""
@@ -8168,6 +12918,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             s1_sentence,
         )
 
+        self._add_check_outline_choice()
+        self._add_prune_caches()
         state = self._add_s1_state()
         busy = state["busy"]
         review = bool(getattr(self, "_add_review", False))
@@ -8178,16 +12930,90 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                   default_spacing=self._add_default_spacing(),
                   preview_enabled=preview_ok,
                   busy=busy,
+                  # Stop drops a Clear's count; its write cannot be stopped;
+                  # a preview whose answer has landed has nothing to stop
                   stop_enabled=busy and not getattr(self, "_add_stopping",
-                                                    False))
+                                                    False)
+                  and getattr(self, "_add_clear_phase", None) != "clearing"
+                  and not getattr(self, "_add_answer_landed", False),
+                  # the one amber slot (another run read, a whole patch)
+                  derive_note=self._add_derive_note_text(),
+                  # why the patch's levels refused this channel ("" none):
+                  # under Look for nuclei, where a refused run's reason goes
+                  levels_note=((self._add_levels_error() or "")
+                               if state.get("look_for") == "inside" else ""))
+        if state.get("look_for") == "inside":
+            count = state.get("inside_count")
+            kw["inside_count"] = () if count is None else int(count)
+        # the current object's rows are bold (0: none) -- only while the
+        # clicks are the markers, so another source's rows never are
+        kw["click_current"] = int(state.get("current_id") or 0)
+        # Cells: a Clear in force offers its outline; the outline being
+        # measured; whether Spread can run here
+        kw["cleared_in_force"] = bool(self._add_cleared_in_force())
+        kw["outline_pending"] = bool(state.get("outline_pending"))
+        kw["outline_refused"] = bool(state.get("outline_error"))
+        kw["numba_ok"] = bool(state.get("numba_ok", True))
+        kw["numba_why"] = str(state.get("numba_why") or "")
+        # a whole patch filled the way a box is (the box rule): its help
+        # line, the membrane tick hidden, its summary
+        kw["live_whole_rule"] = bool(self._add_cells_live_whole_rule())
+        # the moving bar while the box, the patch, the outline or a run is
+        # read on a worker -- only while a reader is alive or due, in the
+        # words of what it reads whatever S1 says (the app is live then;
+        # nothing else is greyed)
+        from napari_epicycle.annotator.reshape_worker import stage_text
+        from packages.epicycle_annotator.add_preview import measuring_stage
+
+        key = None
+        # a live box only: in the review a read still in flight has no page
+        # to name it on (its landing refreshes nothing)
+        if running and not review and self._add_reader_running():
+            reader = ("run" if getattr(self, "_add_guide_thread", None)
+                      is not None else "info")
+            key = measuring_stage(state, reader=reader)
+        if (running and not review and getattr(self, "_add_live_run", False)
+                and self._add_live_in_flight()):
+            # a live run is not busy: the strip's line names its stage, the
+            # bar moves, Stop stays grey and nothing is greyed
+            key = getattr(self, "_add_live_stage", None) or "add_box"
+        kw["measuring"] = stage_text(key) if key else ""
+        if running and not review and "footer_text" not in extra:
+            # a box after "+ Add another" (Close box goes back to the
+            # review) or after a Clear (Close box keeps it) -- the footer's
+            # override; the result's own line still wins while candidates
+            # are up
+            box_line = self._add_box_footer_text()
+            if box_line:
+                kw["footer_text"] = box_line
         kw.update(extra)
+        # the outline's skin first, so the Show legend says whether it is
+        # drawn yet
+        self._add_sync_outline_layer()
+        drawn = getattr(self, "_add_outline_layer", None) is not None
+        kw["outline_drawn"] = drawn
+        # the legend names the side views only when all three hold it
+        # (False only for a drawn outline the side views lack)
+        kw["outline_in_side_views"] = (
+            not drawn or len(self._add_outline_side_copies()) == 3)
         self._push_add_ui(**kw)
+
+    def _add_reader_running(self) -> bool:
+        """A box-info measurement or a run read is running, or one is due."""
+        return (getattr(self, "_add_info_thread", None) is not None
+                or getattr(self, "_add_guide_thread", None) is not None
+                or self._add_info_due())
 
     def _add_refuse_busy(self, what) -> bool:
         """True (and ``ADD_S1_BUSY_REFUSED``) while a preview runs -- nothing
         moves and nothing is cancelled."""
         if not getattr(self, "_add_busy", False):
             return False
+        if getattr(self, "_add_clear_phase", None) is not None:
+            print(f"[ADD] {what} refused - Clear objects is counting or "
+                  "clearing")
+            self._add_refresh_ui()
+            return True
         from packages.epicycle_annotator.add_preview import ADD_S1_BUSY_REFUSED
 
         print(f"[ADD] {what} refused - a preview is running")
@@ -8195,9 +13021,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_refresh_ui()
         return True
 
-    def _add_gather_preview(self):
+    def _add_gather_preview(self, live: bool = False):
         """``(kwargs, None)`` for :func:`run_add_preview`, or ``(None,
-        sentence)``.  Main thread; every array a copied box crop."""
+        sentence)``.  Main thread; every array a copied box crop.  ``live``
+        (a run after a click): the session's cached next id, as the click
+        that reserved it read, instead of a max over the whole volume."""
         from packages.epicycle_annotator import add_preview as AP
 
         shared = self._add_shared_volume()
@@ -8210,14 +13038,92 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return None, block
         params = self._add_params()
         preset = state["preset"]
-        existing_roi = np.array(shared[roi], copy=True)
+        # Nuclei ▸ the markers on a whole patch with the tick on: the patch
+        # prepared by an earlier run is handed in with the solution to start
+        # from, and the labels are not copied again (the worker prepares
+        # from the copy only on the first run)
+        engine = self._add_marker_engine_on()
+        stage = previous = None
+        self._add_launch_marker_key = None
+        self._add_launch_cells_key = None
+        self._add_launch_cells_holder = None
+        self._add_launch_cells_sig = None
+        if engine:
+            mkey = self._add_marker_stage_key()
+            self._add_launch_marker_key = mkey
+            mcache = getattr(self, "_add_marker_cache", None)
+            if mcache and mcache.get("key") == mkey:
+                stage = mcache.get("stage")
+                drawn = getattr(self, "_add_drawn_marker_solution", None)
+                previous = (drawn if drawn is not None
+                            and drawn.stage is stage
+                            else mcache.get("solution"))
+        existing_roi = (None if stage is not None
+                        else np.array(shared[roi], copy=True))
         kw = dict(preset=preset, roi=tuple(roi), existing_roi=existing_roi,
-                  next_label=self._add_next_label(), id_max=self._add_id_max())
+                  next_label=self._add_next_label(cached=bool(live)),
+                  id_max=self._add_id_max())
         common = {k: params.get(k, d) for k, d in (
             ("min_size", 0), ("clear_border", True), ("edge_margin", 3),
             ("auto_smooth", True), ("smooth_sigma", 1.5))}
+        # Smoothing counts voxels of the FULL-size image, like the markers'
+        # Spacing: at half size one voxel here spans `factor` full-size
+        # ones, so the number is divided by the session's half-size factor.
+        # Factor 1, a missing or an unreadable one: the box's number as is.
+        factor = self._add_half_factor()
+        if factor > 1:
+            common["smooth_sigma"] = float(common["smooth_sigma"]) / factor
+        if getattr(self, "_add_whole_patch", False):
+            # no face of a whole patch is a cut by the box
+            common["whole_patch"] = True
+        if preset != "cells" and state.get("look_for") == AP.LOOK_INSIDE:
+            # Inside each cell: the nuclear channel, the other run's cells
+            # and the PATCH's levels cropped to the box's z range (a box's
+            # own levels are not the patch's); spacing in microns, known
+            guide = getattr(self, "_add_run_guide", None)
+            if guide is None:
+                return None, AP.ADD_S1_RUN_LOADING
+            levels = self._add_cached_levels()
+            if levels is None:
+                return None, AP.ADD_S1_MEASURING
+            image_roi = self._add_channel_crop(params.get("channel", ""), roi,
+                                               np.float32)
+            if image_roi is None:
+                return None, self._add_channel_error_text()
+            z0, z1 = int(roi[0].start or 0), int(roi[0].stop)
+            p = dict(common, look_for=AP.LOOK_INSIDE,
+                     nuc_radius_um=float(params.get("nuc_radius_um", 2.5)),
+                     nuc_edge=float(params.get("nuc_edge", 0.25)),
+                     two_gap=float(params.get("two_gap", 0.70)),
+                     spacing_known=not self._add_spacing_unknown())
+            # the other run as a view: it is never written (the recipe reads
+            # it; a copy was ~0.3 s on the main thread on a whole patch)
+            kw.update(params=p, image_roi=image_roi,
+                      run_guide_roi=guide[roi],
+                      patch_levels=levels.crop_z(z0, z1),
+                      spacing=self._refine_spacing())
+            if not getattr(self, "_add_whole_patch", False):
+                # a box sees only its crop of a cell: the worker measures
+                # which of the box's cells already hold a kept object over
+                # the WHOLE patch.  Both as VIEWS: the worker only reads
+                # them, and the Add lock keeps every writer out while a
+                # Preview runs (a copy was 3.4 s and 2 GiB on a 512x1024x1024
+                # patch, on the main thread).  The write rule still reads
+                # its own snapshot, existing_roi.
+                kw.update(run_guide_patch=guide, existing_patch=shared)
+            return kw, None
         if preset != "cells":
-            image_roi = self._add_channel_crop(params.get("channel", ""), roi)
+            if (getattr(self, "_add_whole_patch", False)
+                    and state.get("look_for") == AP.LOOK_MARKERS):
+                # the markers on a whole patch: the layer's own array, read
+                # on the worker (the engine converts it and never writes
+                # it); a float64 copy of the patch here was 0.4 s on the
+                # main thread at 100 million voxels
+                image_roi = self._refine_channel_source(
+                    params.get("channel", ""))
+            else:
+                image_roi = self._add_channel_crop(params.get("channel", ""),
+                                                   roi)
             if image_roi is None:
                 return None, self._add_channel_error_text()
             thr = (self._add_threshold_value
@@ -8227,37 +13133,116 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                      threshold=thr,
                      separate=bool(params.get("separate", True)),
                      min_distance=int(params.get("min_distance", 3)))
+            mode = self._add_outline_mode()
+            if mode != AP.OUTLINE_NONE:
+                # Nuclei's Tissue outline (chosen): the patch's outline,
+                # measured once on the box-info worker; the engine cuts it
+                # to the box.  With none, nothing is added (today's call)
+                outline_roi = self._add_cached_outline()
+                if outline_roi is None:
+                    return None, AP.ADD_OUTLINE_PENDING
+                p.update(outline=mode, bridge_um=float(
+                    params.get("bridge_um", AP.ADD_BRIDGE_UM)))
+                kw.update(outline_roi=outline_roi)
+            if state.get("look_for") != AP.LOOK_MARKERS:
+                kw.update(params=p, image_roi=image_roi,
+                          spacing=self._add_spacing())
+                return kw, None
+            # At the markers I place: the TICKED markers, in placement
+            # order, with the ids they reserved -- re-based first if
+            # next_label moved since -- and the Ball, at the spacing the
+            # balls are drawn with
+            if self._add_rebase_markers(kw["next_label"]):
+                self._render_add_balls()
+                self._add_take_rebase_note()      # S1 says why (B-M2)
+                self._add_refresh_ui(**self._add_marker_push())
+            ticked = [m for m in self._add_markers() if m["ticked"]]
+            # the markers' Spacing, N voxels of the FULL-size image across,
+            # in microns: N x the session's xy voxel / the half-size factor,
+            # so N means the same distance in the tissue at half size (the
+            # factor as read above for the Smoothing)
+            spacing = self._refine_spacing()
+            n_vox = int(params.get("marker_spacing",
+                                   AP.ADD_MARKER_SPACING_DEFAULT))
+            p.update(look_for=AP.LOOK_MARKERS,
+                     click_radius_um=float(params.get("click_radius_um",
+                                                      1.0)),
+                     peak_spacing_um=(float(n_vox) * float(spacing[-1])
+                                      / float(max(1, factor))))
             kw.update(params=p, image_roi=image_roi,
-                      spacing=self._add_spacing())
+                      spacing=spacing,
+                      click_points=[tuple(m["zyx"]) for m in ticked],
+                      reserved_ids=[int(m["id"]) for m in ticked])
+            if engine:
+                kw.update(marker_engine=True, marker_stage=stage,
+                          marker_previous=previous)
             return kw, None
         kind, _run_id = self._add_marker_source()
         wall = self._add_wall_params()
-        wall_roi = self._add_channel_crop(wall.get("channel"), roi, np.float32)
+        whole = bool(getattr(self, "_add_whole_patch", False))
+
+        def _image(name, dtype=np.float32):
+            # a box: a copied crop; the whole patch: the layer's own array,
+            # read on the worker (copies of every channel at patch size were
+            # seconds on the main thread)
+            if whole:
+                return self._refine_channel_source(name)
+            return self._add_channel_crop(name, roi, dtype)
+
+        wall_roi = _image(wall.get("channel"))
         if wall_roi is None:
             return None, AP.ADD_S1_PICK_WALL_CHANNEL
         dark_on = bool(params.get("dark_outside", True))
+        # a tissue outline turns the dark plumbing on whatever the tick says
+        mode = self._add_outline_mode()
         dark_rois = None
         dark = None
-        if dark_on:
+        if dark_on or mode != "none":
             dark = self._add_cached_dark()
             if dark is None:
                 return None, AP.ADD_S1_MEASURING
             dark_rois = {}
             for name in self._add_image_channel_names():
-                crop = self._add_channel_crop(name, roi, np.float32)
+                crop = _image(name)
                 if crop is not None:
                     dark_rois[name] = crop
+        outline_roi = None
+        if mode != "none":
+            # the patch's outline (measured once on the box-info worker);
+            # the engine crops it to the box
+            outline_roi = self._add_cached_outline()
+            if outline_roi is None:
+                return None, AP.ADD_OUTLINE_PENDING
+        elevation_roi = None
+        self._add_launch_elev_key = None
+        if whole:
+            # the wall picture of the whole patch, built once (by the first
+            # Preview) and handed in after that
+            ekey = self._add_elev_key()
+            self._add_launch_elev_key = ekey
+            ecache = getattr(self, "_add_elev_cache", None)
+            if ecache and ecache.get("key") == ekey:
+                elevation_roi = ecache.get("elev")
+        else:
+            # a box small enough to run as you click: its wall picture,
+            # built by the first run and handed to every later one (its own
+            # slot; None over the limit, where it is built at every Preview)
+            bkey = self._add_box_elev_key()
+            self._add_launch_elev_key = bkey
+            bcache = getattr(self, "_add_box_elev_cache", None)
+            if bkey is not None and bcache and bcache.get("key") == bkey:
+                elevation_roi = bcache.get("elev")
         nuclei_roi = None
         run_guide_roi = None
         if kind == "nuclei_masks":
-            nuclei_roi = self._add_channel_crop(self._add_nuclei_channel(), roi)
+            nuclei_roi = _image(self._add_nuclei_channel(), np.float64)
             if nuclei_roi is None:
                 return None, AP.ADD_S1_PICK_NUCLEI_CHANNEL
         elif kind == "labels":
             guide = getattr(self, "_add_run_guide", None)
             if guide is None:
                 return None, AP.ADD_S1_RUN_LOADING
-            run_guide_roi = np.array(guide[roi], copy=True)
+            run_guide_roi = guide[roi]      # a view: the engine crops a copy
         nthr = getattr(self, "_add_nuclei_threshold_value", None)
         # the TICKED markers, in placement order, with the
         # ids they reserved -- re-based first if next_label moved since
@@ -8266,21 +13251,39 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_take_rebase_note()      # S1 says why (B-M2)
             self._add_refresh_ui(**self._add_marker_push())
         ticked = [m for m in self._add_markers() if m["ticked"]]
-        p = dict(common, source=kind,
-                 wall_kind=wall.get("wall_kind", "membrane"),
-                 wall_chain=wall.get("chain", "none"),
-                 dark_outside=dark_on,
-                 dark_otsu_factor=float(params.get("dark_otsu_factor", 0.5)),
-                 dark_clearance_um=float(params.get("dark_clearance_um", 2.0)),
-                 core_erode_um=float(params.get("core_erode_um", 1.0)),
-                 click_radius_um=float(params.get("click_radius_um", 2.0)),
-                 box_budget=int(params.get("box_budget", 4_000_000)),
-                 nuclei_threshold=("otsu" if nthr is None else float(nthr)))
+        # the engine's settings come from one place (the click fill's stage
+        # key reads the same)
+        p = dict(common,
+                 nuclei_threshold=("otsu" if nthr is None else float(nthr)),
+                 **self._add_cells_engine_params())
+        if live and whole:
+            # a run after a click on a whole patch: the bridge refuses
+            # rather than flood it whole where the click fill steps aside
+            # (a box's live run gathers what its Preview gathers)
+            p["live"] = True
         kw.update(params=p, spacing=self._refine_spacing(), wall_roi=wall_roi,
                   dark_rois=dark_rois, dark_threshold=dark,
                   nuclei_roi=nuclei_roi, run_guide_roi=run_guide_roi,
-                  click_points=[tuple(m["zyx"]) for m in ticked],
-                  reserved_ids=[int(m["id"]) for m in ticked])
+                  outline_roi=outline_roi, elevation_roi=elevation_roi)
+        if kind == AP.SOURCE_CLICKS:
+            # the clicks reach the Preview only as its markers: markers left
+            # from a box on another source are hidden and kept, never sent
+            # (their reserved ids would be checked for nothing on screen)
+            kw.update(click_points=[tuple(m["zyx"]) for m in ticked],
+                      reserved_ids=[int(m["id"]) for m in ticked])
+            # a box at or under the live limit (live or a manual Preview):
+            # the click fill's prepared box goes to the run, which keeps it
+            # up to date and hands it back when it ends
+            ckey = self._add_cells_stage_key()
+            if ckey is not None:
+                kept = getattr(self, "_add_cells_stage", None)
+                holder = (dict(kept) if kept and kept.get("key") == ckey
+                          else {})
+                self._add_cells_stage = None
+                self._add_launch_cells_key = ckey
+                self._add_launch_cells_holder = holder
+                self._add_launch_cells_sig = self._add_cells_sig()
+                kw.update(stage_holder=holder, stage_key=ckey)
         return kw, None
 
     def _preview_add(self) -> None:
@@ -8293,30 +13296,138 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return
         if self._add_refuse_busy("preview"):
             return
+        if (getattr(self, "_add_live_run", False)
+                and self._add_live_in_flight()):
+            # a live run is in flight: one more run follows its finish --
+            # the manual way if the live run cannot follow any more
+            self._add_live_dirty = True
+            self._add_manual_owed = True
+            return
         if getattr(self, "_add_thread", None) is not None:
             # the previous thread is still quitting (4.6, invariant 11)
             print("[ADD] preview refused - the previous thread is still "
                   "quitting")
             return
+        if self._add_parked_preview_running():
+            # a Cancel / Done during an unstoppable fill parked its thread
+            # (the cleanup lets go of it before its wait): two whole-patch
+            # fills must never run at once
+            from packages.epicycle_annotator.add_preview import (
+                ADD_S1_PARKED_REFUSED,
+            )
+
+            print("[ADD] preview refused - an earlier preview's thread is "
+                  "still running (parked)")
+            self._add_transient = ADD_S1_PARKED_REFUSED
+            # the sentence goes by itself when that thread ends
+            self._add_watch_parked()
+            self._add_refresh_ui()
+            return
+        if (self._add_marker_drawn_current()
+                or self._add_cells_drawn_current()):
+            # the result drawn answers these markers already
+            print("[ADD] Preview: the drawn result is current - nothing "
+                  "to run")
+            return
+        _st = _StepTimer("[ADD-PERF] preview setup")
         self._add_transient = None
         # the snapshot and the write read shared: realign it first (U1)
         self._ensure_shared_data_aligned(self._active_labels_name)
         self._add_forget_volume_max()      # B-L3: a realign may replace it
+        _st.lap("align")
         if getattr(self, "_add_preview_result", None) is not None:
             self._invalidate_add_preview()
-        kwargs, why = self._add_gather_preview()
+        _st.lap("invalidate")
+        if getattr(self, "_add_whole_patch", False):
+            # the whole-patch copies take a visible moment on the main
+            # thread: say so first, and paint it now
+            from packages.epicycle_annotator.add_preview import (
+                ADD_S1_GATHERING,
+            )
+
+            self._add_paint_status(ADD_S1_GATHERING, stage="add_box_patch")
+        try:
+            kwargs, why = self._add_gather_preview()
+        except BaseException:
+            self._add_refresh_ui()        # the wait's words never stick
+            raise
+        _st.lap("gather_crops")
         if kwargs is None:
             print(f"[ADD] Preview refused: {why}")
+            # the invalidation above may have scheduled a live run: the
+            # refusal is the answer, no run follows it
+            self._add_live_stop()
             self._add_transient = why
             self._add_refresh_ui()
             return
         self._launch_add_worker(kwargs)
+        _st.lap("launch")
+        _st.line(preset=kwargs.get("preset"))
 
-    def _launch_add_worker(self, kwargs) -> None:
+    def _add_parked_preview_running(self) -> bool:
+        """True while a parked Add preview thread (one a Cancel / Done could
+        not wait for) is still running.  Never raises."""
+        for th, worker in list(getattr(self, "_refine_parked_threads", None)
+                               or []):
+            try:
+                if (getattr(worker, "kind", "") == "add"
+                        and th.isRunning()):
+                    return True
+            except Exception:  # noqa: BLE001 - a deleted thread is done
+                continue
+        return False
+
+    def _add_watch_parked(self) -> None:
+        """Hear the end of every parked Add preview thread still running
+        (once per thread), so the parked refusal goes by itself.  The
+        cleanup disconnected their ``finished``; this connects a bound
+        method of the annotator (PyQt drops it with the annotator).  Never
+        raises."""
+        watched = getattr(self, "_add_parked_watched", None)
+        if watched is None:
+            watched = self._add_parked_watched = []
+        for th, worker in list(getattr(self, "_refine_parked_threads", None)
+                               or []):
+            try:
+                if (getattr(worker, "kind", "") != "add"
+                        or any(t is th for t in watched)
+                        or not th.isRunning()):
+                    continue
+                th.finished.connect(self._on_add_parked_finished)
+                watched.append(th)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD] parked preview thread not watched: {exc!r}")
+
+    def _on_add_parked_finished(self, *_a) -> None:
+        """A parked Add preview thread ended: its refusal leaves S1 (only
+        while S1 still says it).  Safe when the page is already gone."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_PARKED_REFUSED,
+        )
+
+        if (getattr(self, "_add_live_dirty", False)
+                and getattr(self, "_add_thread", None) is None):
+            # an update owed while the parked thread ran runs now
+            try:
+                self._add_live_fire()
+            except Exception as exc:  # noqa: BLE001 - the page may be gone
+                print(f"[ADD] owed update not run: {exc!r}")
+        if getattr(self, "_add_transient", None) != ADD_S1_PARKED_REFUSED:
+            return
+        self._add_transient = None
+        print("[ADD] the parked preview thread ended - Preview is live again")
+        try:
+            self._add_refresh_ui()
+        except Exception as exc:  # noqa: BLE001 - the page may be gone
+            print(f"[ADD] S1 not refreshed after the parked thread: {exc!r}")
+
+    def _launch_add_worker(self, kwargs, live: bool = False) -> None:
         """Start ``run_add_preview`` on a ``RefineWorker``.
 
         The worker's OWN cancel event goes into ``kwargs`` -- ``RefineWorker``
-        never forwards it to ``fn`` (grill E-M6)."""
+        never forwards it to ``fn``.  ``live`` (Update as I
+        click): the run is not busy -- nothing greys, S1 is not "working",
+        only the strip's line names the stage."""
         import threading
 
         from qtpy.QtCore import QThread
@@ -8340,12 +13451,36 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # a finish launched on other markers is stale
         self._add_launch_markers_epoch = int(
             getattr(self, "_add_markers_epoch", 0))
+        # ... and on other settings
+        self._add_launch_settings_epoch = int(
+            getattr(self, "_add_settings_epoch", 0))
+        # this run takes every change so far: no quiet, no run owed
+        t = getattr(self, "_add_live_timer", None)
+        if t is not None:
+            try:
+                t.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        self._add_live_dirty = False
+        self._add_manual_owed = False
+        self._add_live_landed = False
+        if not live:
+            self._add_live_keep_transient = None
+        self._add_live_run = bool(live)
+        whole = bool(getattr(self, "_add_whole_patch", False))
+        self._add_live_stage = (("add_box_patch" if whole else "add_box")
+                                if live else None)
         ev = threading.Event()
         kwargs = dict(kwargs)
         kwargs["cancel_event"] = ev
-        self._add_busy = True
+        self._add_busy = not live
         self._add_stopping = False
-        self._add_refresh_ui(stage_text=stage_text("add_box"))
+        self._add_answer_landed = False
+        self._add_warm_text = None
+        if not live:
+            # (a live run refreshes once its thread exists: the strip's
+            # line reads it)
+            self._add_refresh_ui(stage_text=stage_text("add_box"))
         try:
             self._add_thread = QThread()
             self._add_worker = RefineWorker(
@@ -8355,8 +13490,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_worker.moveToThread(self._add_thread)
             self._add_thread.started.connect(self._add_worker.run)
             self._add_worker.progress.connect(self._on_add_progress)
-            self._add_worker.finished.connect(self._on_add_finished)
-            self._add_worker.error.connect(self._on_add_error)
+            self._add_worker.finished.connect(_from_sender(
+                self, self._add_worker, self._on_add_finished))
+            self._add_worker.error.connect(_from_sender(
+                self, self._add_worker, self._on_add_error))
             # Every exit of run() emits finished or error; each must also
             # QUIT the thread, or its event loop runs on, thread.finished
             # never comes and busy stays up until Accept / Cancel (B2 fix
@@ -8365,24 +13502,133 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # would then never clear busy.
             self._add_worker.finished.connect(self._add_thread.quit)
             self._add_worker.error.connect(self._add_thread.quit)
-            self._add_thread.finished.connect(self._on_add_thread_finished)
+            self._add_thread.finished.connect(_from_sender(
+                self, self._add_thread, self._on_add_thread_finished))
+            self._add_launch_t = _time.perf_counter()
             self._add_thread.start()
-            print("[ADD] preview worker started token={} preset={}".format(
-                token, kwargs.get("preset")))
+            print("[ADD] {} worker started token={} preset={}".format(
+                "live" if live else "preview", token, kwargs.get("preset")))
         except Exception as exc:  # noqa: BLE001 - never strand the surface
             print("[ADD] preview launch FAILED: {!r}".format(exc))
             self._add_thread = None
             self._add_worker = None
             self._add_busy = False
+            self._add_let_go_launch_cells()
+            if live:
+                # the drawn result no longer matches the markers: it goes
+                self._add_live_run = False
+                self._invalidate_add_preview(live_schedule=False)
+                if getattr(self, "_add_accept_pending", False):
+                    self._add_live_cancel_accept("the update could not start")
+            self._add_live_run = False
             self._add_transient = ADD_S1_FAILED
+            self._add_refresh_ui()
+            return
+        if live:
             self._add_refresh_ui()
 
     def _on_add_progress(self, stage, _i=0, _n=0) -> None:
         if getattr(self, "_add_stopping", False):
             return
         from napari_epicycle.annotator.reshape_worker import stage_text
+        from packages.epicycle_annotator import add_preview as AP
 
-        self._push_add_ui(stage_text=stage_text(stage))
+        if getattr(self, "_add_live_run", False):
+            # a live run: the strip's line (the bar moves, Stop grey); S1
+            # says only the growth engine's first set-up (~10 s, once).  On
+            # a whole patch the read is the patch's, as on a manual run
+            if stage in ("add_box", "add_prepare") and getattr(
+                    self, "_add_whole_patch", False):
+                stage = stage + "_patch"
+            self._add_live_stage = str(stage)
+            if stage == "add_warm":
+                self._add_warm_text = AP.ADD_S1_WARMING
+                self._add_refresh_ui()
+                return
+            if getattr(self, "_add_warm_text", None):
+                self._add_warm_text = None
+                self._add_refresh_ui()
+                return
+            self._push_add_ui(measuring=stage_text(stage))
+            return
+        if stage == "add_warm":
+            # the growth engine's first set-up on this computer (~10 s,
+            # once): S1 says so while it runs
+            self._add_warm_text = AP.ADD_S1_WARMING
+            self._add_refresh_ui(stage_text=stage_text(stage))
+            return
+        if getattr(self, "_add_warm_text", None):
+            self._add_warm_text = None
+            self._add_refresh_ui()
+        whole = bool(getattr(self, "_add_whole_patch", False))
+        kw = {"stage_text": stage_text(stage + "_patch" if whole and stage
+                                       in ("add_box", "add_prepare")
+                                       else stage)}
+        i, n = int(_i or 0), int(_n or 0)
+        if whole and (stage in ("add_cut", "elevation") or n <= 1):
+            # the fill itself and the wall picture are long single steps
+            # (both take longer on a bigger patch, the wall picture most
+            # with the ridge wall types), and a stage
+            # of one step has nothing to count: the bar moves to and fro
+            # while the line names it
+            kw["progress"] = ()
+        elif whole:
+            # a whole patch takes minutes: the bar says step i of n
+            kw["progress"] = (i, n)
+        self._push_add_ui(**kw)
+
+    def _add_paint_status(self, text, *, stage=None, step=None,
+                          of=None, stop_off=False) -> None:
+        """S1 says ``text``, the strip's line names ``stage`` and, with
+        ``step`` of ``of``, the bar shows that step -- painted NOW, before a
+        main-thread stall (a zero timer does not paint; a repaint does).
+        ``stop_off``: Stop goes grey in the same paint (nothing is left to
+        stop).  The next ``_add_refresh_ui`` puts the page back."""
+        self._add_wait_words = (str(text), stage)
+        adv = self._get_advanced_features_widget()
+        paint = getattr(adv, "paint_add_wait", None)
+        if callable(paint):
+            from napari_epicycle.annotator.reshape_worker import stage_text
+
+            kw = {"stop_enabled": False} if stop_off else {}
+            try:
+                paint(status_text=str(text), status_kind="busy",
+                      stage_text=stage_text(stage) if stage else "",
+                      step=step, of=of, **kw)
+            except Exception as exc:  # noqa: BLE001 - a torn-down page
+                print(f"[ADD] wait words not painted: {exc!r}")
+            return
+        self._push_add_ui(status_text=str(text), status_kind="busy")
+        lb = getattr(adv, "add_status_label", None)
+        if lb is not None:
+            try:
+                lb.repaint()
+            except Exception:
+                pass
+
+    def _add_paint_step(self, k, n) -> None:
+        """The wait painted last, its bar at step ``k`` of ``n``."""
+        words = getattr(self, "_add_wait_words", None)
+        if words is not None:
+            self._add_paint_status(words[0], stage=words[1], step=k, of=n)
+
+    def _add_accept_step(self, k) -> None:
+        """A whole-patch Accept: its six parts (the mask, the write, the
+        commit, the teardown, the views, the review) counted as they start."""
+        if getattr(self, "_add_whole_patch", False):
+            self._add_paint_step(k, 6)
+
+    def _add_result_step(self, k) -> None:
+        """A whole-patch result: drawn, listed, shown -- counted as they
+        start."""
+        if getattr(self, "_add_whole_patch", False):
+            self._add_paint_step(k, 3)
+
+    def _add_clear_step(self, k) -> None:
+        """A Clear on a whole patch: the zeroing, the views, the commit --
+        counted as they start."""
+        if getattr(self, "_add_whole_patch", False):
+            self._add_paint_step(k, 3)
 
     def _add_is_stale(self, result_token=None) -> bool:
         """The launch quintuple + "is there still a session"."""
@@ -8410,6 +13656,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     self, "_add_launch_markers_epoch",
                     getattr(self, "_add_markers_epoch", 0))):
                 why = "markers changed"
+            elif int(getattr(self, "_add_settings_epoch", 0)) != int(getattr(
+                    self, "_add_launch_settings_epoch",
+                    getattr(self, "_add_settings_epoch", 0))):
+                why = "settings changed"
         if why is not None:
             print(f"[ADD] STALE finish discarded - {why}")
             return True
@@ -8418,12 +13668,36 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _on_add_finished(self, outcome) -> None:
         """The preview worker's answer.  Stopping FIRST (a Stop inside an
         unpolled span comes back ``ok``), then stale, then the result."""
+        _t_launch = getattr(self, "_add_launch_t", None)
+        if _t_launch is not None:
+            print("[ADD-PERF] worker wall={:.0f}ms (start to finish signal)".format(
+                (_time.perf_counter() - _t_launch) * 1000.0), flush=True)
         if getattr(self, "_add_stopping", False):
             self._on_add_stopped()
             return
-        if self._add_is_stale(self._result_token()):
-            return
         res = getattr(outcome, "result", None)
+        token = self._result_token()
+        if (res is not None and getattr(res, "status", "") != "cancelled"
+                and (token is None
+                     or token == getattr(self, "_add_token", 0))):
+            # the wall picture is kept even when the result is stale: a
+            # click or a setting during the run (the first one builds the
+            # picture, the slow part) leaves the walls as they were, and the
+            # run owed reuses it.  Its key (the box, the walls, the
+            # spacing, the patch, the run) is checked against the page NOW,
+            # so walls that changed meanwhile are not kept.  A newer launch
+            # (another token) owns the launch key: nothing is kept then.
+            # The markers' prepared patch and solution likewise
+            self._add_keep_elevation(res)
+            self._add_keep_marker_stage(res)
+            # ... and the Cells click fill's prepared box
+            self._add_keep_cells_stage(res)
+            line = getattr(res, "click_line", None)
+            line = line() if callable(line) else ""
+            if line:
+                print(line)
+        if self._add_is_stale(token):
+            return
         if res is None or getattr(res, "status", "") == "cancelled":
             self._on_add_stopped()
             return
@@ -8431,13 +13705,118 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             print(res.log_line())
         except Exception:
             pass
+        reason = str(getattr(res, "refusal_reason", "") or "")
+        if res.status != "ok" and reason.startswith("numba-"):
+            # the set-up refused: the answer for the process, so the next
+            # Preview does not try the ~10 s set-up again
+            _ADD_NUMBA["ok"] = False
+            _ADD_NUMBA["why"] = reason[len("numba-"):]
         if res.status != "ok":
-            self._add_transient = res.refusal
+            refusal = res.refusal
+            from packages.epicycle_annotator import add_preview as _AP
+
+            if (refusal == _AP.ADD_S1_INSIDE_ALL_TAKEN
+                    and self._add_picked_run_is_nuclei()):
+                # the objects here are probably the curated cells: never
+                # advise clearing them
+                refusal = _AP.ADD_S1_INSIDE_ALL_TAKEN_NUCLEI_RUN
+            if reason == _AP.NOT_LIVE_HERE:
+                # a click on a whole patch the click fill cannot take: no
+                # flood ran; the kept patch now says so (no click runs it
+                # until its key changes) and S1 says its gate at once
+                print("[ADD] live run on the whole patch stepped aside - "
+                      "press Preview to fill it")
+                refusal = None
+            live_refused = bool(getattr(self, "_add_live_run", False))
+            if live_refused:
+                # live: the result drawn for the earlier markers goes in
+                # the same step
+                self._invalidate_add_preview(live_schedule=False)
+            self._add_transient = refusal
             self._add_preview_result = None
             self._add_preview_res = None
+            # the refused markers are known for the next click (the
+            # refusal's own sentence is the one S1 says)
+            self._add_note_apart(res)
+            if getattr(res, "look_for", None) == _AP.LOOK_MARKERS:
+                # Nuclei ▸ At the markers I place: a refusal still says why
+                # each marker made nothing, on its row (Cells' refusals
+                # keep no marks, as before)
+                self._add_absorbed_ids = {int(i) for i in (
+                    getattr(res, "absorbed_ids", None) or ())}
+                self._add_marker_why = {int(k): str(v) for k, v in dict(
+                    getattr(res, "marker_why", None) or {}).items()}
+                self._add_take_seed_whys(res)
+                self._push_add_ui(**self._add_marker_push())
+            elif self._add_markers():
+                # Cells ▸ Click markers: the seeds' statuses as Nuclei's
+                # (a refused seed's chip and hollow ball; the object marks
+                # stay as before)
+                self._add_take_seed_whys(res)
+                self._push_add_ui(**self._add_marker_push())
+            if live_refused and getattr(self, "_add_accept_pending", False):
+                # an Accept waiting on this run ends, with its sentence
+                self._add_live_cancel_accept(f"the update refused: {refusal}")
+                return
             self._add_refresh_ui()
             return
-        self._apply_add_result(res)
+        # the answer has landed: from here until the thread has finished, a
+        # Stop (one queued during the wait below, too) has nothing to stop
+        self._add_answer_landed = True
+        # what the result drawn now answers (a whole patch filled as you
+        # click: a Preview on it then runs nothing)
+        self._add_drawn_cells_sig = getattr(self, "_add_launch_cells_sig",
+                                            None)
+        if getattr(self, "_add_live_run", False):
+            # live: no forced repaint; the diff write replaces the result
+            # on screen.  An Accept waiting goes on when the thread ends
+            self._add_live_landed = True
+            self._apply_add_result(res)
+            return
+        # the drawing of the result and the list fill below are main-thread
+        # work (seconds on a whole patch): S1 says so first, painted now
+        from packages.epicycle_annotator.add_preview import ADD_S1_SHOWING
+
+        whole = bool(getattr(self, "_add_whole_patch", False))
+        # Stop goes grey in this paint: the frozen frame must not draw it
+        # live (the refresh that follows the wait keeps it grey)
+        self._add_paint_status(ADD_S1_SHOWING, stage="add_draw",
+                               step=0 if whole else None,
+                               of=3 if whole else None, stop_off=True)
+        try:
+            self._apply_add_result(res)
+        except BaseException:
+            self._add_refresh_ui()        # the wait's words never stick
+            raise
+
+    def _add_keep_elevation(self, res) -> None:
+        """A whole patch's wall picture is kept for the next Preview of the
+        same patch, wall channel and preparation (it is built once: about
+        25 s at 73 million voxels).  A box small enough to run as you
+        click keeps its own, in its own slot, for the next run of the same
+        box and walls."""
+        key = getattr(self, "_add_launch_elev_key", None)
+        elev = getattr(res, "elevation", None)
+        if (key is None or elev is None
+                or getattr(res, "preset", "") != "cells"):
+            return
+        if not getattr(self, "_add_whole_patch", False):
+            if key != self._add_box_elev_key():
+                return
+            bcache = getattr(self, "_add_box_elev_cache", None)
+            if (bcache and bcache.get("key") == key
+                    and bcache.get("elev") is elev):
+                return
+            self._add_box_elev_cache = {"key": key, "elev": elev}
+            print("[ADD] box wall picture kept for the next run")
+            return
+        if key != self._add_elev_key():
+            return
+        cache = getattr(self, "_add_elev_cache", None)
+        if cache and cache.get("key") == key and cache.get("elev") is elev:
+            return
+        self._add_elev_cache = {"key": key, "elev": elev}
+        print("[ADD] whole-patch wall picture kept for the next Preview")
 
     def _on_add_error(self, message) -> None:
         if getattr(self, "_add_stopping", False):
@@ -8445,19 +13824,39 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return
         if self._add_is_stale(self._result_token()):
             return
-        from packages.epicycle_annotator.add_preview import ADD_S1_FAILED
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_FAILED,
+            ADD_S1_FAILED_PATCH,
+        )
 
         print("[ADD] preview FAILED: {}".format(message))
-        self._add_transient = ADD_S1_FAILED
+        self._add_let_go_launch_cells()
+        if getattr(self, "_add_live_run", False):
+            # live: the drawn result no longer matches the markers -- it
+            # goes, and an Accept waiting ends (never greyed, no new run)
+            self._invalidate_add_preview(live_schedule=False)
+            if getattr(self, "_add_accept_pending", False):
+                self._add_live_cancel_accept("the update failed")
+                return
+        self._add_transient = (ADD_S1_FAILED_PATCH
+                               if getattr(self, "_add_whole_patch", False)
+                               else ADD_S1_FAILED)
         self._add_refresh_ui()
 
     def _stop_add_preview(self) -> None:
         """Stop is a STATE: flag, cancel, say so, return -- no
-        pump, no wait.  The finish handlers route to the stopped path."""
+        pump, no wait.  The finish handlers route to the stopped path.
+        While Clear objects counts, Stop drops the count instead."""
         if not getattr(self, "_add_busy", False):
+            return
+        if getattr(self, "_add_clear_phase", None) == "counting":
+            self._stop_add_clear_count()
             return
         worker = getattr(self, "_add_worker", None)
         if worker is None or getattr(self, "_add_stopping", False):
+            return
+        if getattr(self, "_add_answer_landed", False):
+            # the result is on screen; the thread is only quitting
             return
         from napari_epicycle.annotator.reshape_worker import stage_text
 
@@ -8473,11 +13872,24 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _on_add_stopped(self) -> None:
         """Drop the answer; say Stopped.  ``_add_busy`` stays until the
         thread is gone (``_on_add_thread_finished``)."""
-        from packages.epicycle_annotator.add_preview import ADD_S1_STOPPED
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_STOPPED,
+            ADD_S1_STOPPED_PATCH,
+        )
 
         self._add_stopping = False
-        self._add_transient = ADD_S1_STOPPED
-        print("[ADD] preview stopped - nothing from this box was added")
+        # Stop is the answer: no run follows it, and its prepared box goes
+        self._add_live_dirty = False
+        self._add_manual_owed = False
+        self._add_let_go_launch_cells()
+        self._add_transient = (ADD_S1_STOPPED_PATCH
+                               if getattr(self, "_add_whole_patch", False)
+                               else ADD_S1_STOPPED)
+        if getattr(self, "_add_accept_pending", False):
+            self._add_live_cancel_accept("stopped")
+            return
+        print("[ADD] preview stopped - nothing from this {} was added".format(
+            "patch" if getattr(self, "_add_whole_patch", False) else "box"))
         self._add_refresh_ui()
 
     def _on_add_thread_finished(self) -> None:
@@ -8485,24 +13897,58 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         from packages.epicycle_annotator.add_preview import ADD_S1_BUSY_REFUSED
 
         sender = self._signal_sender()
-        if sender is not None and sender is not getattr(self, "_add_thread",
-                                                        None):
+        # a gone sender is a dropped thread: it never cleans the current one
+        if ((sender is not None or _signal_sender_gone(self))
+                and sender is not getattr(self, "_add_thread", None)):
             return
+        was_live = bool(getattr(self, "_add_live_run", False))
+        # a live answer drawn by this thread: a waiting Accept goes on
+        landed = was_live and bool(getattr(self, "_add_live_landed", False))
         self._add_thread_cleanup("preview")
         was_stopping = getattr(self, "_add_stopping", False)
-        self._add_busy = False
+        if not was_live:
+            # a live run never set busy, so it never clears it (a Clear may
+            # hold the page)
+            self._add_busy = False
+        self._add_answer_landed = False
+        self._add_warm_text = None
+        self._add_live_run = False
+        self._add_live_stage = None
+        self._add_live_landed = False
         if was_stopping:
             self._on_add_stopped()
             return
         if getattr(self, "_add_transient", None) == ADD_S1_BUSY_REFUSED:
             self._add_transient = None
+        if (getattr(self, "_add_live_dirty", False)
+                or getattr(self, "_add_manual_owed", False)):
+            # a change (or a Preview) came while it ran: exactly one more
+            # run -- live, or the manual way when live cannot follow
+            self._add_live_fire()
+            if getattr(self, "_add_thread", None) is not None:
+                return                 # the new run refreshed the page
+        if getattr(self, "_add_accept_pending", False):
+            if (landed and not self._add_live_unsettled()
+                    and getattr(self, "_add_preview_result", None)
+                    is not None):
+                # the Accept pressed before this result was drawn goes on
+                print("[ADD] accept wait over - accepting the drawn result")
+                self._add_accept_pending = False
+                self._push_add_ui(accept_waiting=False)
+                self._accept_add()
+                return
+            self._add_live_settle_accept()
+            if not getattr(self, "_add_accept_pending", False):
+                return                 # the cancel refreshed the page
         self._add_refresh_ui()
 
     def _add_thread_cleanup(self, which="preview") -> None:
         """quit -> wait(3000) -> else PARK (a twin of
         ``_refine_thread_cleanup``), for the preview or the info thread."""
-        th_attr, w_attr = (("_add_thread", "_add_worker") if which == "preview"
-                           else ("_add_info_thread", "_add_info_worker"))
+        th_attr, w_attr = {
+            "preview": ("_add_thread", "_add_worker"),
+            "clear": ("_add_clear_thread", "_add_clear_worker"),
+        }.get(which, ("_add_info_thread", "_add_info_worker"))
         th = getattr(self, th_attr, None)
         worker = getattr(self, w_attr, None)
         setattr(self, th_attr, None)
@@ -8535,21 +13981,40 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _add_abandon_workers(self) -> None:
         """Cancel + clean both Add workers (every exit of).
         Idempotent; never raises."""
-        for w_attr in ("_add_worker", "_add_info_worker"):
+        for w_attr in ("_add_worker", "_add_info_worker",
+                       "_add_clear_worker"):
             w = getattr(self, w_attr, None)
             if w is not None:
                 try:
                     w.cancel()
                 except Exception:
                     pass
-        for which in ("preview", "info"):
+        # the solver check is neither cancelled nor joined: it takes about a
+        # second, answers for the whole process, and its thread is the
+        # module's (never a wait on the main thread at Cancel / Done / close)
+        for which in ("preview", "info", "clear"):
             try:
                 self._add_thread_cleanup(which)
             except Exception:
                 pass
         self._add_busy = False
         self._add_stopping = False
+        self._add_answer_landed = False
         self._add_info_dirty = False
+        self._add_warm_text = None
+        # the prepared box a run took goes with it
+        self._add_let_go_launch_cells()
+        # no live run in flight, none owed
+        self._add_live_run = False
+        self._add_live_stage = None
+        self._add_live_dirty = False
+        self._add_live_landed = False
+        self._add_manual_owed = False
+        # a Clear counting or waiting for its confirm is dropped: its answer
+        # and its posted steps find the phase gone and do nothing
+        self._add_clear_phase = None
+        self._add_clear_pending = None
+        self._add_clear_token = int(getattr(self, "_add_clear_token", 0)) + 1
 
     def _apply_add_result(self, res) -> None:
         """A result on screen."""
@@ -8558,41 +14023,175 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             counts_note,
         )
 
+        _st = _StepTimer("[ADD-PERF] apply")
+        live = bool(getattr(self, "_add_live_run", False))
+        # live: the Accept ticks of the result on screen, kept by id (an id
+        # in both results keeps the user's tick; a new id takes its default)
+        kept_ticks = None
+        prev = getattr(self, "_add_preview_res", None)
+        if (live and prev is not None
+                and getattr(self, "_add_preview_result", None) is not None):
+            adv = self._get_advanced_features_widget()
+            if adv is not None and hasattr(adv, "get_checked_add_pieces"):
+                try:
+                    kept_ticks = (
+                        {int(i) for i in prev.ids},
+                        {int(i) for i in adv.get_checked_add_pieces()})
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[ADD] ticks not read, defaults used: {exc!r}")
         self._add_preview_result = res.result
         self._add_preview_roi = (tuple(res.roi) if res.roi is not None
                                  else None)
         self._add_preview_res = res
-        self._add_transient = None
+        # a Clear's sentence stays through the one update it owed
+        self._add_transient = (getattr(self, "_add_live_keep_transient", None)
+                               if live else None)
+        self._add_live_keep_transient = None
+        had_apart = bool(getattr(self, "_add_apart_seeds", None))
+        new_apart = self._add_note_apart(res)
+        if new_apart and self._add_transient is None:
+            # Shift+click: a seed not touching its object made nothing --
+            # said once, by the result that first refused it, and never
+            # over a sentence a Clear still owes
+            from packages.epicycle_annotator.add_preview import (
+                ADD_S1_NOT_CONNECTED,
+            )
+
+            self._add_transient = ADD_S1_NOT_CONNECTED.format(
+                id=int(new_apart[-1]["id"]))
         # B-M1 (the A5 audit): markers whose ball sat inside a kept object
         # made nothing -- the counts note says so, and their rows are marked
         # for when the list comes back on Discard
         self._add_absorbed_ids = {int(i) for i in
                                   (getattr(res, "absorbed_ids", None) or ())}
-        if self._add_absorbed_ids:
+        # ... and Nuclei ▸ At the markers I place: the markers it made
+        # nothing from for another reason (on dim stain, too small) -- the
+        # rows are pushed when the earlier Preview marked some too, so a
+        # mark this Preview no longer gives does not stay on its row
+        had_why = (bool(getattr(self, "_add_marker_why", None))
+                   or bool(getattr(self, "_add_seed_why", None)))
+        self._add_marker_why = {int(k): str(v) for k, v in dict(
+            getattr(res, "marker_why", None) or {}).items()}
+        # ... and each seed of an object grown from several: a refused one
+        # is drawn hollow and named on its row
+        self._add_take_seed_whys(res)
+        if (self._add_absorbed_ids or self._add_marker_why or had_why
+                or had_apart or getattr(self, "_add_apart_seeds", None)
+                or getattr(self, "_add_seed_why", None)):
             self._push_add_ui(**self._add_marker_push())
-        self._render_add_candidate(res.result, roi=self._add_preview_roi)
         edge, small = set(res.edge_ids), set(res.small_ids)
-        order = sorted(res.ids, key=lambda i: (
-            0 if i in edge else 1 if i in small else 2, i))
-        note = counts_note(res.counts(), source=res.source)
-        on, why = self._add_walls_toggle_state()
-        self._push_add_ui(
-            candidate_ids=order,
-            candidate_sizes=dict(res.sizes),
-            candidate_edge_ids=edge,
-            candidate_small_ids=small,
-            notes=([("counts", note, False)] if note else []),
-            footer_text=ADD_FOOT_CANDIDATES,
-            reject_enabled=True,
-            walls_toggle_enabled=on,
-            walls_toggle_reason=why,
+        # every object is drawn, ticked or not; the rows start unticked at
+        # the box edge or small, and those are drawn faintly in the side
+        # views only (a tick changes colours, never the data)
+        ticked = frozenset(int(i) for i in res.ids
+                           if int(i) not in edge and int(i) not in small)
+        if live:
+            # the user's own choices first (kept through an invalidation),
+            # then the row on screen, then the edge / small default
+            unt = set(getattr(self, "_add_unticked_ids", None) or ())
+            tk = set(getattr(self, "_add_user_ticked_ids", None) or ())
+            was, on = kept_ticks if kept_ticks is not None else (set(), set())
+            default = ticked
+
+            def _on(i):
+                if i in unt:
+                    return False
+                if i in tk:
+                    return True
+                return (i in on) if i in was else (i in default)
+
+            ticked = frozenset(int(i) for i in res.ids if _on(int(i)))
+        colours = _add_candidate_colormaps(self, res.ids, ticked)
+        # the markers on a whole patch: when the solution drawn now is the
+        # one this run started from, only the places that changed are
+        # written
+        patches = None
+        mdiff = getattr(res, "marker_diff", None)
+        # the solution the run started from, by a weak reference: the
+        # result never keeps a second whole solution alive
+        mref = getattr(res, "marker_previous_ref", None)
+        mprev = mref() if mref is not None else None
+        if (mdiff is not None and not mdiff.full and mprev is not None
+                and mprev is getattr(self, "_add_drawn_marker_solution",
+                                     None)):
+            patches = mdiff.patches
+        del mprev
+        self._render_add_candidate(res.result, self._add_preview_roi,
+                                   colours, patches=patches)
+        self._add_drawn_marker_solution = getattr(res, "marker_solution",
+                                                  None)
+        if mdiff is not None:
+            ms = sum(float(v) for v in (mdiff.ms or {}).values())
+            print("[ADD] markers on the whole patch: stage {}, {} pieces "
+                  "solved, {}, engine {:.0f} ms".format(
+                      "prepared" if getattr(res, "marker_prepared", False)
+                      else "reused", int(mdiff.n_pieces_solved),
+                      "full" if patches is None
+                      else "{} patches written".format(len(patches)), ms))
+        # what the layer shows now: the whole result, coloured for the rows
+        # as they start.  The list fill below fires the overlay sync with
+        # those rows ticked, which then changes nothing.
+        self._add_drawn_token = (res.result, self._add_preview_roi)
+        self._add_colours_token = ticked
+        _st.lap("render")
+        from packages.epicycle_annotator.add_preview import (
+            candidate_order,
+            derive_tip,
         )
+
+        # two in a cell, cut at edge, edge, small, then by id (without
+        # derive flags: the old edge / small / id order)
+        flags = {int(k): tuple(v) for k, v in
+                 (getattr(res, "flags", None) or {}).items()}
+        order = candidate_order(res.ids, edge_ids=edge, small_ids=small,
+                                flags=flags)
+        owner = dict(getattr(res, "owner", None) or {})
+        two = dict(getattr(res, "two_in_cell", None) or {})
+        tips = {i: derive_tip(i, flags=flags, owner=owner, two_in_cell=two)
+                for i in flags}
+        note = counts_note(res.counts(), source=res.source,
+                           whole_patch=bool(getattr(res, "whole_patch",
+                                                    False)),
+                           preset=getattr(res, "preset", None))
+        on, why = self._add_walls_toggle_state()
+        self._add_result_step(1)
+        extra = {"candidate_checked": set(ticked)} if live else {}
+        # the rows of objects grown from several markers: the seed count,
+        # and the words for the seeds that made nothing
+        seeds, seed_status = self._add_result_seeds(res)
+        extra.update(candidate_seeds=seeds, candidate_status=seed_status)
+        # the fill below fires the tick callback: not the user's choice
+        self._add_filling = True
+        try:
+            self._push_add_ui(
+                candidate_flags=flags,
+                candidate_tips={i: t for i, t in tips.items() if t},
+                candidate_ids=order,
+                candidate_sizes=dict(res.sizes),
+                candidate_edge_ids=edge,
+                candidate_small_ids=small,
+                notes=([("counts", note, False)] if note else []),
+                footer_text=ADD_FOOT_CANDIDATES,
+                reject_enabled=True,
+                walls_toggle_enabled=on,
+                walls_toggle_reason=why,
+                **extra,
+            )
+        finally:
+            self._add_filling = False
+        # what the list shows now: the base the user's next toggle is read
+        # against
+        self._add_last_checked = set(ticked)
+        _st.lap("panel_fill")
         if getattr(self, "_add_walls_wanted", False) and on:
             self._show_add_walls()
+        _st.lap("walls")
         # the fill above fired the check callback with the rows as they
         # STARTED; that is not the user unticking anything (V3)
         self._add_user_emptied = False
         self._add_refresh_ui()
+        _st.lap("refresh_ui")
+        _st.line(n=len(res.ids))
 
     # --------------------------------------------------------- box info --
     def _request_add_box_info(self) -> None:
@@ -8608,20 +14207,37 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._launch_add_info_worker()
 
     def _add_gather_info(self):
+        from packages.epicycle_annotator import add_preview as AP
         from packages.epicycle_annotator.add_preview import dark_stride
+        from packages.epicycle_annotator.reshape import region as _R
 
         shared = self._add_shared_volume()
         roi = getattr(self, "_add_roi", None)
         if shared is None or roi is None:
             return None
         preset = self._add_preset()
+        if (preset == "cells" and getattr(self, "_add_whole_patch", False)
+                and int(np.prod([int(sl.stop - sl.start) for sl in roi]))
+                > int(_R.WHOLE_FILL_MAX_VOXELS)):
+            # over the fill's ceiling S1 refuses (a box is the way): nothing
+            # of the patch is read for it
+            print("[ADD] box info skipped - the whole patch is over the "
+                  "fill's ceiling")
+            return None
         params = self._add_params()
         kind, _run_id = self._add_marker_source()
         dark_on = bool(params.get("dark_outside", True))
-        cache = self._add_cached_dark() if preset == "cells" else None
+        # a tissue outline turns the dark plumbing on whatever the tick says
+        # (Cells); on Nuclei only a chosen outline reads it
+        mode = self._add_outline_mode()
+        dark_needed = dark_on or mode != "none"
+        # Nuclei with an outline: Cells' cached dark threshold when there is
+        # one (else the outline takes it from the same strided sample)
+        cache = (self._add_cached_dark()
+                 if preset == "cells" or mode != "none" else None)
         sources = None
         stride = 1
-        if preset == "cells" and dark_on and cache is None:
+        if preset == "cells" and dark_needed and cache is None:
             sources = {}
             for name in self._add_image_channel_names():
                 data = self._refine_channel_source(name)
@@ -8632,31 +14248,120 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         dark_rois = None
         run_roi = None
         nuc_roi = None
-        if preset == "cells" and kind == "labels":
+        whole = bool(getattr(self, "_add_whole_patch", False))
+        # a Cells box over the limit gets no run count (the worker skips
+        # it), so the run and the channels are not cut for it either -- at
+        # patch size that was ~0.3 s per array on the main thread
+        n_box = int(np.prod([int(sl.stop - sl.start) for sl in roi]))
+        # a Cells whole patch is filled to the walls in one go: never over
+        # the box limit
+        over = (preset == "cells"
+                and n_box > int(params.get("box_budget", 4_000_000))
+                and not whole)
+        if preset == "cells" and kind == "labels" and not over:
             guide = getattr(self, "_add_run_guide", None)
             if guide is not None:
-                run_roi = np.array(guide[roi], copy=True)
-                if dark_on:
+                # a view: the other run is never written (the engine and the
+                # worker read their own copies of what they need)
+                run_roi = guide[roi]
+                if dark_needed:
                     dark_rois = {}
                     for n in self._add_image_channel_names():
-                        c = self._add_channel_crop(n, roi, np.float32)
+                        if whole:
+                            # the whole patch: the layer's own array, read
+                            # on the worker (a copy here was ~0.3 s each)
+                            c = self._refine_channel_source(n)
+                        else:
+                            c = self._add_channel_crop(n, roi, np.float32)
                         if c is not None:
                             dark_rois[n] = c
-        if preset == "cells" and kind == "nuclei_masks":
-            nuc_roi = self._add_channel_crop(self._add_nuclei_channel(), roi)
+        nuc_source = None
+        # a whole patch the page cannot fill (Cells with neither another
+        # run's objects nor Click markers, Nuclei ▸ Anywhere): Preview is
+        # refused, so nothing is measured for it -- the brightness crop
+        # alone was a float copy of the whole patch on the main thread at
+        # every request
+        refused_whole = whole and AP.whole_measures_nothing(
+            preset, kind, self._add_look_for()[0])
+        if preset == "cells" and kind == "nuclei_masks" and not refused_whole:
+            # the layer's own array: the worker cuts the box and takes its
+            # Otsu (a float64 copy here was ~0.6 GB and up to a second on a
+            # large box, on the main thread, at every request)
+            nuc_source = self._refine_channel_source(
+                self._add_nuclei_channel())
         image_roi = None
-        if preset != "cells":
+        levels_sources = None
+        inside = preset != "cells" and self._add_inside()
+        if inside:
+            # Inside each cell: the run's cells in the box are counted, and
+            # the patch's levels are measured ONCE on the whole session
+            # arrays (read on the worker; the run's array is never written)
+            guide = getattr(self, "_add_run_guide", None)
+            if guide is not None:
+                run_roi = guide[roi]        # a view: never written
+                nuclear = self._refine_channel_source(
+                    params.get("channel", ""))
+                if (nuclear is not None and self._add_cached_levels() is None
+                        and self._add_levels_error() is None
+                        and not self._add_spacing_unknown()):
+                    levels_sources = (nuclear, guide)
+        elif preset != "cells" and not refused_whole:
             # the Brightness histogram and its Auto (B4.2): the box crop,
-            # copied here, measured on the worker
-            image_roi = self._add_channel_crop(params.get("channel", ""), roi)
+            # copied here, measured on the worker.  On a whole patch (the
+            # markers) the layer's own array, read on the worker, which
+            # never writes it: a float copy of the patch here would cost
+            # the main thread at every request
+            if whole:
+                image_roi = self._refine_channel_source(
+                    params.get("channel", ""))
+            else:
+                image_roi = self._add_channel_crop(
+                    params.get("channel", ""), roi)
         p = dict(params, preset=preset)
         p.setdefault("dark_outside", dark_on)
-        return dict(existing_roi=np.array(shared[roi], copy=True),
-                    dark_sources=sources, dark_rois=dark_rois,
-                    spacing=self._refine_spacing(), stride=stride,
-                    dark_cache=cache, source=kind, run_guide_roi=run_roi,
-                    nuclei_roi=nuc_roi, image_roi=image_roi, params=p,
-                    roi=tuple(roi))
+        if whole:
+            # the worker asks the engine for the whole patch's own growth
+            # rule (add_preview.cells_growth), whatever Grow by says
+            p["whole_patch"] = True
+        # on the whole patch the worker reads the live volume itself (only
+        # Add writes it while a box is up, the Add lock; a write it races --
+        # Accept or Clear -- drops and re-asks this answer), as the Clear
+        # count does: a copy here was ~0.3 s on the main thread per request
+        existing = shared[roi] if whole else np.array(shared[roi], copy=True)
+        out = dict(existing_roi=existing,
+                   dark_sources=sources, dark_rois=dark_rois,
+                   spacing=self._refine_spacing(), stride=stride,
+                   dark_cache=cache, source=kind, run_guide_roi=run_roi,
+                   nuclei_roi=nuc_roi, image_roi=image_roi, params=p,
+                   roi=tuple(roi))
+        if levels_sources is not None:
+            out["levels_sources"] = levels_sources
+        if nuc_source is not None:
+            out["nuclei_source"] = nuc_source
+        if preset != "cells" and "outline" in p:
+            # Nuclei: what the page asked for, as the Preview will read it
+            p["outline"] = mode
+        if preset == "cells" or mode != "none":
+            # the tissue outline: measured here once per patch (the job), or
+            # handed in from the cache so the run count drops what the
+            # Preview will drop; its skin when Show the tissue outline wants
+            # one.  Nuclei (Anywhere, the markers) asks for the same outline
+            # when one is chosen -- one measurement for both presets
+            p["outline"] = mode
+            if mode != "none":
+                okey = self._add_outline_key(mode)
+                cached = self._add_cached_outline()
+                errs = getattr(self, "_add_outline_errors", None) or {}
+                if cached is not None:
+                    out["outline"] = cached
+                elif okey not in errs:
+                    job = self._add_outline_job()
+                    if job is not None:
+                        out["outline_job"] = job
+                if (self._add_show_outline_wanted()
+                        and self._add_cached_outline(shell=True) is None):
+                    out["want_shell"] = True
+        return out
 
     def _launch_add_info_worker(self) -> None:
         import threading
@@ -8691,6 +14396,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             w._epicycle_roi = tuple(self._add_roi)
             w._epicycle_dark_key = self._add_dark_key()
             w._epicycle_brightness_key = self._add_brightness_key()
+            w._epicycle_levels_key = self._add_levels_key()
+            # the outline this answer measures (or was handed) -- on either
+            # preset (None when none is asked for)
+            w._epicycle_outline_key = self._add_outline_key()
+            # whether this job measures the outline (its error is then the
+            # outline's)
+            w._epicycle_outline_job = "outline_job" in kwargs
+            # whether this job measures Markers ▸ Nuclei masks' Auto
+            w._epicycle_nuclei = "nuclei_source" in kwargs
             import time
 
             w._epicycle_t0 = time.perf_counter()
@@ -8698,14 +14412,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_info_worker = w
             w.moveToThread(th)
             th.started.connect(w.run)
-            w.finished.connect(self._on_add_info_finished)
-            w.error.connect(self._on_add_info_error)
+            w.finished.connect(_from_sender(
+                self, w, self._on_add_info_finished))
+            w.error.connect(_from_sender(
+                self, w, self._on_add_info_error))
             # the same quit as the preview's (B2 fix pass L-H2): without it
             # the info thread never finishes, the next request only sets
             # dirty, and Measuring the box... never ends after a box move
             w.finished.connect(th.quit)
             w.error.connect(th.quit)
-            th.finished.connect(self._on_add_info_thread_finished)
+            th.finished.connect(_from_sender(
+                self, th, self._on_add_info_thread_finished))
             th.start()
         except Exception as exc:  # noqa: BLE001
             print("[ADD-INFO] launch FAILED: {!r}".format(exc))
@@ -8736,6 +14453,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         return False
 
     def _on_add_info_finished(self, outcome, worker=None) -> None:
+        if worker is None and _signal_sender_gone(self):
+            # a dropped worker's late answer: never the current one (the
+            # live worker below would lend it ITS keys and token)
+            print("[ADD-INFO] late answer of a dropped worker - ignored")
+            return
         worker = worker or self._signal_sender() or getattr(
             self, "_add_info_worker", None)
         info = getattr(outcome, "result", None)
@@ -8747,6 +14469,75 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 if getattr(self, "_add_dark_cache", None) is None:
                     self._add_dark_cache = {}
                 self._add_dark_cache[key] = dark
+        levels = getattr(info, "patch_levels", None)
+        # the patch's levels too: good whatever the box did since
+        if levels is not None and worker is not None:
+            lkey = getattr(worker, "_epicycle_levels_key", None)
+            if lkey is not None and lkey == self._add_levels_key():
+                if getattr(self, "_add_levels_cache", None) is None:
+                    self._add_levels_cache = {}
+                self._add_levels_cache[lkey] = levels
+        # the tissue outline (and its skin): good whatever the box did since,
+        # kept for ITS key only
+        okey = getattr(worker, "_epicycle_outline_key", None) \
+            if worker is not None else None
+        ctx_now = self._reshape_context()
+        if (okey is not None and (
+                getattr(worker, "_epicycle_patch", None)
+                != ctx_now.get("patch_name")
+                or getattr(worker, "_epicycle_epoch", None)
+                != ctx_now.get("run_epoch"))):
+            # measured for a patch or run that is gone: never cached
+            print("[ADD-INFO] tissue outline for another patch dropped")
+            okey = None
+        if info is not None and okey is not None:
+            if okey == self._add_outline_key():
+                out_arr = getattr(info, "outline", None)
+                shell = getattr(info, "outline_shell", None)
+                cache = getattr(self, "_add_outline_cache", None)
+                if out_arr is not None:
+                    # one outline at a time (a whole patch is tens of MB)
+                    self._add_outline_cache = {"key": okey,
+                                               "outline": out_arr,
+                                               "shell": shell}
+                    print("[ADD-INFO] tissue outline measured: {} of {} "
+                          "voxels".format(int(np.count_nonzero(out_arr)),
+                                          int(out_arr.size)))
+                    # a live run waiting on the outline can run now
+                    self._add_live_input_landed("the tissue outline")
+                elif (shell is not None and cache
+                      and cache.get("key") == okey):
+                    cache["shell"] = shell
+                oerr = getattr(info, "outline_error", None)
+                if oerr:
+                    from packages.epicycle_annotator.add_preview import (
+                        plain_reason,
+                    )
+
+                    print(f"[ADD-INFO] tissue outline refused: {oerr}")
+                    if getattr(self, "_add_outline_errors", None) is None:
+                        self._add_outline_errors = {}
+                    self._add_outline_errors[okey] = plain_reason(oerr)
+            elif getattr(info, "outline", None) is not None:
+                print("[ADD-INFO] tissue outline for other inputs dropped")
+        lerr = getattr(info, "levels_error", None)
+        # ... and their refusal, under the same rule: kept for ITS key only
+        # (a channel picked since is not refused by an answer for the old
+        # one), and never as the run's refusal -- it is the channel's
+        if lerr and worker is not None:
+            lkey = getattr(worker, "_epicycle_levels_key", None)
+            if lkey is not None and lkey == self._add_levels_key():
+                from packages.epicycle_annotator.add_preview import (
+                    plain_reason,
+                )
+
+                print(f"[ADD-INFO] patch levels refused: {lerr}")
+                if getattr(self, "_add_levels_errors", None) is None:
+                    self._add_levels_errors = {}
+                self._add_levels_errors[lkey] = plain_reason(lerr)
+            else:
+                print("[ADD-INFO] patch levels refusal for another key "
+                      f"dropped: {lerr}")
         if self._add_info_is_stale(worker):
             return
         if info is None or getattr(info, "status", "") != "ok":
@@ -8760,8 +14551,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # space -- the dirty relaunch brings the right ones
             info.histogram = None
             info.brightness_auto = None
+        # Cells waits for the box's measurement: a live run refused while it
+        # was pending runs once it lands
+        cells_waited = (getattr(self, "_add_info", None) is None
+                        and self._add_preset() == "cells")
         self._add_info = info
         self._add_info_brightness_key = bkey if brightness_current else None
+        if worker is not None:
+            # this answer landed: the thread's end has nothing to undo
+            worker._epicycle_landed = True
         t0 = getattr(worker, "_epicycle_t0", None)
         if t0 is not None:
             import time
@@ -8785,6 +14583,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     adv.set_add_nuclei_threshold(info.nuclei_auto)
                 except Exception as exc:  # noqa: BLE001
                     print(f"[ADD-INFO] threshold box not updated: {exc!r}")
+        auto_landed = False
         if brightness_current and info.histogram is not None:
             # the Brightness card (B4.2): bars and Auto from the worker; an
             # untouched threshold follows Auto at full precision, a value
@@ -8804,24 +14603,103 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                          and (cur is None or cur == getattr(
                              self, "_add_threshold_auto_written", None)))
             if auto is not None and untouched:
+                moved = cur is None or float(cur) != float(auto)
                 self._add_threshold_value = float(auto)
                 self._add_threshold_auto_written = float(auto)
                 self._push_add_ui(threshold_value=float(auto))
+                if moved:
+                    # the threshold a live run reads changed
+                    auto_landed = True
+        kw = {}
+        if (self._add_preset() == "cells"
+                and self._add_marker_source()[0] == "nuclei_masks"
+                and info.nuclei_auto is None
+                and not self._add_info_due()):
+            # Markers ▸ Nuclei masks with no Auto in this answer, and no
+            # other measurement coming: a flat crop (nothing for Otsu to
+            # split) when this job measured it, else nothing measured it --
+            # either way the line stops saying "Measuring..."
+            kw["nuclei_flat"] = bool(getattr(worker, "_epicycle_nuclei",
+                                             True))
         self._add_refresh_ui(run_count=info.run_count,
-                             nuclei_auto=info.nuclei_auto)
+                             nuclei_auto=info.nuclei_auto, **kw)
+        if auto_landed:
+            self._add_live_input_landed("the Auto threshold")
+        elif cells_waited:
+            self._add_live_input_landed("the box measurement")
+
+    def _add_live_input_landed(self, what) -> None:
+        """An input of the markers' run changed by itself (an Auto
+        threshold landing, the tissue outline measured).  Live: the drawn
+        result is zeroed and a run follows; a run in flight owes one more.
+        The tick off: nothing (today's quiet landing)."""
+        if not self._add_live_possible():
+            return
+        print(f"[ADD] live: {what} changed - one more run")
+        if getattr(self, "_add_busy", False):
+            self._add_live_schedule()          # a manual run: dirty
+            return
+        self._invalidate_add_preview()
 
     def _on_add_info_error(self, message) -> None:
+        """The box-info worker raised (not a plain refusal: a read error, no
+        memory).  When it was measuring a tissue outline, the outline gets
+        a plain reason under ITS key, so S1 says so instead of "Measuring
+        the tissue outline…" for good; the full message goes to the log."""
         print("[ADD-INFO] failed: {}".format(message))
+        if _signal_sender_gone(self):
+            return                  # a dropped worker's late error
+        worker = self._signal_sender() or getattr(self, "_add_info_worker",
+                                                  None)
+        okey = getattr(worker, "_epicycle_outline_key", None)
+        if okey is None or not getattr(worker, "_epicycle_outline_job",
+                                       False):
+            return
+        from packages.epicycle_annotator.add_preview import (
+            ADD_S1_OUTLINE_FAILED,
+        )
+
+        if getattr(self, "_add_outline_errors", None) is None:
+            self._add_outline_errors = {}
+        self._add_outline_errors[okey] = ADD_S1_OUTLINE_FAILED
+        if getattr(self, "_add_running", False):
+            self._add_refresh_ui()
 
     def _on_add_info_thread_finished(self) -> None:
         sender = self._signal_sender()
-        if sender is not None and sender is not getattr(
-                self, "_add_info_thread", None):
+        # a gone sender is a dropped thread: it never cleans the current one
+        if ((sender is not None or _signal_sender_gone(self))
+                and sender is not getattr(self, "_add_info_thread", None)):
             return
+        worker = getattr(self, "_add_info_worker", None)
+        landed = bool(getattr(worker, "_epicycle_landed", False))
         self._add_thread_cleanup("info")
         if getattr(self, "_add_info_dirty", False):
             self._add_info_dirty = False
             self._request_add_box_info()
+            return
+        if (not landed and not self._add_info_due()
+                and getattr(self, "_add_running", False)):
+            # it failed, was cancelled or was dropped as stale, and no
+            # measurement follows: neither Auto line is pending any more
+            print("[ADD-INFO] ended without an answer - the Auto lines "
+                  "stop waiting")
+            self._add_refresh_ui(brightness_flat=False, nuclei_flat=False)
+        elif getattr(self, "_add_running", False):
+            # the reader is gone: the measuring bar stops with it
+            self._add_refresh_ui()
+
+    def _add_info_due(self) -> bool:
+        """Is another box-info measurement coming -- a request that arrived
+        while one ran (it relaunches at the thread's end), or the debounced
+        request after a change?"""
+        if getattr(self, "_add_info_dirty", False):
+            return True
+        timer = getattr(self, "_add_box_timer", None)
+        try:
+            return timer is not None and bool(timer.isActive())
+        except Exception:  # noqa: BLE001
+            return False
 
     def _add_existing_roi(self):
         shared = self._add_shared_volume()
@@ -8854,40 +14732,60 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         return labels, []
 
     def _sync_add_candidate_overlay(self) -> None:
-        """Live: re-render the candidate overlay to the CHECKED pieces so the 3D
-        view (+ subviewers) shows EXACTLY what Accept will commit.
+        """Live: recolour the candidate to the CHECKED pieces -- the main
+        view shows exactly what Accept will commit, the three side views
+        show the unticked pieces faintly.
 
-        Fires when a candidate checkbox toggles (and once after Preview populates
-        the list).  ``_add_preview_result`` keeps the FULL set — only the DISPLAY
-        is narrowed; ``_accept_add`` re-derives the checked set from that same
-        source, so the model stays the single source of truth.
-
-        Cost note: this re-runs the full candidate render (incl. the 3 subviewer
-        transposes) per toggle.  That's the heavy Labels-render path, but it's
-        bounded to human checkbox-click cadence (not a continuous drag), so no
-        debounce is needed; the GPU-hang risk was the SMOOTH iso-gradient, which
-        stays off for this layer.
+        Fires when a candidate checkbox toggles (and once after Preview
+        populates the list).  The layer always holds the FULL result
+        (``_add_preview_result``); a tick changes its colour maps only, so
+        ``_accept_add`` re-derives the checked set from that same source and
+        the model stays the single source of truth.  Cost: the two colour
+        maps and one re-slice of the main layer and of each side copy, per
+        human click (no debounce needed).
         """
         result = getattr(self, "_add_preview_result", None)
         roi = getattr(self, "_add_preview_roi", None) or self._add_roi
         if result is None or roi is None:
             return
-        if getattr(self, "_add_candidate_layer", None) is None:
-            return
         adv = self._get_advanced_features_widget()
         if adv is None or not hasattr(adv, "get_checked_add_pieces"):
             return
         checked = [int(v) for v in adv.get_checked_add_pieces()]
+        if not getattr(self, "_add_filling", False):
+            # the rows the USER changed (against the list as last filled or
+            # toggled), kept by id for the session: a live result after an
+            # invalidation honours them
+            now = set(checked)
+            before = set(getattr(self, "_add_last_checked", None) or ())
+            went_on, went_off = now - before, before - now
+            self._add_unticked_ids = (
+                set(getattr(self, "_add_unticked_ids", None) or ())
+                - went_on) | went_off
+            self._add_user_ticked_ids = (
+                set(getattr(self, "_add_user_ticked_ids", None) or ())
+                - went_off) | went_on
+            self._add_last_checked = now
+        if getattr(self, "_add_candidate_layer", None) is None:
+            return
         # a toggle by the USER: zero ticked now means "the user unticked the
         # last row" -> TICK_ONE (live-shot fix V3).  _apply_add_result
         # resets it after the list is filled, so rows that STARTED
         # unticked never count.
         self._add_user_emptied = not checked
-        masked = (
-            np.where(np.isin(result, checked), result, 0)
-            if checked else np.zeros_like(result)
-        )
-        self._render_add_candidate(masked, roi=roi)
+        ticked = frozenset(checked)
+        drawn = getattr(self, "_add_drawn_token", None)
+        if drawn is None or drawn[0] is not result or drawn[1] != roi:
+            # the layer was drawn for another result: never recolour it for
+            # this one (every Preview draws its own result first)
+            self._add_refresh_ui()
+            return
+        # Coloured already: the same pieces ticked as the last colouring,
+        # so the layer and its side copies already show this.
+        if getattr(self, "_add_colours_token", None) != ticked:
+            self._add_colours_token = None
+            self._add_set_candidate_colours(ticked)
+            self._add_colours_token = ticked
         self._add_refresh_ui()
 
     def _add_main_qt_viewer(self):
@@ -8956,11 +14854,18 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         except Exception as exc:
             print(f"[ADD] box overlay render failed: {exc!r}")
 
-    def _render_add_candidate(self, result, roi=None) -> None:
+    def _render_add_candidate(self, result, roi, colours,
+                              patches=None) -> None:
         """Show the candidate pieces as a temporary full-volume Labels layer.
 
-        ``roi`` is the ROI the RESULT was computed on, never the
-        live box."""
+        ``roi`` is the ROI the RESULT was computed on, never the live box.
+        ``colours`` is the ``(main, side)`` pair of
+        ``_add_candidate_colormaps``: the layer is built with ``main``, its
+        three side copies get ``side`` (unticked pieces faint there).  The
+        first call of a box builds the layer and its side copies; every later
+        one writes into the same array (``_add_redraw_candidate``; with
+        ``patches``, ``(box, values)`` in the result's coordinates, only
+        those places).  A tick only recolours it."""
         main = self._add_main_label_layer()
         if roi is None:
             roi = (getattr(self, "_add_preview_roi", None)
@@ -8968,66 +14873,84 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if main is None or roi is None:
             return
         name = "_epicycle_add_candidate"
-        cand = self._layer_by_name(self.viewer.layers, name)
-        if cand is not None and cand.data.shape == main.data.shape:
-            # In-place clear + fill + refresh (avoids the data= 3D recalc).
-            cand.data[...] = 0
-            cand.data[roi] = result
-            import warnings
-
+        kept = getattr(self, "_add_candidate_layer", None)
+        # the held reference, still in the layer list, is the identity: a
+        # lookup by name through napari's plugin viewer proxy returns a new
+        # proxy object on every call, never the layer this code made
+        if (kept is not None
+                and any(x is kept for x in self.viewer.layers)
+                and self._add_candidate_reusable(kept, main)):
             try:
-                # the outline may be on: napari re-raises the 3D-contour
-                # warning on every refresh, so the same ONE-message filter
-                # as the write (A-M1, the A1-A4 audit)
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore", message=_CONTOUR_3D_WARNING + ".*")
-                    cand.refresh()
+                self._add_redraw_candidate(kept, result, roi, colours,
+                                           patches=patches)
+                return
+            except Exception as exc:  # noqa: BLE001
+                # never leave a half-drawn layer: take it down and build
+                print(f"[ADD] candidate redraw failed, rebuilding: {exc!r}")
+                self._remove_add_candidate()
+        # by name only for a stray layer no reference holds
+        cand = self._layer_by_name(self.viewer.layers, name)
+        _st = _StepTimer("[ADD-PERF] render")
+        if (cand is not None
+                or getattr(self, "_add_candidate_layer", None) is not None):
+            self._remove_add_candidate()
+        _st.lap("remove")
+        main_cmap, side_cmap = colours
+        full = np.zeros(main.data.shape, dtype=main.data.dtype)
+        _st.lap("zeros")
+        full[roi] = result
+        _st.lap("fill")
+        # Import locally like every other call site (2359 / 2742 / 7316) —
+        # this method previously called it unqualified → NameError, which
+        # aborted candidate setup BEFORE the subviewer-mirror block below
+        # (preview vanished from the subviewers).  The brush-1 lock is a
+        # locked product invariant (brush size is 1 on every annotator
+        # Labels layer), so it MUST run — keep the call.
+        from packages.epicycle_annotator.sync import lock_brush_size_to_1
+        try:
+            # flag, THEN append: layers.events.inserted
+            # fires inside the append, so a flag set afterwards is one
+            # statement too late for the channel lists.
+            # scale and translate at construction: each later set re-draws
+            # the layer's thumbnail, which napari maps pixel by pixel in
+            # Python for a direct colour map over 32-bit labels
+            place = {}
+            if getattr(main, "scale", None) is not None:
+                place["scale"] = main.scale
+            if getattr(main, "translate", None) is not None:
+                place["translate"] = main.translate
+            cand = Labels(full, name=name, opacity=0.75,
+                          colormap=main_cmap, **place)
+            cand._epicycle_temporary = True
+            cand.editable = False
+            # Smooth iso-gradient for a nicer preview surface (user request,
+            # 2026-07-03).  A prior build suspected this of a GPU hang on a
+            # FULL-VOLUME candidate, but that was never confirmed (the real
+            # crash was the Shapes-in-3D box, since fixed).  Guarded; if it
+            # ever stalls on a very large patch, the fix is to render the
+            # candidate BOUNDED to the ROI box (small) so smooth is cheap.
+            try:
+                cand.rendering = "iso_categorical"
+                cand.iso_gradient_mode = "smooth"
             except Exception:
                 pass
+            lock_brush_size_to_1(cand)
+            # no undo history: the array is rewritten on every Preview of
+            # the box, and a recorded write costs memory per voxel
+            cand._undo_history = deque(maxlen=0)
+            cand._redo_history = deque(maxlen=0)
+            _st.lap("build")
+            self.viewer.layers.append(cand)
             self._add_candidate_layer = cand
-        else:
-            if cand is not None:
-                self._remove_add_candidate()
-            full = np.zeros(main.data.shape, dtype=main.data.dtype)
-            full[roi] = result
-            # Import locally like every other call site (2359 / 2742 / 7316) —
-            # this method previously called it unqualified → NameError, which
-            # aborted candidate setup BEFORE the subviewer-mirror block below
-            # (preview vanished from the subviewers).  The brush-1 lock is a
-            # locked product invariant (brush size is 1 on every annotator
-            # Labels layer), so it MUST run — keep the call.
-            from packages.epicycle_annotator.sync import lock_brush_size_to_1
-            try:
-                # flag, THEN append: layers.events.inserted
-                # fires inside the append, so a flag set afterwards is one
-                # statement too late for the channel lists.
-                cand = Labels(full, name=name, opacity=0.75)
-                cand._epicycle_temporary = True
-                cand.editable = False
-                try:
-                    cand.scale = main.scale
-                    cand.translate = main.translate
-                except Exception:
-                    pass
-                # Smooth iso-gradient for a nicer preview surface (user request,
-                # 2026-07-03).  A prior build suspected this of a GPU hang on a
-                # FULL-VOLUME candidate, but that was never confirmed (the real
-                # crash was the Shapes-in-3D box, since fixed).  Guarded; if it
-                # ever stalls on a very large patch, the fix is to render the
-                # candidate BOUNDED to the ROI box (small) so smooth is cheap.
-                try:
-                    cand.rendering = "iso_categorical"
-                    cand.iso_gradient_mode = "smooth"
-                except Exception:
-                    pass
-                lock_brush_size_to_1(cand)
-                self.viewer.layers.append(cand)
-                self._add_candidate_layer = cand
-            except Exception as exc:
-                print(f"[ADD] candidate layer failed: {exc!r}")
-                return
-        # Mirror into the subviewers (best-effort).
+            self._add_drawn_roi = tuple(roi)
+        except Exception as exc:
+            print(f"[ADD] candidate layer failed: {exc!r}")
+            return
+        _st.lap("append")
+        # Mirror into the subviewers (best-effort).  The copies start with
+        # the main map; they get the side map once, below, after the
+        # remembered outline (whose write copies the main map onto them).
+        contour_on = bool(getattr(self, "_add_contour_on", False))
         try:
             self.subviewer_manager.add_labels_to_subviewers(
                 self._add_candidate_layer,
@@ -9044,20 +14967,155 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     try:
                         sub.editable = False
                         sub.mode = "pan_zoom"
+                        sub._undo_history = deque(maxlen=0)
+                        sub._redo_history = deque(maxlen=0)
                     except Exception:
                         pass
         except Exception:
             pass
+        _st.lap("sides")
+        self._add_candidate_maps = (main_cmap, side_cmap)
+        # the remembered outline, AFTER the side copies exist -- nothing
+        # copies ``contour`` at creation; the copies get it from the
+        # property-change propagation (the Reshape rule) -- and BEFORE the
+        # side map, which that propagation would overwrite
+        if contour_on:
+            self._add_set_contour(True)
+        _st.lap("outline")
+        # the side views' colours, kept through every later property sync
+        # by _on_add_candidate_props
+        self._add_put_side_colours()
+        _st.lap("colours")
+        self._add_watch_candidate_props(True)
+        _st.lap("watch")
         self._restore_side_active_layers()
         try:
             self.viewer.layers.selection.active = main
         except Exception:
             pass
-        # the remembered outline, AFTER the side copies
-        # exist -- nothing copies ``contour`` at creation; the copies get
-        # it from the property-change propagation (the Reshape rule).
-        if getattr(self, "_add_contour_on", False):
-            self._add_set_contour(True)
+        _st.lap("active")
+        _st.line(path="build",
+                 n=max(0, len(getattr(side_cmap, "color_dict", ())) - 2))
+
+    def _add_candidate_reusable(self, cand, main) -> bool:
+        """The kept candidate can take a new result in place: its three
+        side copies exist and its array still matches the volume."""
+        try:
+            data = cand.data
+            if (tuple(data.shape) != tuple(main.data.shape)
+                    or data.dtype != main.data.dtype):
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+        return len(self._add_candidate_side_copies()) == 3
+
+    def _add_redraw_candidate(self, cand, result, roi, colours,
+                              patches=None) -> None:
+        """A new result into the candidate made earlier in this box: the old
+        result's box zeroed, the new one written into the same array (the
+        side copies are views of it), the two fresh colour maps given, the
+        four layers shown.  No layer is added, removed or reassigned.
+        ``patches`` (the drawn result is the one they change, over the same
+        box): only those places are written."""
+        import warnings
+
+        _st = _StepTimer("[ADD-PERF] render")
+        data = cand.data
+        prev = getattr(self, "_add_drawn_roi", None)
+        if patches is not None and prev == tuple(roi):
+            starts = [int(sl.start or 0) for sl in roi]
+            for box, values in patches:
+                # an assignment, as the whole write below: the patches are
+                # the engine's int32, the layer takes the labels' dtype
+                # (uint32 or uint16), and every id fits it
+                data[tuple(
+                    slice(starts[a] + b.start, starts[a] + b.stop)
+                    for a, b in enumerate(box))] = values
+            _st.lap("patches")
+        else:
+            if prev is not None:
+                data[prev] = 0
+            _st.lap("zeros")
+            data[tuple(roi)] = result
+        self._add_drawn_roi = tuple(roi)
+        _st.lap("fill")
+        main_cmap, side_cmap = colours
+        self._add_candidate_maps = (main_cmap, side_cmap)
+        sides = self._add_candidate_side_copies()
+        # napari resets the history (maxlen 100) whenever editable flips
+        # to False: put the zero-length deques back on every redraw
+        for lyr in [cand] + sides:
+            lyr._undo_history = deque(maxlen=0)
+            lyr._redo_history = deque(maxlen=0)
+        contour_on = bool(getattr(self, "_add_contour_on", False))
+        shown = False
+        with warnings.catch_warnings():
+            # a refresh of the contoured layer in 3D warns; only that one
+            warnings.filterwarnings(
+                "ignore", message=_CONTOUR_3D_WARNING + ".*")
+            if bool(getattr(cand, "contour", 0)) != contour_on:
+                self._add_set_contour(contour_on)
+            self._add_putting_colours = True
+            try:
+                with self._add_quiet_props():
+                    cand.colormap = main_cmap
+            finally:
+                self._add_putting_colours = False
+            self._add_put_side_colours()
+            _st.lap("colours")
+            # a hidden layer does not re-slice; showing it does (once)
+            for lyr in [cand] + sides:
+                if lyr.visible:
+                    lyr.refresh()
+                else:
+                    lyr.visible = True
+                    shown = True
+            _st.lap("show")
+        if contour_on:
+            # the outline write above installed its filter inside the
+            # block, whose exit dropped it: later refreshes need it
+            _add_outline_filter(True)
+        if shown:
+            # recoloured while hidden: repair a stale colour node
+            self._heal_label_render(cand, tag="add-reshow",
+                                    extra_layers=sides)
+        _st.lap("heal")
+        _st.line(path="diff",
+                 n=max(0, len(getattr(side_cmap, "color_dict", ())) - 2))
+
+    def _add_hide_candidate(self) -> None:
+        """An input changed: zero the drawn result in the kept candidate and
+        hide it with its three side copies.  The four layers stay for the
+        next Preview of the box; only the exits remove them.  No refresh:
+        a hidden layer does not re-slice, and showing it again does."""
+        cand = getattr(self, "_add_candidate_layer", None)
+        prev = getattr(self, "_add_drawn_roi", None)
+        self._add_drawn_roi = None
+        self._add_drawn_token = None
+        self._add_colours_token = None
+        self._add_drawn_marker_solution = None
+        if cand is None:
+            return
+        four = [cand] + self._add_candidate_side_copies()
+        if prev is None and not any(getattr(x, "visible", False)
+                                    for x in four):
+            return                    # nothing drawn, already hidden
+        _st = _StepTimer("[ADD-PERF] hide")
+        if prev is not None:
+            try:
+                cand.data[prev] = 0
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD] candidate not zeroed, removed: {exc!r}")
+                self._remove_add_candidate()
+                return
+        _st.lap("zeros")
+        for lyr in four:
+            try:
+                lyr.visible = False
+            except Exception:  # noqa: BLE001
+                pass
+        _st.lap("hide")
+        _st.line()
 
     def _add_set_contour(self, on: bool) -> None:
         """Write ``contour`` on the candidate layer, quietly.
@@ -9082,6 +15140,120 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # with the outline on (A-M1)
         _add_outline_filter(bool(on))
 
+    #: the candidate's events that make ``sync_label_properties`` copy its
+    #: colour map onto the side copies (``connect_label_sync``'s set)
+    _ADD_CANDIDATE_PROP_EVENTS = ("colormap", "contour", "opacity", "blending",
+                                  "brush_size", "n_edit_dimensions")
+
+    def _add_candidate_side_copies(self) -> list:
+        """The candidate's three side-view copies that exist."""
+        cand = getattr(self, "_add_candidate_layer", None)
+        sm = getattr(self, "subviewer_manager", None)
+        if cand is None or sm is None:
+            return []
+        out = []
+        for orient in ("XY", "XZ", "YZ"):
+            try:
+                sub = sm.get_subviewer_layer(cand.name, orient)
+            except Exception:  # noqa: BLE001
+                sub = None
+            if sub is not None:
+                out.append(sub)
+        return out
+
+    def _add_quiet_props(self):
+        """The sync manager's property-sync suppression (nothing without
+        one): a colour write here must not be copied to the other views."""
+        import contextlib
+
+        fn = getattr(getattr(self, "sync_manager", None),
+                     "suppress_property_sync", None)
+        return fn() if callable(fn) else contextlib.nullcontext()
+
+    def _add_put_side_colours(self) -> None:
+        """Give each side copy the side colour map, where it has another."""
+        maps = getattr(self, "_add_candidate_maps", None)
+        if maps is None:
+            return
+        side = maps[1]
+        stale = [s for s in self._add_candidate_side_copies()
+                 if getattr(s, "colormap", None) is not side]
+        if not stale:
+            return
+        with self._add_quiet_props():
+            for sub in stale:
+                try:
+                    sub.colormap = side
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[ADD] side colours not set: {exc!r}")
+
+    def _add_watch_candidate_props(self, on: bool, layer=None) -> None:
+        """Connect (or disconnect) ``_on_add_candidate_props`` on the
+        candidate's property events, after the sync's own handlers."""
+        layer = layer if layer is not None else getattr(
+            self, "_add_candidate_layer", None)
+        events = getattr(layer, "events", None)
+        if events is None:
+            return
+        for name in self._ADD_CANDIDATE_PROP_EVENTS:
+            em = getattr(events, name, None)
+            if em is None:
+                continue
+            try:
+                if on:
+                    em.connect(self._on_add_candidate_props, position="last")
+                else:
+                    em.disconnect(self._on_add_candidate_props)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_add_candidate_props(self, _event=None) -> None:
+        """A property of the candidate changed (the outline tick, opacity,
+        blending...): ``sync_label_properties`` has just copied the main
+        colour map -- where unticked pieces are clear -- onto the side
+        copies.  Put the side map back (and the main one, should a side
+        copy's change have reached the main layer)."""
+        if getattr(self, "_add_putting_colours", False):
+            return
+        cand = getattr(self, "_add_candidate_layer", None)
+        maps = getattr(self, "_add_candidate_maps", None)
+        if cand is None or maps is None:
+            return
+        self._add_putting_colours = True
+        try:
+            if getattr(cand, "colormap", None) is not maps[0]:
+                with self._add_quiet_props():
+                    cand.colormap = maps[0]
+            self._add_put_side_colours()
+        finally:
+            self._add_putting_colours = False
+
+    def _add_set_candidate_colours(self, ticked) -> None:
+        """A tick, All or None: recolour the candidate and its side copies
+        for the *ticked* ids -- the layer's data is not touched."""
+        cand = getattr(self, "_add_candidate_layer", None)
+        maps = getattr(self, "_add_candidate_maps", None)
+        if cand is None or maps is None:
+            return
+        _st = _StepTimer("[ADD-PERF] colours")
+        # every id: the side map lists them all (the main one the ticked)
+        ids = [int(k) for k in maps[1].color_dict
+               if k is not None and int(k) != 0]
+        ticked = [int(i) for i in ticked]
+        main_cmap, side_cmap = _add_candidate_colormaps(self, ids, ticked)
+        self._add_candidate_maps = (main_cmap, side_cmap)
+        _st.lap("maps")
+        self._add_putting_colours = True
+        try:
+            with self._add_quiet_props():
+                cand.colormap = main_cmap
+        finally:
+            self._add_putting_colours = False
+        _st.lap("main")
+        self._add_put_side_colours()
+        _st.lap("sides")
+        _st.line(n=len(ids), ticked=len(ticked))
+
     def _add_put_outline_down(self) -> None:
         """Forget the outline preference and put the panel's tick down,
         silently (Accept, Cancel, Done / Undo all, a new box,
@@ -9105,8 +15277,20 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             print("[ADD] could not set the outline: {!r}".format(exc))
 
     def _remove_add_candidate(self) -> None:
+        _st = _StepTimer("[ADD-PERF] remove")
         cand = getattr(self, "_add_candidate_layer", None)
+        # the colour keeper first: nothing may put colours back on a layer
+        # on its way out
+        watch = getattr(self, "_add_watch_candidate_props", None)
+        if cand is not None and callable(watch):
+            watch(False, cand)
+        _st.lap("unwatch")
         self._add_candidate_layer = None
+        self._add_drawn_roi = None
+        self._add_drawn_token = None
+        self._add_colours_token = None
+        self._add_candidate_maps = None
+        self._add_drawn_marker_solution = None
         # the outline's warning filter lives as long as the layer (A-M1)
         _add_outline_filter(False)
         if cand is None:
@@ -9123,21 +15307,28 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 sm.disconnect_label_sync(cand)
             except Exception:
                 pass
-        try:
-            self.subviewer_manager.remove_layer_from_subviewers(name)
-        except Exception:
-            pass
-        if sm is not None:
+        _st.lap("unsync")
+        with _gc_batch(self):
             try:
-                sm.unregister_layer(name)
+                self.subviewer_manager.remove_layer_from_subviewers(name)
             except Exception:
                 pass
-        try:
-            cand.visible = False
-            if cand in self.viewer.layers:
-                self.viewer.layers.remove(cand)
-        except Exception:
-            pass
+            _st.lap("sides")
+            if sm is not None:
+                try:
+                    sm.unregister_layer(name)
+                except Exception:
+                    pass
+            _st.lap("unregister")
+            try:
+                cand.visible = False
+                if cand in self.viewer.layers:
+                    self.viewer.layers.remove(cand)
+            except Exception:
+                pass
+            _st.lap("layer")
+        _st.lap("gc")
+        _st.line()
 
     def _remove_add_box_shapes(self) -> None:
         """Tear down the ROI-box overlay (all four vispy Line visuals).
@@ -9174,6 +15365,20 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # grey before any work, so a second click queued behind this one
         # finds them disabled; every refusal below re-pushes its own state
         self._push_add_ui(accept_enabled=False)
+        if self._add_live_unsettled():
+            # Update as I click: the last change is not drawn yet (the
+            # quiet, a run in flight, or one owed).  Accept waits for it,
+            # refuses marker input meanwhile, and goes on when it lands
+            from packages.epicycle_annotator.add_preview import (
+                ADD_S1_ACCEPT_WAITING,
+            )
+
+            print("[ADD] accept waits for the last update")
+            self._add_accept_pending = True
+            self._add_transient = ADD_S1_ACCEPT_WAITING
+            self._push_add_ui(accept_waiting=True)
+            self._add_refresh_ui()
+            return
         result = self._add_preview_result
         shared = self._add_shared_volume()
         if result is None or shared is None or self._add_roi is None:
@@ -9190,7 +15395,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_transient = ADD_S1_INPUTS_CHANGED
             self._add_refresh_ui()
             return
-        ids = [int(v) for v in np.unique(result) if v != 0]
+        _st = _StepTimer("[ADD-PERF] accept")
+        # the worker's own ids (``_sizes_of(result)`` on the worker, the
+        # same set): an np.unique of a whole-patch result here was 2.4 s on
+        # the main thread (73 Mvox).  Only a result with no record falls
+        # back to measuring it.
+        res_ids = getattr(getattr(self, "_add_preview_res", None), "ids",
+                          None)
+        if res_ids is not None:
+            ids = sorted({int(v) for v in res_ids if int(v) != 0})
+        else:
+            ids = [int(v) for v in np.unique(result) if v != 0]
         if not ids:
             from packages.epicycle_annotator.add_preview import (
                 ADD_S1_NOTHING_YET,
@@ -9208,31 +15423,52 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             if adv is not None and hasattr(adv, "get_checked_add_pieces")
             else list(ids)
         )
-        checked = [int(v) for v in checked if int(v) in set(ids)]
+        id_set = set(ids)
+        checked = [int(v) for v in checked if int(v) in id_set]
         if not checked:
             from packages.epicycle_annotator.add_preview import ADD_S1_TICK_ONE
 
             self._add_transient = ADD_S1_TICK_ONE
             self._add_refresh_ui()
             return
+        # the write below takes a visible moment (the mask, the ids that
+        # land, the undo copy, the teardown: seconds on a large box too): say
+        # so first, and paint it now.  A whole patch counts its six parts; a
+        # box keeps the bar still
+        from packages.epicycle_annotator.add_preview import adding_line
+
+        whole = bool(getattr(self, "_add_whole_patch", False))
+        self._add_paint_status(adding_line(len(checked)),
+                               stage="add_accept",
+                               step=0 if whole else None,
+                               of=6 if whole else None)
         # Work on a LOCAL `result` only — do NOT narrow self._add_preview_result
         # here (audit LOW): if the "voxels already taken" early-return below fires,
         # narrowing the model attr would strand the unchecked pieces so re-checking
         # them (without moving the box) couldn't recover them.  The attr stays the
         # full preview set until the None-clear at commit end.
-        if set(checked) != set(ids):
-            result = np.where(np.isin(result, checked), result, 0)
-        # NOTE: auto-smooth already ran at PREVIEW time (WYSIWYG) — _add_preview_result
-        # is the smoothed result, so we commit it as-is; no re-smooth here.
-        roi = tuple(preview_roi) if preview_roi is not None else self._add_roi
-        target = shared[roi]
-        write_mask = (result > 0) & (target == 0)
-        # The ids that WOULD land — only background voxels are written; do NOT
-        # fall back to the candidate ids.  If the box was nudged fully onto
-        # existing labels nothing is written and those ids are phantoms
-        # (audit LOW-1).  Checked BEFORE the write + BEFORE the lock-releasing
-        # try, so this stays in TUNE with the lock held for more tuning.
-        committed = [int(v) for v in np.unique(result[write_mask]) if v != 0]
+        try:
+            if set(checked) != set(ids):
+                result = np.where(np.isin(result, checked), result, 0)
+            # NOTE: auto-smooth already ran at PREVIEW time (WYSIWYG) —
+            # _add_preview_result is the smoothed result, so we commit it
+            # as-is; no re-smooth here.
+            roi = (tuple(preview_roi) if preview_roi is not None
+                   else self._add_roi)
+            target = shared[roi]
+            write_mask = (result > 0) & (target == 0)
+            # The ids that WOULD land — only background voxels are written;
+            # do NOT fall back to the candidate ids.  If the box was nudged
+            # fully onto existing labels nothing is written and those ids
+            # are phantoms (audit LOW-1).  Checked BEFORE the write + BEFORE
+            # the lock-releasing try, so this stays in TUNE with the lock
+            # held for more tuning.
+            committed = [int(v) for v in np.unique(result[write_mask])
+                         if v != 0]
+        except BaseException:
+            self._add_refresh_ui()        # the wait's words never stick
+            raise
+        _st.lap("mask")
         if not committed:
             from packages.epicycle_annotator.add_preview import ADD_S1_TAKEN
 
@@ -9243,8 +15479,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # The commit MUST release the lock on any failure or a committed-but-
         # unreleased Add strands the whole surface (audit MED-5).
         try:
+            self._add_accept_step(1)
             snap = shared[roi].copy()
             target[write_mask] = result[write_mask]
+            self._add_volume_epoch = int(
+                getattr(self, "_add_volume_epoch", 0)) + 1
+            self._add_drop_marker_cache("Accept wrote the volume")
+            self._add_drop_cells_stage("Accept wrote the volume")
+            _st.lap("write")
             # Per-piece area + centroid, computed on the ROI-sized committed
             # mask in ONE bounded pass (no full-volume scan).  The sizes are
             # surfaced in the REVIEW list so fragments are obvious at a glance;
@@ -9271,6 +15513,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # is the ONLY thing that sets the dirty flag and pushes the
             # add_denovo undo entry -- so it runs before any teardown step
             # that could raise and lose the edit.
+            _st.lap("stats")
+            self._add_accept_step(2)
             committed_ok = True
             cb = getattr(self, "_on_add_committed_cb", None)
             if cb is not None:
@@ -9280,13 +15524,35 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 except Exception as exc:
                     committed_ok = False
                     print(f"[ADD] commit callback raised: {exc!r}")
+            _st.lap("commit")
+            self._add_accept_step(3)
+            # The pieces are in the volume: a later Clear Edits must not
+            # paste the old region back over them.  Dropped here, before the
+            # teardown, so a raise below cannot skip it.
+            self._clear_draw_snapshot()
             if committed_ok:
                 # Record this box's accept (ids + sizes) only once the
                 # controller holds its undo entry: "Undo all" reuses that
                 # proven path, so ids whose commit failed are NOT counted
                 # (B2 fix pass L-L3).
-                self._add_session.append(
-                    {"ids": list(committed), "sizes": size_map})
+                entry = {"ids": list(committed), "sizes": size_map}
+                res = getattr(self, "_add_preview_res", None)
+                rflags = getattr(res, "flags", None) or {}
+                if rflags or getattr(res, "owner", None):
+                    # Inside each cell: the accepted objects keep their
+                    # check-this chips and their owner cells in REVIEW
+                    keep = set(int(v) for v in committed)
+                    entry["flags"] = {int(k): tuple(v) for k, v in
+                                      rflags.items() if int(k) in keep}
+                    entry["owners"] = {
+                        int(k): int(c) for k, c in
+                        (getattr(res, "owner", None) or {}).items()
+                        if int(k) in keep}
+                    # whose cells those are: two boxes may read two runs
+                    # (a look-for change drops the preview, so the run
+                    # picked now is the preview's)
+                    entry["owner_run"] = self._add_look_for()[1]
+                self._add_session.append(entry)
             else:
                 from packages.epicycle_annotator.add_preview import (
                     ADD_S1_COMMIT_FAILED,
@@ -9298,40 +15564,30 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # its side-view callbacks, so "+ Add another" can re-place it.
             self._remove_add_candidate()
             self._drop_add_walls()
+            # REVIEW draws no outline (Show stays ticked for "+ Add another")
+            self._add_drop_outline_layer()
             self._remove_add_side_callbacks()
             self._remove_add_marker_layer()
             self._add_click_markers = []
             self._add_markers_base = None
             self._add_absorbed_ids = set()
+            self._add_marker_why = {}
+            self._add_seed_why = {}
             self._add_forget_volume_max()      # Accept wrote it (B-L3)
             self._add_bump_markers_epoch()
             self._add_place_markers_off()
             self._close_add_numbers()
+            _st.lap("teardown")
+            self._add_accept_step(4)
             self._sync_all_views_after_operation(roi=roi)
-            # REVIEW shows EVERY piece added this session, not just this box.
-            all_ids = [i for e in self._add_session for i in e["ids"]]
-            all_sizes = {}
-            for e in self._add_session:
-                all_sizes.update(e.get("sizes", {}))
-            self._add_piece_ids = all_ids
-            self._add_preview_result = None
-            self._add_review = True
-            self._add_put_outline_down()      # REVIEW has no candidates
-            self._push_add_ui(
-                review_active=True,
-                piece_ids=all_ids,
-                piece_sizes=all_sizes,
-                add_batch_refine_enabled=bool(all_ids),
-                start_enabled=True,
-                accept_count=0,
-                click_count=0,
-                click_markers=[],
-                footer_text="",
-            )
+            _st.lap("sync")
+            self._add_accept_step(5)
+            self._add_push_review()
         finally:
             # Release the lock exactly once, even if a step above raised.
             self._add_running = False
             self._fire_add_mode_lock(False)
+            self._add_refresh_label_buttons()
             # REVIEW skips _reset_add_state, so stop the debounce timer here so a
             # pending tick can't fire post-Accept (audit LOW; the _add_running
             # guard already no-ops it, this is belt).
@@ -9341,38 +15597,141 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     _t.stop()
                 except Exception:
                     pass
+            self._stop_add_ball_timer()
+            self._add_live_stop()
+            self._add_forget_user_ticks()
+            self._add_box_before_whole = None
             self._add_abandon_workers()
+            # REVIEW never shows the histogram ("+ Add another" builds a
+            # fresh one): it goes here too, or Accept then a napari close
+            # without Done finds it alive
+            self._add_release_histogram()
             self._add_preview_res = None
             self._add_preview_roi = None
             # Restore normal subviewer drawing — REVIEW lets the user select +
             # refine pieces (pairs with the in-widget lock in _start_add).
+            _st.lap("review")
             try:
                 self._restore_ready_to_draw_state()
             except Exception:
                 pass
             self._add_refresh_ui()
+            _st.lap("refresh")
+            _st.line(n=len(committed),
+                     whole=bool(getattr(self, "_add_whole_patch", False)))
 
-    def _accept_add_and_refine(self, *_a):
-        """"Accept and refine ▸": ``_accept_add`` exactly as
-        Accept, then ``_batch_refine_add_pieces`` exactly as "Refine all ▸"
-        -- only when that Accept really committed (REVIEW reached AND the
-        session grew; a refused or failed Accept has said its own sentence).
-        Refused first with ``ADD_BATCH_BUSY``, like every other door."""
-        if self._add_refused_while_batch("accept and refine"):
-            return None
-        # the re-entry belt (A-L2): grey both footer buttons first
-        self._push_add_ui(accept_enabled=False)
-        n_before = len(getattr(self, "_add_session", []) or [])
-        self._accept_add()
-        n_after = len(getattr(self, "_add_session", []) or [])
-        if not getattr(self, "_add_review", False) or n_after <= n_before:
-            print("[ADD] accept and refine: the Accept did not commit - "
-                  "nothing handed to Batch Refine")
-            return None
-        return self._batch_refine_add_pieces()
+    def _add_push_review(self) -> None:
+        """Into REVIEW: EVERY piece added this session, not just this box
+        (after an Accept, and after Close box in a "+ Add another" box)."""
+        all_ids = [i for e in self._add_session for i in e["ids"]]
+        all_sizes = {}
+        for e in self._add_session:
+            all_sizes.update(e.get("sizes", {}))
+        self._add_piece_ids = all_ids
+        self._add_preview_result = None
+        self._add_review = True
+        self._add_put_outline_down()      # REVIEW has no candidates
+        # the chip rows first (two in a cell, cut at edge), as the
+        # candidate list sorts them, so they are in view
+        chips = self._add_review_chips(all_ids)
+        order = self._add_review_order(all_ids, chips.get("piece_chips"))
+        from packages.epicycle_annotator.add_preview import foot_review
+
+        # a Clear made after the Accepts stands in Undo all's way: the line
+        # says so instead of promising every Accept ("" = the page's own)
+        footer = (foot_review(len(all_ids), blocked=True)
+                  if self._add_clear_above_accepts() else "")
+        self._push_add_ui(
+            review_active=True,
+            piece_ids=order,
+            piece_sizes=all_sizes,
+            **chips,
+            add_batch_refine_enabled=bool(all_ids),
+            start_enabled=True,
+            accept_count=0,
+            click_count=0,
+            click_markers=[],
+            footer_text=footer,
+        )
+
+    def _add_review_chips(self, ids) -> dict:
+        """REVIEW's chips for ``ids``: the check-this chips each accepted
+        object carried as a candidate, with their tooltips (an object in a
+        cell that kept only one of its two nuclei keeps no "two" chip)."""
+        from packages.epicycle_annotator.add_preview import (
+            candidate_chips,
+            derive_tip,
+        )
+
+        flags = {}
+        for e in getattr(self, "_add_session", []) or []:
+            flags.update(e.get("flags", {}) or {})
+        if not flags:
+            return {}
+        # grouped by (run, cell) -- cell 5 of one run is not cell 5 of
+        # another -- and said with the cell's own number
+        owners, cells = self._add_session_owners()
+        ids = [int(i) for i in ids]
+        per = {}
+        for i in ids:
+            c = owners.get(i)
+            if c is not None:
+                per.setdefault(c, []).append(i)
+        live = {}
+        for i in ids:
+            words = [w for w in flags.get(i, ())
+                     if w != "two" or len(per.get(owners.get(i), ())) >= 2]
+            if words:
+                live[i] = tuple(words)
+        chips = {i: candidate_chips(i, flags=live) for i in live}
+        tips = {}
+        for i in live:
+            cell = cells.get(i)
+            tips[i] = derive_tip(
+                i, flags=live, owner={i: cell} if cell is not None else {},
+                two_in_cell=({cell: per.get(owners.get(i), [])}
+                             if cell is not None else {}))
+        return {"piece_chips": chips,
+                "piece_tips": {i: t for i, t in tips.items() if t}}
+
+    def _add_review_order(self, ids, chips) -> list:
+        """REVIEW's rows in the candidate list's order: two in a cell, cut
+        at edge, then by id (``chips`` = ``_add_review_chips``'s
+        ``piece_chips``), so the rows to check are in view."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_CHIP_CUT,
+            ADD_CHIP_TWO,
+            candidate_order,
+        )
+
+        flags = {}
+        for i, words in (chips or {}).items():
+            f = ()
+            if ADD_CHIP_TWO in words:
+                f += ("two",)
+            if ADD_CHIP_CUT in words:
+                f += ("cut",)
+            if f:
+                flags[int(i)] = f
+        return candidate_order(ids, flags=flags)
+
+    def _add_session_owners(self):
+        """``(keyed, cells)`` for every object added this session that has
+        an owner cell: ``keyed`` = ``{id: (run id, cell id)}`` (what groups
+        two nuclei of ONE cell -- two boxes may read two runs), ``cells`` =
+        ``{id: cell id}`` (the number a tooltip says)."""
+        keyed, cells = {}, {}
+        for e in getattr(self, "_add_session", []) or []:
+            run = e.get("owner_run")
+            for k, c in (e.get("owners", {}) or {}).items():
+                keyed[int(k)] = (run, int(c))
+                cells[int(k)] = int(c)
+        return keyed, cells
 
     def _reject_add(self) -> None:
-        """Cancel Add mode before commit — tear down, restore, release lock."""
+        """End the Add session -- Close box (nothing added in this box), or
+        Done in REVIEW (the objects stay): tear down, restore, release the
+        lock.  The session and its Undo all end here."""
         was_running = getattr(self, "_add_running", False)
         self._remove_add_candidate()
         self._remove_add_box_shapes()
@@ -9393,9 +15752,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             pass
         adv = self._get_advanced_features_widget()
         if adv is not None and hasattr(adv, "clear_add_touched"):
-            adv.clear_add_touched()          # a full exit
+            # a full exit; the Markers source picked stays picked for the
+            # next box or whole patch
+            adv.clear_add_touched(keep_source=True)
         self._push_add_ui(
-            box_active=False, review_active=False,
+            box_active=False, whole_patch=False, review_active=False,
             start_enabled=True, accept_enabled=False, accept_count=0,
             reject_enabled=False, click_count=0, click_markers=[],
             footer_text="",
@@ -9524,7 +15885,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _add_another(self) -> None:
         """Leave REVIEW and start a fresh box for another cell."""
         # BEFORE `_add_review` is cleared: a refusal leaves REVIEW as it is.
-        if self._add_refused_while_batch("add another"):
+        if self._add_refused_while_staged("add another"):
             return
         self._add_review = False
         self._start_add(reuse_box=True)
@@ -9536,48 +15897,192 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         ``add_denovo`` curation-undo entries (one per Accept).  That reuses the
         PROVEN undo path — each entry restores its own volume crop + DataFrame
         snapshot, LIFO = reverse commit order (correct for overlapping boxes) —
-        instead of a parallel annotator-side restore that desynced the global
-        undo stack (re-audit MED + HIGH-1/HIGH-3).
+        instead of a parallel annotator-side restore that would desync the global
+        undo stack.
         """
-        if self._add_refused_while_batch("undo all"):
+        if self._add_refused_while_staged("undo all"):
             return
         from packages.epicycle_annotator import add_preview as AP
 
         n = len(self._add_session)
+        # read before the reset below empties it
+        clear_seqs = list(getattr(self, "_add_session_clear_seqs", None) or [])
         groups = [list(e.get("ids", [])) for e in self._add_session]
         n_obj = sum(len(g) for g in groups)
-        if n and not self._add_confirm(AP.count_phrase(
-                n_obj, AP.ADD_CONFIRM_UNDO_ALL_ONE, AP.ADD_CONFIRM_UNDO_ALL)):
+        question = AP.count_phrase(
+            n_obj, AP.ADD_CONFIRM_UNDO_ALL_ONE, AP.ADD_CONFIRM_UNDO_ALL)
+        if self._add_clear_above_accepts():
+            # the controller stops at that Clear: say it before, not after
+            question = question + " " + AP.ADD_CONFIRM_UNDO_ALL_BLOCKED
+        if n and not self._add_confirm(question):
             return
-        undone = None
-        cb = getattr(self, "_on_add_undo_session_cb", None)
-        if cb is not None and n:
-            try:
-                undone = cb(n)
-            except Exception as exc:
-                print(f"[ADD] undo-session callback raised: {exc!r}")
-        if undone == 0 and n:
-            # Nothing was undone (a later edit -- an accepted batch, a
-            # Refine -- sits on top): REVIEW stays, so the advice can be
-            # followed by another Undo all (D-L7).
-            self._add_transient = AP.ADD_UNDO_NONE
+        try:
+            undone = None
+            cb = getattr(self, "_on_add_undo_session_cb", None)
+            if cb is not None and n:
+                # each Accept it takes back is this page's own doing: the
+                # main Undo's hook below stays quiet meanwhile
+                self._add_undoing_all = True
+                self._add_paint_status(AP.undoing_line(n_obj),
+                                       stage="add_undo_all")
+                try:
+                    undone = cb(n)
+                except Exception as exc:
+                    print(f"[ADD] undo-session callback raised: {exc!r}")
+                finally:
+                    self._add_undoing_all = False
+            if undone == 0 and n:
+                # Nothing was undone (a later edit -- an accepted batch, a
+                # Refine -- sits on top): REVIEW stays, so the advice can be
+                # followed by another Undo all (D-L7).
+                self._add_transient = AP.ADD_UNDO_NONE
+                return
+            self._reset_add_state()
+            # Report the ACTUAL count -- the controller stops at an
+            # interleaved non-Add edit, so never overclaim a full removal.
+            if undone is not None and 0 < undone < n:
+                k = sum(len(g) for g in groups[n - undone:])
+                msg = (AP.ADD_UNDO_PARTIAL_ONE.format(k=k) if n_obj == 1
+                       else AP.ADD_UNDO_PARTIAL.format(k=k, n=n_obj))
+            else:
+                msg = AP.ADD_UNDO_DONE
+            if clear_seqs:
+                # Undo all takes back Accepts only: a Clear of this session
+                # that is still on the undo stack is still in force -- say so
+                live = self._add_live_clear_seqs()
+                if live is None or set(clear_seqs) & live:
+                    msg = msg + " " + AP.ADD_UNDO_DONE_CLEARED
+            self._push_add_ui(
+                review_active=False, box_active=False, whole_patch=False,
+                start_enabled=True,
+                accept_enabled=False, accept_count=0, reject_enabled=False,
+                piece_ids=[], footer_text="",
+            )
+            self._add_transient = msg
+        finally:
+            # the wait's words never stick, also when a step above raises
             self._add_refresh_ui()
+        self._add_transient = None
+
+    def _add_after_accept_undone(self, label_id) -> None:
+        """The main Undo (Curation) took back an Accept: when the review
+        lists its objects, they leave the list (the volume and the table
+        are already back); with none left the review closes.  A REVIEW is
+        not an open edit -- Refine, Refine all, "+ Add another" and the
+        navigator stay open there -- so the Undo is not refused; the page
+        follows it instead."""
+        if (not getattr(self, "_add_review", False)
+                or getattr(self, "_add_undoing_all", False)):
             return
+        lid = int(label_id)
+        session = list(getattr(self, "_add_session", None) or [])
+        # matched on the ids the Accept wrote: a Clear may have taken the
+        # first of them (the one the undo entry names) off the rows
+        keep = [e for e in session if lid not in
+                {int(i) for i in e.get("accept_ids", e.get("ids", ()))}]
+        if len(keep) == len(session):
+            return
+        from packages.epicycle_annotator import add_preview as AP
+
+        if not keep:
+            print("[ADD] the main Undo took back every Accept of the review "
+                  "- review closed")
+            self._reset_add_state()
+            adv = self._get_advanced_features_widget()
+            if adv is not None and hasattr(adv, "clear_add_touched"):
+                adv.clear_add_touched(keep_source=True)   # a full exit
+            self._push_add_ui(
+                review_active=False, box_active=False, whole_patch=False,
+                start_enabled=True,
+                accept_enabled=False, accept_count=0, reject_enabled=False,
+                piece_ids=[], footer_text="",
+            )
+            self._add_transient = AP.ADD_S1_UNDO_TOOK_BACK_ALL
+            self._add_refresh_ui()
+            self._add_transient = None
+            return
+        print("[ADD] the main Undo took back the last Accept of the review "
+              "- its rows leave the list")
+        self._add_session = keep
+        self._add_review_rows_again(AP.ADD_S1_UNDO_TOOK_BACK)
+
+    def _add_after_undo_emptied(self) -> None:
+        """The controller emptied the main Undo (Commit Triage, a fresh
+        table): the review's Accepts can no longer be taken back, so "Undo
+        all" would only refuse.  The review closes; the objects stay.  With
+        a box from "+ Add another" up instead, the session it keeps for its
+        return to the review is forgotten (the box stays)."""
+        if getattr(self, "_add_undoing_all", False):
+            return
+        if not getattr(self, "_add_review", False):
+            if getattr(self, "_add_session", None):
+                print("[ADD] the main Undo was emptied - the kept review "
+                      "session is forgotten")
+                self._add_session = []
+                self._add_session_clear_seqs = []
+            return
+        from packages.epicycle_annotator import add_preview as AP
+
+        print("[ADD] the main Undo was emptied - the Accepts of the review "
+              "are permanent, review closed")
         self._reset_add_state()
-        # Report the ACTUAL count -- the controller stops at an interleaved
-        # non-Add edit, so never overclaim a full removal.
-        if undone is not None and 0 < undone < n:
-            k = sum(len(g) for g in groups[n - undone:])
-            msg = (AP.ADD_UNDO_PARTIAL_ONE.format(k=k) if n_obj == 1
-                   else AP.ADD_UNDO_PARTIAL.format(k=k, n=n_obj))
-        else:
-            msg = AP.ADD_UNDO_DONE
+        adv = self._get_advanced_features_widget()
+        if adv is not None and hasattr(adv, "clear_add_touched"):
+            adv.clear_add_touched(keep_source=True)   # a full exit
         self._push_add_ui(
-            review_active=False, box_active=False, start_enabled=True,
+            review_active=False, box_active=False, whole_patch=False,
+            start_enabled=True,
             accept_enabled=False, accept_count=0, reject_enabled=False,
             piece_ids=[], footer_text="",
         )
-        self._add_transient = msg
+        self._add_transient = AP.ADD_S1_UNDO_EMPTIED
+        self._add_refresh_ui()
+        self._add_transient = None
+
+    def _add_after_clear_undone(self, ids) -> None:
+        """The main Undo took back a Clear: the objects it pasted back that
+        an Accept of this review wrote are listed again (each entry keeps
+        the ids its Accept wrote, ``accept_ids``)."""
+        if (not getattr(self, "_add_review", False)
+                or getattr(self, "_add_undoing_all", False)):
+            return
+        back = {int(i) for i in (ids or ())}
+        changed = False
+        session = []
+        for e in getattr(self, "_add_session", None) or []:
+            cur = {int(i) for i in e.get("ids", ())}
+            acc = [int(i) for i in e.get("accept_ids", e.get("ids", ()))]
+            now = [i for i in acc if i in cur or i in back]
+            if len(now) != len(cur):
+                changed = True
+                old_sizes = e.get("accept_sizes", e.get("sizes")) or {}
+                sizes = dict(e.get("sizes") or {})
+                for i in now:
+                    if i not in cur and i in old_sizes:
+                        sizes[i] = old_sizes[i]
+                e = dict(e, ids=now, sizes=sizes)
+            session.append(e)
+        if not changed:
+            return
+        print("[ADD] the main Undo took back a Clear - the objects it "
+              "pasted back are listed again")
+        self._add_session = session
+        self._add_review_rows_again(None)
+
+    def _add_review_rows_again(self, transient) -> None:
+        """REVIEW's rows rebuilt from ``_add_session`` (chip rows first),
+        with ``transient`` as S1's line for one refresh."""
+        keep = getattr(self, "_add_session", None) or []
+        all_ids = [i for e in keep for i in e["ids"]]
+        sizes = {}
+        for e in keep:
+            sizes.update(e.get("sizes", {}))
+        self._add_piece_ids = all_ids
+        chips = self._add_review_chips(all_ids)
+        order = self._add_review_order(all_ids, chips.get("piece_chips"))
+        self._push_add_ui(piece_ids=order, piece_sizes=sizes,
+                          add_batch_refine_enabled=bool(all_ids), **chips)
+        self._add_transient = transient
         self._add_refresh_ui()
         self._add_transient = None
 
@@ -9593,8 +16098,682 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             print(f"[ADD] confirm failed: {exc!r}")
             return False
 
+    # ------------------------------------------------------------------ #
+    # Clear objects: count on the worker, confirm, one write, one undo entry
+    # ------------------------------------------------------------------ #
+    def _add_clear_floor_now(self) -> int:
+        """The highest id a Clear removed on the patch in view, or 0.  New
+        ids stay above it even when no QC table remembers the cleared ids.
+        A plain number: it is dropped when the volume goes away -- at a
+        patch switch (``_teardown_add_for_switch``) and at a close (a run
+        switch closes the annotator) -- so no click reads the context."""
+        return int(_safe_attr(self, "_add_clear_floor") or 0)
+
+    def _add_forget_clears(self) -> None:
+        """A patch switch or a close: the Clear floor and the Clear records
+        belong to the volume that is going away -- and so do the tissue
+        outline and the whole patch's wall picture (kept across Add
+        sessions on the same patch and run)."""
+        self._add_clear_floor = 0
+        self._add_clear_records = {}
+        self._add_clear_masks = {}
+        self._add_clear_kept = {}
+        self._add_clears_back = False
+        self._add_session_clear_seqs = []
+        self._add_clears_above = []
+        self._add_outline_cache = None
+        self._add_outline_errors = {}
+        self._add_elev_cache = None
+        self._add_box_elev_cache = None
+        self._add_drop_marker_cache("the patch is going away")
+        self._add_drop_cells_stage("the patch is going away")
+
+    def _add_live_clear_seqs(self):
+        """The Clears still on the curation undo stack (a set of numbers),
+        or ``None`` with no controller to ask."""
+        cb = getattr(self, "_get_live_add_clears_cb", None)
+        if cb is None:
+            return None
+        try:
+            return {int(i) for i in (cb() or ())}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] live clears callback raised: {exc!r}")
+            return None
+
+    def _add_cleared_in_force(self) -> list:
+        """``[(seq, ids)]``, oldest first: the ids each Clear still in force
+        removed.  A Clear whose undo entry left the stack (undone, evicted,
+        the stack emptied) is dropped here; with no controller every
+        recorded Clear counts.  Where they were is in the undo entry (its
+        box and the voxels before), read only when it is needed."""
+        recs = getattr(self, "_add_clear_records", None) or {}
+        masks = getattr(self, "_add_clear_masks", None) or {}
+        live = self._add_live_clear_seqs()
+        kept = getattr(self, "_add_clear_kept", None)
+        if kept is None:
+            kept = {}
+            self._add_clear_kept = kept
+        shared = self._add_shared_volume()
+        vol = None if shared is None else id(shared)
+        out = []
+        for seq in sorted(recs):
+            if (live is not None and seq not in live
+                    and kept.get(seq, "?") != vol):
+                # its undo entry left the stack: an Undo, or the stack
+                # evicted it / was emptied.  Only an Undo brings the objects
+                # back -- judged once per Clear (and again if the volume is
+                # replaced), from the voxels themselves
+                if self._add_clear_came_back(seq):
+                    recs.pop(seq, None)
+                    masks.pop(seq, None)
+                    kept.pop(seq, None)
+                    self._add_clears_back = True
+                    continue
+                kept[seq] = vol
+                print("[ADD-CLEAR] Clear {} left the undo stack but its "
+                      "objects are still gone: its outline stays".format(seq))
+            out.append((seq, tuple(recs[seq])))
+        return out
+
+    def _add_clear_came_back(self, seq) -> bool:
+        """True when the objects Clear ``seq`` removed are back: a voxel it
+        zeroed holds one of its ids again (its Undo pasted them).  New
+        objects drawn there since never count (their ids are above the
+        Clear floor).  Without its mask or a volume: True (as before)."""
+        recs = getattr(self, "_add_clear_records", None) or {}
+        masks = getattr(self, "_add_clear_masks", None) or {}
+        shared = self._add_shared_volume()
+        rec = masks.get(seq)
+        ids = recs.get(seq)
+        if rec is None or shared is None or not ids:
+            return True
+        from packages.epicycle_annotator.add_preview import unpack_mask
+
+        t0 = _time.perf_counter()
+        try:
+            roi, shape, packed = rec
+            m = unpack_mask(shape, packed)
+            vals = np.asarray(shared[tuple(roi)])[m]
+            back = bool(np.isin(vals, np.asarray(ids, dtype=vals.dtype)).any())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] came-back check raised: {exc!r}")
+            return True
+        print("[ADD-PERF] cleared check seq={} back={} {:.0f}ms".format(
+            seq, back, (_time.perf_counter() - t0) * 1000.0))
+        return back
+
+    def _add_clear_busy_text(self):
+        """S1's busy line while a Clear counts or writes, else None."""
+        phase = getattr(self, "_add_clear_phase", None)
+        if phase is None:
+            return None
+        from packages.epicycle_annotator import add_preview as AP
+
+        if phase == "counting":
+            return AP.ADD_S1_CLEAR_COUNTING
+        return AP.count_phrase(int(getattr(self, "_add_clear_n", 0) or 0),
+                               AP.ADD_S1_CLEARING_ONE, AP.ADD_S1_CLEARING)
+
+    def _add_clear_good_count(self, ids) -> int:
+        cb = getattr(self, "_get_kept_tier_count_cb", None)
+        if cb is None:
+            return 0
+        try:
+            return max(0, int(cb([int(i) for i in ids]) or 0))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] good count callback raised: {exc!r}")
+            return 0
+
+    def _add_clear_stamp_now(self) -> tuple:
+        """What a counted Clear must still find when it writes: the count's
+        number, the patch, the run, the box, the volume array and every
+        Add write since (Accept and Clear bump the epoch)."""
+        ctx = self._reshape_context()
+        shared = self._add_shared_volume()
+        roi = getattr(self, "_add_roi", None)
+        return (int(getattr(self, "_add_clear_token", 0)),
+                ctx.get("patch_name"), ctx.get("run_epoch"),
+                None if roi is None else tuple(roi),
+                None if shared is None else id(shared),
+                int(getattr(self, "_add_volume_epoch", 0)),
+                self._active_labels_name)
+
+    def _add_clear_is_stale(self) -> bool:
+        why = None
+        if not getattr(self, "_add_running", False) or getattr(
+                self, "_add_review", False):
+            why = "add session gone"
+        elif getattr(self, "_add_preview_result", None) is not None:
+            why = "candidates on screen"
+        elif getattr(self, "_add_clear_stamp", None) != (
+                self._add_clear_stamp_now()):
+            why = "the box, the volume, the patch or the run changed"
+        if why:
+            print(f"[ADD-CLEAR] STALE - {why}")
+            return True
+        return False
+
+    def _add_clear_post(self, fn) -> None:
+        """Run ``fn`` on the next turn of the event loop, after the handler
+        that posts it has returned (a seam for the tests).  A zero timer
+        runs BEFORE Qt's pending repaints, so it does not make a sentence
+        set before it show: the caller repaints what must be seen."""
+        from qtpy.QtCore import QTimer
+
+        QTimer.singleShot(0, fn)
+
+    def _add_clear_confirm(self, text) -> bool:
+        """The red themed confirm.  A seam for the tests."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        try:
+            from napari_epicycle.ui_shell.theme import themed_confirm
+
+            return bool(themed_confirm(
+                self, AP.ADD_CLEAR_CONFIRM_TITLE, str(text),
+                confirm_text=AP.ADD_CLEAR_CONFIRM_OK,
+                cancel_text=AP.ADD_CLEAR_CONFIRM_BACK, accent="red"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] confirm failed: {exc!r}")
+            return False
+
+    def _stop_add_clear_count(self) -> None:
+        """Stop while Clear objects counts: the count is dropped (its answer
+        finds the token moved on and does nothing) and the page is free at
+        once.  The worker is asked to stop; a count that cannot stop mid-way
+        finishes in the background and its thread is cleaned up then (a new
+        Clear waits for it)."""
+        w = getattr(self, "_add_clear_worker", None)
+        if w is not None:
+            try:
+                w.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        self._add_clear_token = int(getattr(self, "_add_clear_token", 0)) + 1
+        print("[ADD-CLEAR] Stop pressed - the count is dropped, nothing "
+              "cleared")
+        self._add_clear_done(None)
+
+    def _add_box_footer_text(self):
+        """The footer line of a box state, or ``None`` for the page's own:
+        a box opened by "+ Add another" says Close box goes back to the
+        review (and that a Clear made in it stays); a first box after a
+        Clear says Close box keeps the Clear."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        cleared = bool(getattr(self, "_add_box_cleared", False))
+        session = getattr(self, "_add_session", None) or []
+        if session:
+            return AP.foot_box_session(
+                sum(len(e.get("ids", ())) for e in session), cleared=cleared)
+        if cleared:
+            return AP.ADD_FOOT_BOX_CLEARED
+        return None
+
+    def _add_clear_above_accepts(self) -> bool:
+        """A Clear made after an Accept of this session is still on the
+        undo stack (every recorded one counts with no controller to ask):
+        Undo all stops at it."""
+        above = list(getattr(self, "_add_clears_above", None) or [])
+        if not above:
+            return False
+        live = self._add_live_clear_seqs()
+        return live is None or bool(set(above) & live)
+
+    def _add_clear_done(self, transient, footer=None) -> None:
+        """Every end of a Clear: the page is not busy, S1 says
+        ``transient`` (None = back to the box's own line)."""
+        self._add_clear_phase = None
+        self._add_clear_pending = None
+        self._add_busy = False
+        self._add_transient = transient
+        # the volume may have changed: a finish launched before is stale
+        self._add_settings_epoch = int(
+            getattr(self, "_add_settings_epoch", 0)) + 1
+        kw = {}
+        if footer is not None:
+            kw["footer_text"] = footer
+        self._add_refresh_ui(**kw)
+        if getattr(self, "_add_live_dirty", False):
+            # an update owed while the Clear held the page runs now; its
+            # landing keeps the Clear's sentence
+            self._add_live_keep_transient = transient
+            self._add_live_fire()
+            if getattr(self, "_add_thread", None) is None:
+                self._add_live_keep_transient = None
+
+    def _on_add_clear_requested(self, mode) -> None:
+        """Clear objects ▸ "Objects mostly inside this box…" (``"box"``) or
+        "Every object in the patch…" (``"patch"``): count on the worker.
+        Only while a box is placed, no candidates are up and not in the
+        review; refused while anything runs."""
+        mode = "patch" if mode == "patch" else "box"
+        if (not getattr(self, "_add_running", False)
+                or getattr(self, "_add_box", None) is None
+                or getattr(self, "_add_roi", None) is None):
+            print("[ADD-CLEAR] refused - no box")
+            return
+        if getattr(self, "_add_review", False):
+            print("[ADD-CLEAR] refused - the review is on screen")
+            return
+        if self._add_refused_while_batch("clear"):
+            return
+        if self._add_refuse_busy("clear"):
+            return
+        if self._add_live_unsettled():
+            # an update is due or running: its result would be measured on
+            # the volume the Clear is about to change.  While Accept waits
+            # S1 keeps saying so
+            from packages.epicycle_annotator.add_preview import (
+                ADD_S1_CLEAR_WAIT_LIVE,
+            )
+
+            print("[ADD-CLEAR] refused - an update is due or running")
+            if not getattr(self, "_add_accept_pending", False):
+                self._add_transient = ADD_S1_CLEAR_WAIT_LIVE
+            self._add_refresh_ui()
+            return
+        if getattr(self, "_add_clear_thread", None) is not None:
+            print("[ADD-CLEAR] refused - the previous count is still quitting")
+            return
+        if getattr(self, "_add_preview_result", None) is not None:
+            print("[ADD-CLEAR] refused - candidates are on screen")
+            return
+        try:
+            other = {k for k in self.staged_kinds() if k is not StagedOp.ADD}
+        except Exception:  # noqa: BLE001
+            other = set()
+        if other:
+            self._refuse_for_open_edit(
+                "add clear", "Add",
+                lambda text: self._push_add_ui(status_text=text,
+                                               status_kind="warn"))
+            return
+        self._launch_add_clear_plan(mode)
+
+    def _launch_add_clear_plan(self, mode) -> None:
+        """Count on a ``RefineWorker``.  It reads the live shared volume --
+        safe because the Add lock is held (only Add writes) and the count
+        holds the page busy, so Add's own Preview and Accept wait."""
+        import threading
+
+        from qtpy.QtCore import QThread
+
+        from napari_epicycle.annotator.reshape_worker import RefineWorker
+        from packages.epicycle_annotator import add_preview as AP
+
+        # the count reads shared: point it at the main layer first (a Commit
+        # Triage, Discard or Undo may have reassigned layer.data)
+        self._ensure_shared_data_aligned(self._active_labels_name)
+        self._add_forget_volume_max()
+        shared = self._add_shared_volume()
+        if shared is None:
+            self._add_transient = AP.ADD_S1_NO_PATCH
+            self._add_refresh_ui()
+            return
+        self._add_clear_token = int(getattr(self, "_add_clear_token", 0)) + 1
+        token = self._add_clear_token
+        self._add_clear_stamp = self._add_clear_stamp_now()
+        ev = threading.Event()
+        kwargs = dict(labels=shared, mode=mode,
+                      box=tuple(self._add_roi) if mode == "box" else None,
+                      cancel_event=ev)
+        self._add_busy = True
+        self._add_clear_phase = "counting"
+        self._add_clear_pending = None
+        self._add_transient = None
+        self._add_refresh_ui()
+        try:
+            th = QThread()
+            w = RefineWorker(AP.clear_plan, kwargs, kind="add_clear",
+                             cancel_event=ev)
+            w._epicycle_token = token
+            self._add_clear_thread = th
+            self._add_clear_worker = w
+            w.moveToThread(th)
+            th.started.connect(w.run)
+            w.finished.connect(_from_sender(
+                self, w, self._on_add_clear_plan_finished))
+            w.error.connect(_from_sender(
+                self, w, self._on_add_clear_plan_error))
+            # every exit of run() quits the thread (the preview's rule)
+            w.finished.connect(th.quit)
+            w.error.connect(th.quit)
+            th.finished.connect(_from_sender(
+                self, th, self._on_add_clear_thread_finished))
+            self._add_clear_t0 = _time.perf_counter()
+            th.start()
+            print(f"[ADD-CLEAR] count started token={token} mode={mode}")
+        except Exception as exc:  # noqa: BLE001 - never strand busy
+            print(f"[ADD-CLEAR] count launch FAILED: {exc!r}")
+            self._add_clear_thread = None
+            self._add_clear_worker = None
+            self._add_clear_done(AP.ADD_S1_CLEAR_FAILED)
+
+    def _add_clear_current(self) -> bool:
+        """The answer that just landed is this count's (not an abandoned
+        one's) and the Clear still waits for it."""
+        if _signal_sender_gone(self):
+            return False            # a dropped count's late answer
+        worker = self._signal_sender() or getattr(
+            self, "_add_clear_worker", None)
+        return (getattr(worker, "_epicycle_token", None)
+                == getattr(self, "_add_clear_token", 0)
+                and getattr(self, "_add_clear_phase", None) == "counting")
+
+    def _on_add_clear_plan_finished(self, outcome) -> None:
+        from packages.epicycle_annotator import add_preview as AP
+
+        if not self._add_clear_current():
+            print("[ADD-CLEAR] STALE count discarded")
+            return
+        plan = getattr(outcome, "result", None)
+        t0 = getattr(self, "_add_clear_t0", None)
+        if plan is not None:
+            print(plan.log_line() + (" ms={:.0f}".format(
+                (_time.perf_counter() - t0) * 1000.0) if t0 else ""))
+        if plan is None or getattr(plan, "status", "") != "ok":
+            self._add_clear_done(None)
+            return
+        if self._add_clear_is_stale():
+            self._add_clear_done(AP.ADD_S1_CLEAR_STALE)
+            return
+        if not plan.ids:
+            self._add_clear_done(AP.ADD_S1_CLEAR_NOTHING if plan.mode == "box"
+                                 else AP.ADD_S1_CLEAR_EMPTY_PATCH)
+            return
+        # the confirm on the next turn: the worker's signal handler returns
+        # first (a modal opened inside it would run the thread's quit late)
+        self._add_clear_pending = plan
+        self._add_clear_post(self._add_clear_confirm_pending)
+
+    def _on_add_clear_plan_error(self, message) -> None:
+        from packages.epicycle_annotator import add_preview as AP
+
+        if not self._add_clear_current():
+            return
+        print(f"[ADD-CLEAR] count FAILED: {message}")
+        self._add_clear_done(AP.ADD_S1_CLEAR_FAILED)
+
+    def _on_add_clear_thread_finished(self) -> None:
+        sender = self._signal_sender()
+        # a gone sender is a dropped thread: it never cleans the current one
+        if ((sender is not None or _signal_sender_gone(self))
+                and sender is not getattr(self, "_add_clear_thread", None)):
+            return
+        self._add_thread_cleanup("clear")
+
+    def _add_clear_confirm_text(self, plan) -> str:
+        from packages.epicycle_annotator import add_preview as AP
+
+        n = len(plan.ids)
+        one = n == 1                     # "it", not "1 of them"
+        if plan.mode == "box":
+            parts = [AP.count_phrase(n, AP.ADD_CLEAR_CONFIRM_BOX_ONE,
+                                     AP.ADD_CLEAR_CONFIRM_BOX)]
+            if plan.n_outside > 0:
+                parts.append(AP.ADD_CLEAR_CONFIRM_OUTSIDE_IT if one
+                             else AP.count_phrase(
+                                 plan.n_outside,
+                                 AP.ADD_CLEAR_CONFIRM_OUTSIDE_ONE,
+                                 AP.ADD_CLEAR_CONFIRM_OUTSIDE,
+                                 k=plan.n_outside))
+        else:
+            parts = [AP.count_phrase(n, AP.ADD_CLEAR_CONFIRM_PATCH_ONE,
+                                     AP.ADD_CLEAR_CONFIRM_PATCH)]
+        g = self._add_clear_good_count(plan.ids)
+        if g > 0:
+            parts.append(AP.ADD_CLEAR_CONFIRM_GOOD_IT if one
+                         else AP.count_phrase(g, AP.ADD_CLEAR_CONFIRM_GOOD_ONE,
+                                              AP.ADD_CLEAR_CONFIRM_GOOD, g=g))
+        undo = (AP.ADD_CLEAR_CONFIRM_UNDO_IT if one
+                else AP.ADD_CLEAR_CONFIRM_UNDO)
+        return " ".join(parts) + "\n\n" + undo
+
+    def _add_clear_confirm_pending(self) -> None:
+        """Ask; on Clear re-check that nothing moved, realign, re-check,
+        then paint "Clearing ..." and write on the next turn."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        plan = getattr(self, "_add_clear_pending", None)
+        self._add_clear_pending = None
+        if plan is None or getattr(self, "_add_clear_phase", None) != (
+                "counting"):
+            return
+        if self._add_clear_is_stale():
+            self._add_clear_done(AP.ADD_S1_CLEAR_STALE)
+            return
+        if not self._add_clear_confirm(self._add_clear_confirm_text(plan)):
+            print("[ADD-CLEAR] Go back - nothing cleared")
+            self._add_clear_done(None)
+            return
+        if getattr(self, "_add_clear_phase", None) != "counting":
+            return          # an exit while the confirm was open
+        # the user took time: the box, the volume and the array are
+        # checked again, after a realign (it may replace the array)
+        if self._add_clear_is_stale():
+            self._add_clear_done(AP.ADD_S1_CLEAR_STALE)
+            return
+        self._ensure_shared_data_aligned(self._active_labels_name)
+        if self._add_clear_is_stale():
+            self._add_clear_done(AP.ADD_S1_CLEAR_STALE)
+            return
+        self._add_clear_phase = "clearing"
+        self._add_clear_n = len(plan.ids)
+        self._add_refresh_ui()           # "Clearing n objects…" first
+        # paint it NOW: the zero timer below runs before Qt's queued
+        # repaint, and the write holds the main thread
+        whole = bool(getattr(self, "_add_whole_patch", False))
+        self._add_paint_status(
+            AP.count_phrase(len(plan.ids), AP.ADD_S1_CLEARING_ONE,
+                            AP.ADD_S1_CLEARING),
+            stage="add_clear", step=0 if whole else None,
+            of=3 if whole else None)
+        self._add_clear_pending = plan
+        self._add_clear_post(self._add_clear_apply_pending)
+
+    def _add_clear_apply_pending(self) -> None:
+        from packages.epicycle_annotator import add_preview as AP
+
+        plan = getattr(self, "_add_clear_pending", None)
+        self._add_clear_pending = None
+        if plan is None or getattr(self, "_add_clear_phase", None) != (
+                "clearing"):
+            return
+        if self._add_clear_is_stale():
+            self._add_clear_done(AP.ADD_S1_CLEAR_STALE)
+            return
+        self._apply_add_clear(plan)
+
+    def _add_drop_cleared_from_session(self, ids) -> None:
+        """Cleared objects leave "Added this session".  Each entry keeps
+        the ids and sizes its Accept wrote (``accept_ids`` /
+        ``accept_sizes``): the main Undo names an Accept by its first id,
+        which a Clear may have taken, and an undone Clear lists its objects
+        again.  An Accept whose objects were all cleared stays, with no
+        rows: its undo entry is still on the stack, so Undo all counts it
+        and the main Undo of it still finds it."""
+        ids = {int(i) for i in ids}
+        kept = []
+        for e in getattr(self, "_add_session", None) or []:
+            left = [i for i in e.get("ids", []) if int(i) not in ids]
+            sizes = {k: v for k, v in (e.get("sizes") or {}).items()
+                     if int(k) not in ids}
+            kept.append(dict(
+                e, ids=left, sizes=sizes,
+                accept_ids=list(e.get("accept_ids", e.get("ids", []))),
+                accept_sizes=dict(e.get("accept_sizes",
+                                        e.get("sizes") or {}))))
+        self._add_session = kept
+        self._add_piece_ids = [i for i in (getattr(
+            self, "_add_piece_ids", None) or []) if int(i) not in ids]
+
+    def _apply_add_clear(self, plan) -> None:
+        """The write, on the main thread: snapshot the box around the
+        listed objects, zero them there (whole -- inside and outside the
+        Add box), commit ONE undo entry through the discard callback, and
+        leave nothing behind that could paste them back."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        _st = _StepTimer("[ADD-PERF] clear write")
+        shared = self._add_shared_volume()
+        roi = tuple(plan.bbox)
+        ids = [int(i) for i in plan.ids]
+        n = len(ids)
+        snap = None
+        try:
+            region = shared[roi]
+            snap = region.copy()
+            gone = np.isin(snap, ids)
+            region[gone] = 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] write FAILED: {exc!r}")
+            if snap is not None:
+                try:
+                    shared[roi] = snap
+                except Exception:  # noqa: BLE001
+                    pass
+            self._add_clear_done(AP.ADD_S1_CLEAR_FAILED)
+            return
+        _st.lap("zero")
+        self._add_clear_step(1)
+        self._add_volume_epoch = int(getattr(self, "_add_volume_epoch", 0)) + 1
+        self._add_drop_marker_cache("a Clear wrote the volume")
+        self._add_drop_cells_stage("a Clear wrote the volume")
+        self._add_forget_volume_max()
+        try:
+            self._sync_all_views_after_operation(roi=roi)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] view sync raised: {exc!r}")
+        _st.lap("sync")
+        self._add_clear_step(2)
+        seq = next(_ADD_CLEAR_SEQ)
+        cb = getattr(self, "_on_discard_garbage_cb", None)
+        if cb is not None:
+            try:
+                cb(ids, roi_slices=roi, old_roi_data=snap,
+                   description=AP.count_phrase(
+                       n, AP.ADD_CLEAR_UNDO_TEXT_ONE, AP.ADD_CLEAR_UNDO_TEXT),
+                   extra={"add_clear_seq": seq})
+            except Exception as exc:  # noqa: BLE001
+                live = self._add_live_clear_seqs()
+                if live is not None and seq in live:
+                    # the entry is on the undo stack and the rows are
+                    # marked: the Clear landed, a later step of the
+                    # controller's refresh raised.  Putting the volume back
+                    # now would leave an entry that pastes over it.
+                    print(f"[ADD-CLEAR] commit callback raised after the "
+                          f"undo entry landed: {exc!r} - the Clear stands")
+                else:
+                    # no undo entry, no dirty flag: the volume goes back, or
+                    # the next Save would write a Clear nobody can undo
+                    print(f"[ADD-CLEAR] commit callback raised: {exc!r} - "
+                          "the volume is put back")
+                    try:
+                        shared[roi] = snap
+                        self._add_volume_epoch += 1
+                        self._add_drop_marker_cache("a Clear was put back")
+                        self._add_drop_cells_stage("a Clear was put back")
+                        self._sync_all_views_after_operation(roi=roi)
+                    except Exception as exc2:  # noqa: BLE001
+                        print(f"[ADD-CLEAR] put back raised: {exc2!r}")
+                    self._add_clear_done(AP.ADD_S1_CLEAR_FAILED)
+                    return
+        _st.lap("commit")
+        # the cleared objects leave the live isolation once the Clear
+        # stands (a put-back above leaves the isolation as it was)
+        live_fn = getattr(self, "_iso_live_ids", None)
+        if callable(live_fn):
+            try:
+                hit = set(live_fn()) & set(ids)
+                if hit:
+                    self._iso_forget(sorted(hit))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD-CLEAR] isolation update raised: {exc!r}")
+        # after the commit: a later Clear Edits must not paste the region
+        # the draw snapshot holds -- the cleared objects -- back
+        try:
+            self._clear_draw_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] draw snapshot drop raised: {exc!r}")
+        self._add_clear_floor = max(self._add_clear_floor_now(), max(ids))
+        recs = getattr(self, "_add_clear_records", None)
+        if recs is None:
+            recs = {}
+            self._add_clear_records = recs
+        recs[seq] = tuple(ids)
+        # what it zeroed, packed (1 bit per voxel of its box): the
+        # "Outline of the objects you cleared" is built from these
+        masks = getattr(self, "_add_clear_masks", None)
+        if masks is None:
+            masks = {}
+            self._add_clear_masks = masks
+        try:
+            shape, packed = AP.pack_mask(gone)
+            masks[seq] = (tuple(roi), shape, packed)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] cleared mask not kept: {exc!r}")
+        # older Clears are NOT pruned here by the stack: one that left it
+        # stays in force while its objects are gone (the voxel rule in
+        # `_add_cleared_in_force`)
+        self._add_box_cleared = True
+        seqs = list(getattr(self, "_add_session_clear_seqs", None) or [])
+        seqs.append(seq)
+        self._add_session_clear_seqs = seqs
+        if getattr(self, "_add_session", None):
+            # a Clear in a "+ Add another" box sits on the undo stack ABOVE
+            # this session's Accepts: Undo all stops at it
+            above = list(getattr(self, "_add_clears_above", None) or [])
+            above.append(seq)
+            self._add_clears_above = above
+        self._add_drop_cleared_from_session(ids)
+        msg = AP.count_phrase(n, AP.ADD_S1_CLEARED_ONE, AP.ADD_S1_CLEARED)
+        if plan.mode == "box" and plan.n_outside > 0:
+            msg = msg + " " + (AP.ADD_S1_CLEARED_OUTSIDE_IT if n == 1
+                               else AP.ADD_S1_CLEARED_OUTSIDE)
+        # the transient hides why Preview is grey: say it too (a measure
+        # still running is not a reason; the box is measured again below).
+        # The old box info is dropped FIRST: its run count was taken before
+        # the Clear emptied the box, so its "no marker" is no longer true
+        self._add_info = None
+        try:
+            block = AP.preview_block(self._add_s1_state())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD-CLEAR] preview reason skipped: {exc!r}")
+            block = None
+        if block and block not in (AP.ADD_S1_MEASURING,
+                                   AP.ADD_S1_MEASURING_PATCH,
+                                   AP.ADD_S1_IDLE):
+            msg = msg + " " + block
+        print(f"[ADD-CLEAR] cleared {n} objects seq={seq} roi={roi} "
+              f"floor={self._add_clear_floor}")
+        self._add_clear_done(msg, footer=self._add_box_footer_text())
+        # the box's empty share changed: measure it again (the strip names
+        # the reader once it has started)
+        self._add_drop_info()
+        self._request_add_box_info()
+        self._add_refresh_ui()
+        _st.line(n=n, voxels=int(plan.n_voxels))
+
+    def _add_release_histogram(self) -> None:
+        """The page's in-box histogram (a pyqtgraph plot) goes when the box
+        does (every full exit, and Accept into REVIEW, which never shows
+        it); the next box that measures itself builds a fresh one.  A plot
+        still alive, hidden in the floating panel, when napari closed made
+        the close abort ("shared QObject was deleted directly"; the exact
+        double delete is not pinned).  Released while the event loop runs,
+        it is gone before any close.  Never raises."""
+        try:
+            _rel = getattr(self._get_advanced_features_widget(),
+                           "release_add_plot", None)
+            if _rel is not None:
+                _rel()
+        except Exception as exc:  # noqa: BLE001 - teardown never raises
+            print(f"[ADD] histogram release skipped: {exc!r}")
+
     def _reset_add_state(self) -> None:
         """Return Add mode to idle (mirrors _reset_split_state)."""
+        self._add_release_histogram()
         # forget the cached Advanced Features dock (final fix pass P1); a
         # plain attribute write so a borrowed-method harness needs nothing
         self._afw_cache = None
@@ -9606,10 +16785,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 t.stop()
             except Exception:
                 pass
+        self._stop_add_ball_timer()
+        self._add_live_stop()
+        self._add_forget_user_ticks()
         self._add_abandon_workers()
         for _fn in (self._remove_add_side_callbacks,
                     self._remove_add_marker_layer, self._close_add_numbers,
-                    self._add_guide_thread_cleanup, self._drop_add_walls):
+                    self._add_guide_thread_cleanup, self._drop_add_walls,
+                    self._add_drop_outline_full):
             try:
                 _fn()
             except Exception:
@@ -9617,7 +16800,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_place_markers_on = False
         self._add_running = False
         self._add_review = False
+        self._add_refresh_label_buttons()
         self._add_box = None
+        self._add_box_before_whole = None
         self._add_roi = None
         self._add_preview_result = None
         self._add_preview_res = None
@@ -9631,16 +16816,42 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_click_markers = []
         self._add_markers_base = None
         self._add_absorbed_ids = set()
+        self._add_marker_why = {}
+        self._add_seed_why = {}
         self._add_rebase_note = None
         self._add_forget_volume_max()
         self._add_bump_markers_epoch()
         self._add_run_guide = None
         self._add_run_state = None
         self._add_dark_cache = {}
+        # Inside each cell's patch levels and the whole-patch flag go with
+        # the session (the levels are measured again in about a second)
+        self._add_levels_cache = {}
+        self._add_levels_errors = {}
+        self._add_whole_patch = False
+        # a box's own wall picture goes with the session; the REVIEW's
+        # exits (Accept, Close box inside "+ Add another") do not come here
+        # and keep it until the next prune drops it
+        self._add_box_elev_cache = None
+        # the markers' prepared whole patch goes with the session too, and
+        # the Cells click fill's prepared box
+        self._add_drop_marker_cache("the session ended")
+        self._add_drop_cells_stage("the session ended")
+        # the tissue outline and the whole patch's wall picture belong to
+        # the patch, not the session: kept for the next box or whole patch
+        # on the same patch and run (dropped at a patch switch, a close, or
+        # when their inputs change).  Between sessions the outline is kept
+        # packed (1 bit per voxel) and its skin is dropped
+        self._add_park_outline_cache()
+        self._add_outline_errors = {}
+        self._add_warm_text = None
         self._add_nuclei_threshold_value = None
         self._add_nuclei_threshold_typed = False
         self._add_piece_ids = []
         self._add_session = []
+        self._add_session_clear_seqs = []
+        self._add_clears_above = []
+        self._add_box_cleared = False
         self._add_threshold_value = None
         # the outline tick goes down at every full exit
         self._add_put_outline_down()
@@ -9670,7 +16881,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         otherwise a click during the async load runs `_undo_last_curation`
         against the NEW patch's volume + df (race audit MED-1: cross-patch
         corruption).  Idempotent; safe to call when Add is idle.
+
+        The Clear floor and the cleared masks belong to the patch that is
+        going away, so they are dropped here, idle or not.
         """
+        self._add_forget_clears()
         if not (getattr(self, "_add_running", False)
                 or getattr(self, "_add_review", False)):
             return
@@ -9691,16 +16906,41 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 pass
         adv = self._get_advanced_features_widget()
         if adv is not None and hasattr(adv, "clear_add_touched"):
-            adv.clear_add_touched()          # a full exit
+            # a full exit; the Markers source is forgotten at the next start
+            # only when the patch or run really changed
+            adv.clear_add_touched(keep_source=True)
         try:
             self._push_add_ui(
-                review_active=False, box_active=False, start_enabled=True,
+                review_active=False, box_active=False, whole_patch=False,
+                start_enabled=True,
                 accept_enabled=False, accept_count=0, reject_enabled=False,
                 piece_ids=[], footer_text="",
             )
             self._add_refresh_ui()
         except Exception:
             pass
+
+    def _add_forget_source_if_moved(self) -> None:
+        """At a box or whole-patch start: the Markers source the user
+        picked is kept from the last box on the same patch and run, and goes
+        back to its default on another one (a run picked under Markers
+        belongs to the patch it was picked on).  Asked here, not at the
+        switch: the switch in place after an Extract re-runs the switch on
+        the same patch.  A close drops the whole page anyway."""
+        ctx = self._reshape_context()
+        here = (ctx.get("patch_name"), ctx.get("run_id"))
+        seen = getattr(self, "_add_source_patch", None)
+        self._add_source_patch = here
+        if seen is None or seen == here:
+            return
+        adv = self._get_advanced_features_widget()
+        if adv is None or not hasattr(adv, "forget_add_source"):
+            return
+        try:
+            adv.forget_add_source()
+            print("[ADD] another patch or run: Markers back to its default")
+        except Exception as exc:  # noqa: BLE001 - a start never raises here
+            print(f"[ADD] marker source not reset: {exc!r}")
 
     def _run_batch_refine(self, label_ids) -> None:
         """Snapshot, lock, and launch the batch worker for *label_ids*."""
@@ -9855,7 +17095,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._launch_batch_worker(
             dlg, shared, labels_name, label_ids, recipe,
             spacing=spacing, channel=ch, prob=pr,
-            orphans=self._batch_orphans)
+            orphans=self._batch_orphans,
+            spacing_source=_spacing_source_of(self))
 
     def _show_batch_preparing(self, dlg, n) -> None:
         """The running state, the marquee and "Preparing…" -- up BEFORE
@@ -9931,10 +17172,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._batch_worker._epicycle_token = self._batch_token
             self._batch_worker.moveToThread(self._batch_thread)
             self._batch_thread.started.connect(self._batch_worker.run)
-            self._batch_worker.stage.connect(self._on_batch_worker_stage)
-            self._batch_worker.progress.connect(self._on_batch_worker_progress)
-            self._batch_worker.finished.connect(self._on_batch_worker_finished)
-            self._batch_worker.error.connect(self._on_batch_worker_error)
+            self._batch_worker.stage.connect(_from_sender(
+                self, self._batch_worker, self._on_batch_worker_stage))
+            self._batch_worker.progress.connect(_from_sender(
+                self, self._batch_worker, self._on_batch_worker_progress))
+            self._batch_worker.finished.connect(_from_sender(
+                self, self._batch_worker, self._on_batch_worker_finished))
+            self._batch_worker.error.connect(_from_sender(
+                self, self._batch_worker, self._on_batch_worker_error))
             self._batch_thread.start()
             print(f"[BATCH] worker started on {len(label_ids)} labels")
         except Exception as exc:  # noqa: BLE001 — never strand the surface
@@ -10124,6 +17369,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._batch_staged = True
 
         self._sync_all_views_after_operation(roi=union)
+        _live = self._iso_live_ids()
+        _hit = [int(i) for i in result.touched_ids if int(i) in _live]
+        if _hit:
+            self._iso_refresh(_hit, roi_hint=union)
         # The refined count is touched_ids, never n_processed (which counts
         # the emptied objects too).
         dlg.set_preview_summary(
@@ -10273,6 +17522,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         elif shared is not None and snap is not None:
             shared[:] = snap
             self._sync_all_views_after_operation()
+        _live = self._iso_live_ids()
+        _hit = [int(i) for i in getattr(self, "_batch_touched_ids", [])
+                if int(i) in _live]
+        if _hit:
+            self._iso_refresh(_hit, roi_hint=union_roi)
 
         self._batch_snapshot = None
         self._batch_staged = False
@@ -10336,6 +17590,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             if shared is not None and snap is not None and union_roi is not None:
                 shared[union_roi] = snap
                 self._sync_all_views_after_operation(roi=union_roi)
+            _live = self._iso_live_ids()
+            _hit = [int(i) for i in getattr(self, "_batch_touched_ids", [])
+                    if int(i) in _live]
+            if _hit:
+                self._iso_refresh(_hit, roi_hint=union_roi)
             self._batch_snapshot = None
             self._batch_staged = False
             self._batch_touched_ids = []
@@ -10549,6 +17808,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """
         nav_cb = self._on_subviewer_navigate
         nudge_cb = self._add_nudge_box   # Shift+arrow, Add only
+        key_cb = self._add_marker_key    # Ctrl+Z / Esc, Add's markers only
         # this runs on every patch switch: the previous set comes off first
         # (B3 fix pass, LOW-3 -- they used to pile up, 6 more per switch)
         self._remove_arrow_key_filters()
@@ -10568,6 +17828,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     vm, self._slice_step_sb,
                     navigate_callback=nav_cb, parent=target,
                     nudge_callback=nudge_cb, orient=orient,
+                    marker_key_callback=key_cb,
                 )
                 target.installEventFilter(filt)
                 installed.append((filt, [target]))
@@ -10594,7 +17855,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                                   ("XZ", self.qt_viewer_xz),
                                   ("YZ", self.qt_viewer_yz)]:
             blocker = _UpDownBlocker(navigate_callback=nav_cb, parent=self,
-                                     nudge_callback=nudge_cb, orient=orient)
+                                     nudge_callback=nudge_cb, orient=orient,
+                                     marker_key_callback=key_cb)
             targets = []
             try:
                 qt_viewer.installEventFilter(blocker)
@@ -10698,211 +17960,278 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             except Exception:
                 self._session_token = 1
 
-        # --- Step 1: Force-reject active operations ---
-        if self._smooth_running:
-            self._reject_smooth()
-        if self._split_running:
-            self._reject_split()
-        # Cancel an active Add session (tears down box/candidate layers +
-        # releases the controller lock); otherwise sweep any stray temp layers.
-        # Fully guarded so a minimal test fake without these methods is a no-op.
+        _closing_bracket = None
+        # Steps 1-4b are best effort.  A raise in any of them must not
+        # skip the disconnects below: the main labels layer outlives this
+        # widget, and callbacks left on it would fire on every later edit.
         try:
-            if getattr(self, "_add_running", False):
-                # Still running here means closeEvent's prompt was
-                # never reached -- the launcher's _run_widget_cleanup path.
-                # Said, not patched: the driver reports which path napari's
-                # X takes (B2 fix pass L-M4).
-                print("[ADD] close via cleanup path: no prompt")
-                self._reject_add()
-            else:
-                # REVIEW / idle: reset fully (destroys candidate+overlay AND
-                # clears _add_session/_add_review/_add_piece_ids) — was leaving
-                # the session state set, asymmetric with the switch path (audit
-                # LOW-4).  Harmless today (widget is destroyed) but tidy.
-                self._reset_add_state()
-        except Exception as exc:
-            print(f"[ADD] _close_cleanup add teardown raised: {exc!r}")
-        if self._interp_snapshot is not None:
-            self._reject_interpolation()
-        self._interp_refine_mode = False
-        # Batch refine — the dock-close path bypasses closeEvent (and thus
-        # _has_uncommitted_work -> _discard_batch_refine), so we MUST cancel
-        # + join the worker QThread here or it keeps running into a
-        # torn-down widget (orphaned thread / access violation).
-        if getattr(self, "_batch_running", False) or getattr(
-            self, "_batch_staged", False
-        ):
+            # --- Step 1: Force-reject active operations ---
+            # The widget is going away: nothing is put back, so the isolation
+            # bracket is dropped before the forced rejects could end it.  (This
+            # method is also called straight from the launcher, not only from
+            # closeEvent.)
+            _closing_bracket = _iso_call(self, "_iso_take")
+            if _closing_bracket is not None:
+                _iso_call(self, "_iso_release_if_idle", _closing_bracket.snapshot)
+            if self._smooth_running:
+                try:
+                    self._reject_smooth()
+                except Exception as _exc:  # noqa: BLE001
+                    print(f"[CLOSE-CLEANUP] _reject_smooth raised, continuing: {_exc!r}")
+            # An interpolation preview goes before the split: in fragment mode it
+            # holds the pieces, and rejecting it after the split restore would
+            # write them back over the restored parent.
+            if self._interp_snapshot is not None:
+                try:
+                    self._reject_interpolation()
+                except Exception as _exc:  # noqa: BLE001
+                    print(f"[CLOSE-CLEANUP] _reject_interpolation raised, continuing: {_exc!r}")
+            if self._split_running:
+                try:
+                    self._reject_split()
+                except Exception as _exc:  # noqa: BLE001
+                    print(f"[CLOSE-CLEANUP] _reject_split raised, continuing: {_exc!r}")
+            # Cancel an active Add session (tears down box/candidate layers +
+            # releases the controller lock); otherwise sweep any stray temp layers.
+            # Fully guarded so a minimal test fake without these methods is a no-op.
             try:
-                self._discard_batch_refine()
+                if getattr(self, "_add_running", False):
+                    # Still running here means closeEvent's prompt was
+                    # never reached -- the launcher's _run_widget_cleanup path.
+                    # Said, not patched: the driver reports which path napari's
+                    # X takes (B2 fix pass L-M4).
+                    print("[ADD] close via cleanup path: no prompt")
+                    self._reject_add()
+                else:
+                    # REVIEW / idle: reset fully (destroys candidate+overlay AND
+                    # clears _add_session/_add_review/_add_piece_ids) — was leaving
+                    # the session state set, asymmetric with the switch path (audit
+                    # LOW-4).  Harmless today (widget is destroyed) but tidy.
+                    self._reset_add_state()
+                self._add_forget_clears()
+            except Exception as exc:
+                print(f"[ADD] _close_cleanup add teardown raised: {exc!r}")
+            self._interp_refine_mode = False
+            # Batch refine — the dock-close path bypasses closeEvent (and thus
+            # _has_uncommitted_work -> _discard_batch_refine), so we MUST cancel
+            # + join the worker QThread here or it keeps running into a
+            # torn-down widget (orphaned thread / access violation).
+            if getattr(self, "_batch_running", False) or getattr(
+                self, "_batch_staged", False
+            ):
+                try:
+                    self._discard_batch_refine()
+                except Exception as e:
+                    print(f"[BATCH] _close_cleanup discard raised: {e!r}")
+            # Idle-but-open dialog (no staged/running work) — tear it down so it
+            # doesn't linger (mirrors the merge-dialog teardown above).
+            if getattr(self, "_batch_refine_dialog", None) is not None:
+                try:
+                    self._teardown_batch_dialog()
+                except Exception:
+                    pass
+
+            # A guided split open at close has the target label
+            # PUNCHED OUT of the shared volume and may have a worker in
+            # flight.  Tear it down here for the same reason batch refine is
+            # torn down here: the dock-close path bypasses closeEvent, so an
+            # orphaned worker would run on into a destroyed widget and the
+            # user would lose the cell.  Idempotent and never raises.
+            # Two try blocks, not one: the teardown is the step that PUTS THE
+            # CELL BACK, so a raise while tidying the marker worker must not
+            # skip it.
+            try:
+                self._abandon_seed_find_worker()
+                self._remove_temp_layer("markers")
+                # The wall picture goes too.  `_teardown_reshape_for_switch` sweeps
+                # every temp layer anyway, so this is belt and braces on the
+                # one path where a raise in the teardown would otherwise
+                # leave an Image layer behind on a dying widget.
+                self._drop_walls_picture()
             except Exception as e:
-                print(f"[BATCH] _close_cleanup discard raised: {e!r}")
-        # Idle-but-open dialog (no staged/running work) — tear it down so it
-        # doesn't linger (mirrors the merge-dialog teardown above).
-        if getattr(self, "_batch_refine_dialog", None) is not None:
+                print(f"[RESHAPE-FIND] _close_cleanup marker teardown raised: {e!r}")
             try:
-                self._teardown_batch_dialog()
-            except Exception:
-                pass
+                self._teardown_reshape_for_switch()
+                self._teardown_refine_for_switch()
+            except Exception as e:
+                print(f"[RESHAPE] _close_cleanup teardown raised: {e!r}")
 
-        # Reshape R1: a guided split open at close has the target label
-        # PUNCHED OUT of the shared volume and may have a worker in
-        # flight.  Tear it down here for the same reason batch refine is
-        # torn down here: the dock-close path bypasses closeEvent, so an
-        # orphaned worker would run on into a destroyed widget and the
-        # user would lose the cell.  Idempotent and never raises.
-        # Two try blocks, not one: the teardown is the step that PUTS THE
-        # CELL BACK, so a raise while tidying the marker worker must not
-        # skip it.
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[CLOSE-CLEANUP] step 1 (batch/reshape teardown) raised, continuing: {_exc!r}")
         try:
-            self._abandon_seed_find_worker()
-            self._remove_temp_layer("markers")
-            # Brick U3.  `_teardown_reshape_for_switch` below sweeps
-            # every temp layer anyway, so this is belt and braces on the
-            # one path where a raise in the teardown would otherwise
-            # leave an Image layer behind on a dying widget.
-            self._drop_walls_picture()
-        except Exception as e:
-            print(f"[RESHAPE-FIND] _close_cleanup marker teardown raised: {e!r}")
-        try:
-            self._teardown_reshape_for_switch()
-            self._teardown_refine_for_switch()
-        except Exception as e:
-            print(f"[RESHAPE] _close_cleanup teardown raised: {e!r}")
-
-        # --- Step 2: Lightweight isolation state cleanup ---
-        # Release isolation authority on close without touching subviewers
-        # (they're being torn down).  Do NOT call _on_isolation_changed(set())
-        # which tries to propagate colormap/show_selected_label to subviewers
-        # that may already be partially destroyed.
-        if self._isolation_active:
-            self._isolation_active = False
-            self._isolation_label_set = None
-            self._pre_isolation_colormap = None
-            self._pre_isolation_data = None
-            auth = getattr(self, "_colormap_authority", None)
-            if auth is not None:
-                from napari_epicycle.fusion_reconstruction.colormap_authority import ColormapOwner
-                auth.release(ColormapOwner.ANNOTATOR_ISOLATION)
-        # Phase 2: Remove proxy display layer on close
-        if getattr(self, "_isolation_proxy_active", False):
-            self._remove_isolation_proxy()
-        # Belt-and-suspenders: always clear suppress flag on close, even if
-        # _remove_isolation_proxy was already called or proxy wasn't active.
-        sync = getattr(self, "sync_manager", None)
-        if sync is not None:
-            sync._suppress_show_selected_sync = False
-        # UNCONDITIONAL: Reset show_selected_label on the main labels layer.
-        # Controller-initiated isolation (lasso) sets CONTROLLER_ISOLATION
-        # without setting _isolation_active, so gating on _isolation_active
-        # would miss that case and leave the viewer in single-label mode.
-        try:
-            main_layer = self.viewer.layers[self._active_labels_name]
-            if hasattr(main_layer, "show_selected_label"):
-                main_layer.show_selected_label = False
-        except (KeyError, Exception):
-            pass
-
-        # --- Step 3: Stop debounce timer ---
-        timer = getattr(self, "_alive_check_timer", None)
-        if timer is not None:
-            try:
-                timer.stop()
-            except Exception:
-                pass
-        init_timer = getattr(self, "_init_auto_load_timer", None)
-        if init_timer is not None:
-            try:
-                init_timer.stop()
-            except Exception:
-                pass
-        deferred_timer = getattr(self, "_deferred_auto_load_timer", None)
-        if deferred_timer is not None:
-            try:
-                deferred_timer.stop()
-            except Exception:
-                pass
-
-        # --- Step 4: Clear navigator widget callbacks + UI state + reference ---
-        # The navigator dock may survive in Qt memory after close.  Clear
-        # its callbacks so no stale callback fires into this (dead) annotator
-        # between close and relaunch.  The launcher rebinds on reuse.
-        nav = self._navigator_widget
-        if nav is not None:
-            _safe_curation_debug(self,
-                f"close cleanup navigator found type={type(nav).__name__} id={id(nav)}"
-            )
-            # Reset UI state (selection + isolate checkbox) silently so the
-            # dock doesn't carry stale visual state when reused on relaunch.
-            if hasattr(nav, "reset_selection_ui"):
+            # --- Step 2: Lightweight isolation state cleanup ---
+            # Release isolation authority on close without touching subviewers
+            # (they're being torn down).  Do NOT call _on_isolation_changed(set())
+            # which tries to propagate colormap/show_selected_label to subviewers
+            # that may already be partially destroyed.
+            if self._isolation_active:
+                self._isolation_active = False
+                self._isolation_label_set = None
+                self._pre_isolation_colormap = None
+                self._pre_isolation_data = None
+                auth = getattr(self, "_colormap_authority", None)
+                if auth is not None:
+                    from napari_epicycle.fusion_reconstruction.colormap_authority import ColormapOwner
+                    auth.release(ColormapOwner.ANNOTATOR_ISOLATION)
+            # Phase 2: Remove proxy display layer on close
+            if getattr(self, "_isolation_proxy_active", False):
+                self._remove_isolation_proxy()
+            # A guided split recorded main as hidden because the isolation
+            # proxy had hidden it; with the bracket gone nothing else will
+            # show it again.
+            if (
+                _closing_bracket is not None
+                and _closing_bracket.snapshot.mode != MODE_OFF
+            ):
                 try:
-                    nav.reset_selection_ui()
+                    _main_after = self._layer_by_name(
+                        self.viewer.layers, self._active_labels_name)
+                    if _main_after is not None:
+                        _main_after.visible = True
+                        _heal_render(self, _main_after, tag="close-cleanup")
+                except Exception as _exc:  # noqa: BLE001
+                    print(f"[CLOSE-CLEANUP] main re-show raised, continuing: {_exc!r}")
+            # Belt-and-suspenders: always clear suppress flag on close, even if
+            # _remove_isolation_proxy was already called or proxy wasn't active.
+            sync = getattr(self, "sync_manager", None)
+            if sync is not None:
+                sync._suppress_show_selected_sync = False
+            # UNCONDITIONAL: Reset show_selected_label on the main labels layer.
+            # Controller-initiated isolation (lasso) sets CONTROLLER_ISOLATION
+            # without setting _isolation_active, so gating on _isolation_active
+            # would miss that case and leave the viewer in single-label mode.
+            try:
+                main_layer = self.viewer.layers[self._active_labels_name]
+                if hasattr(main_layer, "show_selected_label"):
+                    main_layer.show_selected_label = False
+            except (KeyError, Exception):
+                pass
+
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[CLOSE-CLEANUP] step 2 (isolation cleanup) raised, continuing: {_exc!r}")
+        try:
+            # --- Step 3: Stop debounce timer ---
+            _pj = getattr(self, "_paint_join_timer", None)
+            if _pj is not None:
+                try:
+                    _pj.stop()
                 except Exception:
                     pass
-            if hasattr(nav, "set_callbacks"):
+            timer = getattr(self, "_alive_check_timer", None)
+            if timer is not None:
                 try:
-                    nav.set_callbacks()
+                    timer.stop()
                 except Exception:
                     pass
-        else:
-            _safe_curation_debug(self, "close cleanup navigator widget was None")
-        # Destroy the navigator dock.  Use stored _navigator_dock ref
-        # (set by launcher) for reliable lookup — the old parent-traversal
-        # approach was fragile and often failed to find the QDockWidget.
-        # Full destruction (not just hide/close) ensures the navigator
-        # doesn't persist as a visible dock after the annotator closes.
-        nav_dock = getattr(self, "_navigator_dock", None)
-        if nav_dock is None and nav is not None:
-            # Fallback: parent traversal + _resolve_existing_dock.
-            try:
-                from qtpy.QtWidgets import QDockWidget
-                p = nav.parent()
-                while p is not None and not isinstance(p, QDockWidget):
-                    p = p.parent()
-                nav_dock = p
-            except Exception:
-                nav_dock = None
-        if nav_dock is None:
-            try:
-                from napari_epicycle.annotator.launcher import _resolve_existing_dock
-                nav_dock = _resolve_existing_dock(
-                    self.viewer, "EpiCycle Label Navigator"
-                )
-            except Exception:
-                pass
-        if nav_dock is not None:
-            try:
-                from napari_epicycle.annotator.launcher import _destroy_dock
-                _destroy_dock(self.viewer, nav_dock)
+            init_timer = getattr(self, "_init_auto_load_timer", None)
+            if init_timer is not None:
+                try:
+                    init_timer.stop()
+                except Exception:
+                    pass
+            deferred_timer = getattr(self, "_deferred_auto_load_timer", None)
+            if deferred_timer is not None:
+                try:
+                    deferred_timer.stop()
+                except Exception:
+                    pass
+
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[CLOSE-CLEANUP] step 3 (timers) raised, continuing: {_exc!r}")
+        try:
+            # --- Step 4: Clear navigator widget callbacks + UI state + reference ---
+            # The navigator dock may survive in Qt memory after close.  Clear
+            # its callbacks so no stale callback fires into this (dead) annotator
+            # between close and relaunch.  The launcher rebinds on reuse.
+            nav = self._navigator_widget
+            if nav is not None:
                 _safe_curation_debug(self,
-                    f"navigator dock destroyed type={type(nav_dock).__name__}"
+                    f"close cleanup navigator found type={type(nav).__name__} id={id(nav)}"
                 )
-            except Exception:
-                _safe_curation_debug(self, "navigator dock destroy failed")
-        else:
-            _safe_curation_debug(self, "navigator dock teardown: dock not found")
-        self._navigator_widget = None
-        self._navigator_dock = None
+                # Reset UI state (selection + isolate checkbox) silently so the
+                # dock doesn't carry stale visual state when reused on relaunch.
+                if hasattr(nav, "reset_selection_ui"):
+                    try:
+                        nav.reset_selection_ui()
+                    except Exception:
+                        pass
+                if hasattr(nav, "set_callbacks"):
+                    try:
+                        nav.set_callbacks()
+                    except Exception:
+                        pass
+            else:
+                _safe_curation_debug(self, "close cleanup navigator widget was None")
+            # Destroy the navigator dock.  Use stored _navigator_dock ref
+            # (set by launcher) for reliable lookup — the old parent-traversal
+            # approach was fragile and often failed to find the QDockWidget.
+            # Full destruction (not just hide/close) ensures the navigator
+            # doesn't persist as a visible dock after the annotator closes.
+            nav_dock = getattr(self, "_navigator_dock", None)
+            if nav_dock is None and nav is not None:
+                # Fallback: parent traversal + _resolve_existing_dock.
+                try:
+                    from qtpy.QtWidgets import QDockWidget
+                    p = nav.parent()
+                    while p is not None and not isinstance(p, QDockWidget):
+                        p = p.parent()
+                    nav_dock = p
+                except Exception:
+                    nav_dock = None
+            if nav_dock is None:
+                try:
+                    from napari_epicycle.annotator.launcher import _resolve_existing_dock
+                    nav_dock = _resolve_existing_dock(
+                        self.viewer, "EpiCycle Label Navigator"
+                    )
+                except Exception:
+                    pass
+            if nav_dock is not None:
+                try:
+                    from napari_epicycle.annotator.launcher import _destroy_dock
+                    _destroy_dock(self.viewer, nav_dock)
+                    _safe_curation_debug(self,
+                        f"navigator dock destroyed type={type(nav_dock).__name__}"
+                    )
+                except Exception:
+                    _safe_curation_debug(self, "navigator dock destroy failed")
+            else:
+                _safe_curation_debug(self, "navigator dock teardown: dock not found")
+            self._navigator_widget = None
+            self._navigator_dock = None
 
-        # --- Step 4b: Destroy remaining satellite docks ---
-        # Advanced Features and Multiviewer Settings docks can survive
-        # annotator close and accumulate across relaunch cycles.
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[CLOSE-CLEANUP] step 4 (navigator) raised, continuing: {_exc!r}")
         try:
-            from napari_epicycle.annotator.launcher import _destroy_satellite_docks
-            _destroy_satellite_docks(self.viewer)
-        except Exception:
-            pass
+            # --- Step 4b: Destroy remaining satellite docks ---
+            # Advanced Features and Multiviewer Settings docks can survive
+            # annotator close and accumulate across relaunch cycles.
+            try:
+                from napari_epicycle.annotator.launcher import _destroy_satellite_docks
+                _destroy_satellite_docks(self.viewer)
+            except Exception:
+                pass
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[CLOSE-CLEANUP] step 4b raised, continuing to disconnects: {_exc!r}")
 
         # --- Step 5: Disconnect viewer-level event handlers ---
-        self._disconnect_viewer_events()
+        try:
+            self._disconnect_viewer_events()
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[CLOSE-CLEANUP] step 5 raised, continuing: {_exc!r}")
 
         # --- Step 6: Disconnect inserted handler ---
         try:
-            self.viewer.layers.events.inserted.disconnect(self._on_layer_inserted)
-        except (ValueError, AttributeError):
+            unregister_layer_hook(
+                self, self.viewer.layers.events.inserted, self._on_layer_inserted
+            )
+        except AttributeError:
             pass
         try:
-            self.viewer.layers.events.removed.disconnect(self._on_layer_removed)
-        except (ValueError, AttributeError):
+            unregister_layer_hook(
+                self, self.viewer.layers.events.removed, self._on_layer_removed
+            )
+        except AttributeError:
             pass
         # ... and the tool-tab hook, which _open_advanced_features connects
         # on every click (the launcher reuses an open dock).
@@ -10941,6 +18270,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         # --- Post-close: Null out callback refs and clear caches ---
         self._on_isolation_cleared_cb = None
+        self._plot_cmap_pull_cb = None
         self._on_mark_tier_cb = None
         self._on_delete_label_cb = None
         self._on_discard_garbage_cb = None
@@ -10951,6 +18281,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._on_label_smoothed_cb = None
         self._on_recalculate_cb = None
         self._on_new_label_painted_cb = None
+        self._on_paint_stroke_cb = None
         self._on_batch_refined_cb = None
         self._batch_refine_lock_cb = None
         self._add_mode_lock_cb = None
@@ -10963,6 +18294,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._delete_refine_recipe_cb = None
         self._get_plot_selection_cb = None
         self._get_label_id_floor_cb = None
+        self._get_kept_tier_count_cb = None
+        self._get_live_add_clears_cb = None
         # The Refine-tab recipe a plain Batch open re-selects (session-only)
         # and the dialog-life poll timer.
         self._batch_last_chain_name = None
@@ -11133,26 +18466,40 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         except Exception:
             return False
 
+    def _fresh_label_floor(self) -> int:
+        """The highest id a new label must stay above: the larger of this
+        page's Clear floor (dropped at a patch switch and a close) and the
+        controller's floor (the table's rows, removed ones included, and the
+        session's Clears on this patch and run; 0 with no callback).  A
+        cleared or deleted number is reserved and never handed out again."""
+        return max(Curation3DAnnotator._add_clear_floor_now(self),
+                   Curation3DAnnotator._add_label_id_floor(self))
+
     def _next_label_id_after_accept(self) -> int:
         """Compute the next label ID after accepting an operation.
 
         Tries navigator items first (fast), falls back to volume scan.
+        Never at or below a removed id (``_fresh_label_floor``): a cleared
+        or deleted id drawn again would read as the removal undone, and the
+        table would hold a removed and a live row for one id.
         """
+        floor = Curation3DAnnotator._fresh_label_floor(self) + 1
         # Try navigator items
         nav = getattr(self, "_navigator_widget", None)
         if nav is not None:
             try:
                 items = getattr(nav, "_items", [])
                 if items:
-                    return max(it["label_id"] for it in items) + 1
+                    return max(max(it["label_id"] for it in items) + 1,
+                               floor)
             except (ValueError, KeyError, TypeError):
                 pass
         # Fallback: scan shared volume
         labels_name = self._active_labels_name
         shared_data = self.sync_manager.shared_labels.get(labels_name)
         if shared_data is not None and shared_data.size > 0:
-            return int(np.max(shared_data)) + 1
-        return 1
+            return max(int(np.max(shared_data)) + 1, floor)
+        return floor
 
     def _on_subviewer_pre_sync(self) -> None:
         """Called BEFORE sync_to_main_view on each stroke release.
@@ -11178,7 +18525,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 shared_data, current_label
             )
             self._draw_label_id = current_label
-            self._clear_edits_btn.setEnabled(True)
+            self._draw_session = int(getattr(self, "_draw_session", 0)) + 1
+            _enable_if_alive(getattr(self, "_clear_edits_btn", None), True)
             self._interp_status_label.setText(
                 f"Drawing on label {current_label}. "
                 f"Preview to interpolate, or Clear Edits to undo."
@@ -11188,14 +18536,75 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # `_label_action_buttons_active`.
             self._refresh_merge_button_state()
             self._refresh_label_action_buttons_state()
+
+    def _on_subviewer_stroke_begin(self, orientation, index) -> None:
+        """Called at the START of a stroke, before any sync writes.
+
+        A stroke writes exactly one plane of the shared volume (the one the
+        view sits on).  Copy that plane now; ``_push_paint_stroke`` turns it
+        into the undo entry once the stroke has landed.  Nothing is recorded
+        while an edit of its own is open (its Accept / Discard owns the
+        volume) or while a split is running.
+        """
+        self._stroke_plane = None
+        self._stroke_plane_consumed = False
+        try:
+            if (self._split_running or self._smooth_running
+                    or self._interp_refine_mode or self.staged_kinds()):
+                return
+            shared = self.sync_manager.shared_labels.get(
+                self._active_labels_name)
+            if shared is None:
+                return
+            idx = int(index)
+            orient = str(orientation).upper()
+            full = slice(None)
+            if orient == "XY":
+                roi = (idx, full, full)
+            elif orient == "XZ":
+                roi = (full, idx, full)
+            elif orient == "YZ":
+                roi = (full, full, idx)
+            else:
+                return
+            self._stroke_plane = (roi, shared[roi].copy())
+        except Exception as exc:  # noqa: BLE001
+            self._stroke_plane = None
+            print(f"[STROKE-UNDO] plane snapshot skipped: {exc!r}")
+
+    def _push_paint_stroke(self) -> None:
+        """Hand the finished stroke to the controller as one undo entry."""
+        plane = getattr(self, "_stroke_plane", None)
+        consumed = getattr(self, "_stroke_plane_consumed", False)
+        self._stroke_plane = None
+        self._stroke_plane_consumed = False
+        cb = getattr(self, "_on_paint_stroke_cb", None)
+        if plane is None or consumed or cb is None:
+            return
+        roi, before = plane
+        shared = self.sync_manager.shared_labels.get(self._active_labels_name)
+        if shared is None or np.array_equal(shared[roi], before):
+            return  # the stroke changed nothing
+        try:
+            cb(int(self._get_selected_label()),
+               roi_slices=roi, old_roi_data=before,
+               draw_session=getattr(self, "_draw_session", 0))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[STROKE-UNDO] paint-stroke callback raised: {exc!r}")
+
     def _on_subviewer_draw_complete(self) -> None:
         """Called AFTER sync_to_main_view on each stroke release.
 
-        Updates the isolation proxy so the user sees drawn corrections
-        in the main 3D viewer.
+        Records the stroke as one undo entry, then updates the isolation
+        proxy so the user sees drawn corrections in the main 3D viewer.
         """
+        _plane = getattr(self, "_stroke_plane", None)
+        _stroke_roi = _plane[0] if _plane else None
+        self._push_paint_stroke()
         if self._split_running:
             return
+        # A cell painted into a multi-cell isolation joins it at once.
+        _iso_call(self, "_iso_refresh_painted_label", roi_hint=_stroke_roi)
         if not self._isolation_proxy_active:
             return
         proxy = self._isolation_proxy_layer
@@ -11206,6 +18615,59 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         main_layer = self._layer_by_name(self.viewer.layers, labels_name)
         if main_layer is not None:
             self._update_isolation_proxy(label_id, main_layer, force=True)
+
+    def _iso_refresh_painted_label(self, *, colormap_only: bool = False,
+                                   roi_hint=None) -> None:
+        """Bring the label being painted into the live multi-cell isolation.
+
+        A new id is missing from the isolation's colour map, so it would be
+        transparent.  Only a cell that is not isolated yet is refreshed (a
+        stroke on an isolated cell costs nothing here, as before).  With
+        *colormap_only* the refresh runs only for the one colour-map
+        isolation.  *roi_hint* is the region the stroke touched.
+        """
+        if not (getattr(self, "_isolation_active", False)
+                and getattr(self, "_isolation_label_set", None)):
+            return
+        if colormap_only and (
+                getattr(self, "_isolation_proxy_active", False)
+                or getattr(self, "_multi_label_proxy_set", None)):
+            return
+        try:
+            main = self._layer_by_name(
+                self.viewer.layers, self._active_labels_name)
+            sel = int(getattr(main, "selected_label", 0) or 0)
+            if sel <= 0 or sel in self._iso_live_ids():
+                return
+            self._iso_refresh([sel], roi_hint=roi_hint)
+        except Exception as exc:        # noqa: BLE001
+            print(f"[ISO-REFRESH] painted-label refresh raised: {exc!r}",
+                  flush=True)
+
+    def _schedule_painted_join(self) -> None:
+        """Join a cell painted on main into a colour-map isolation once the
+        stroke has paused (the join hides main while it re-colours, so doing
+        it mid-drag would flicker and paint on a hidden layer)."""
+        if not (getattr(self, "_isolation_active", False)
+                and getattr(self, "_isolation_label_set", None)):
+            return
+        if (getattr(self, "_isolation_proxy_active", False)
+                or getattr(self, "_multi_label_proxy_set", None)):
+            return
+        from qtpy.QtCore import QTimer
+        timer = getattr(self, "_paint_join_timer", None)
+        if timer is None:
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.setInterval(250)
+            timer.timeout.connect(self._join_painted_label)
+            self._paint_join_timer = timer
+        timer.start()
+
+    def _join_painted_label(self) -> None:
+        plane = getattr(self, "_stroke_plane", None)
+        self._iso_refresh_painted_label(
+            colormap_only=True, roi_hint=plane[0] if plane else None)
 
     def _clear_draw_edits(self) -> None:
         """Undo all drawn corrections and restore the label's original shape.
@@ -11228,6 +18690,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._interp_status_label.setText(
                 "Use Discard to undo the refine preview."
             )
+            return
+        # Any other open edit (an Add on screen, the merge dialog) owns the
+        # volume; restoring the old region over it would erase its work.
+        if self.staged_kinds():
+            self._interp_status_label.setText(STAGED_WORK_OPEN)
             return
 
         if self._draw_snapshot is None or self._draw_roi is None:
@@ -11254,6 +18721,22 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         #    original geometry plus all other labels within the ROI.
         shared_data[roi] = self._draw_snapshot
 
+        # The strokes are gone from the volume, so their undo entries go
+        # too: Undo must reach the edit that came before them.
+        pcb = getattr(self, "_on_paint_stroke_cb", None)
+        if pcb is not None and label_id is not None:
+            try:
+                pcb(int(label_id), discard=True,
+                    draw_session=getattr(self, "_draw_session", 0))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[STROKE-UNDO] discard callback raised: {exc!r}")
+
+        # A label that was new has no voxels left now (one full-volume
+        # compare, like the zeroing above); its row goes at the end.
+        label_is_gone = (
+            label_id is not None and not (shared_data == label_id).any()
+        )
+
         # Clear edited_slices tracking for this label.
         if labels_name and label_id is not None:
             self.sync_manager.clear_edited_slices_for_label(
@@ -11270,13 +18753,18 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._draw_snapshot = None
         self._draw_roi = None
         self._draw_label_id = None
-        self._clear_edits_btn.setEnabled(False)
+        _enable_if_alive(getattr(self, "_clear_edits_btn", None), False)
         self._interp_status_label.setText(
             f"Edits cleared for label {label_id}. Original shape restored."
         )
         # Re-enable New/Delete Label buttons (snapshot gate just lifted).
         self._refresh_merge_button_state()
         self._refresh_label_action_buttons_state()
+        # The label was new and has no voxels left, so its row goes the same
+        # way as a hand-erased label.  Last, with the snapshot already
+        # cleared, so a navigator reaction cannot re-enter this undo.
+        if label_is_gone:
+            self._handle_manually_deleted_label(label_id)
     def _clear_draw_snapshot(self) -> None:
         """Silently discard the draw snapshot without restoring.
 
@@ -11286,7 +18774,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._draw_snapshot = None
         self._draw_roi = None
         self._draw_label_id = None
-        self._clear_edits_btn.setEnabled(False)
+        _enable_if_alive(getattr(self, "_clear_edits_btn", None), False)
         # Re-enable New/Delete Label buttons if no other gate is up.
         self._refresh_merge_button_state()
         self._refresh_label_action_buttons_state()
@@ -11387,6 +18875,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                         nav.set_merge_enabled(False)
                     except Exception:
                         pass
+                    try:
+                        nav.set_mark_buttons_enabled(False)
+                    except Exception:
+                        pass
                 print("[LOAD-LOCK] annotator locked")
             else:
                 # Re-enable navigator action buttons — but only if no
@@ -11398,13 +18890,21 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 except Exception:
                     op_active = False
                 nav = getattr(self, "_navigator_widget", None)
-                if nav is not None and not op_active:
+                if nav is not None:
+                    # Tier marks are not gated by a staged op, only by the load lock.
                     try:
-                        nav.set_label_action_buttons_enabled(True)
+                        nav.set_mark_buttons_enabled(True)
+                    except Exception:
+                        pass
+                if nav is not None and not op_active:
+                    # Ask the shared gate instead of enabling blindly: an
+                    # open Add or Batch edit keeps New / Delete / Merge grey.
+                    try:
+                        self._refresh_label_action_buttons_state()
                     except Exception:
                         pass
                     try:
-                        nav.set_merge_enabled(True)
+                        self._refresh_merge_button_state()
                     except Exception:
                         pass
                 if not op_active:
@@ -11504,11 +19004,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     main_layer.refresh()
                 # Always rebuild the proxy if active — it IS visible and
                 # must reflect data changes (smooth, interpolation, etc.).
-                if self._isolation_proxy_active and label_id is not None:
-                    roi_hint = getattr(self, "_fragment_refine_roi", None)
-                    self._update_isolation_proxy(
-                        label_id, main_layer, force=True, roi_hint=roi_hint
-                    )
+                colormap_mode = bool(
+                    getattr(self, "_isolation_active", False)
+                    and not self._isolation_proxy_active
+                    and getattr(self, "_isolation_label_set", None)
+                    and self.viewer.dims.ndisplay == 3)
+                if (self._isolation_proxy_active or colormap_mode)                         and label_id is not None:
+                    # Multi mode: the colormap send at the end of this
+                    # method follows the data refresh, so skip the first one.
+                    self._iso_refresh(
+                        [label_id], roi_hint=roi,
+                        push_colormap=(
+                            getattr(self, "_pre_isolation_colormap", None)
+                            is None))
         self._refresh_label_data_in_subviewers()
 
         # Re-propagate isolation visual after data refresh.
@@ -11524,7 +19032,22 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     # Multi-label isolation uses DirectLabelColormap —
                     # re-propagate the colormap instead of
                     # show_selected_label which would hide all but one.
-                    if isinstance(main_layer, Labels):
+                    if getattr(self, "_multi_label_proxy_set", None):
+                        # 3D multi isolation: main's own colormap shows every
+                        # cell, so send the colormap of the isolated set.
+                        self._propagate_multi_label_colormap_to_subviewers(
+                            self._multi_label_proxy_set)
+                    elif (getattr(self, "_isolation_proxy_active", False)
+                          and getattr(self, "_isolation_proxy_label_id", None)
+                          is not None):
+                        # One cell under its proxy: main wears the cell's own
+                        # map (masked), and so do the side views; main's
+                        # colormap may still be an edit's fragment map.
+                        _sync_single_cell_views(
+                            self, main_layer,
+                            int(self._isolation_proxy_label_id),
+                            hidden=_iso_user_hid(self))
+                    elif isinstance(main_layer, Labels):
                         self._propagate_colormap_to_subviewers(main_layer.colormap)
                 else:
                     self._propagate_show_selected_label(True, label_id=sel_label)
@@ -11539,7 +19062,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             if not self._confirm_discard_dialog(reason):
                 event.ignore()
                 return
+            # The user chose Discard: no edit is open any more, so no
+            # isolation is to be put back.
+            _iso_call(self, "_iso_drop", "close: discard")
             self._discard_uncommitted_work()
+        else:
+            _iso_call(self, "_iso_drop", "close: no work")
         self._close_cleanup()
         # Close the 3 subviewer QtViewer instances to prevent orphaned
         # magicgui windows accumulating on each relaunch.
@@ -11582,21 +19110,39 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             pass
 
     def _switch_patch_context_from_combo(self):
-        """Block patch switching during an active split, smooth, or Add."""
-        if self._smooth_running:
-            self._reject_smooth()
-        if self._split_running:
-            self._update_split_ui(
-                status_text="Complete or cancel split before switching patches."
-            )
-            return
-        if getattr(self, "_add_running", False):
-            # An in-flight Add (box/preview, uncommitted) blocks the switch —
-            # the user must Accept or Cancel first (mirrors split).
-            self._push_add_ui(
-                status_text="Finish or cancel Add before switching patches.",
-                status_kind="warn",
-            )
+        """Refuse patch switching while any edit is open.
+
+        A staged Refine used to be thrown away silently here, and a held
+        interpolation cleared without being restored; now every kind says
+        the one sentence where the user is looking.
+        """
+        kind = self.staged_op_kind()
+        if kind is not None:
+            kinds = self.staged_kinds()
+            if StagedOp.RESHAPE in kinds and kind is StagedOp.RESHAPE:
+                self._refuse_for_open_edit(
+                    "switch", "Reshape",
+                    lambda t: self._update_split_ui(
+                        status_text="Complete or cancel split before "
+                                    "switching patches."))
+            elif kind is StagedOp.ADD:
+                self._refuse_for_open_edit(
+                    "switch", "Add",
+                    lambda t: self._push_add_ui(
+                        status_text="Finish or cancel Add before "
+                                    "switching patches.",
+                        status_kind="warn"))
+            elif kind is StagedOp.REFINE:
+                self._refuse_for_open_edit(
+                    "switch", "Refine",
+                    lambda t: self._update_smooth_ui(status_text=t))
+            elif kind is StagedOp.INTERPOLATE:
+                self._refuse_for_open_edit(
+                    "switch", None, self._interp_status_label.setText)
+            else:
+                # Batch and Merge have no tab: the navigator header says it.
+                self._refuse_for_open_edit(
+                    "switch", None, self._say_in_navigator_header)
             return
         super()._switch_patch_context_from_combo()
 
@@ -11618,6 +19164,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         )
 
         # Force-reject any active smooth/split before tearing down old layers.
+        # The old layers go away, so there is nothing to put the isolation
+        # back on: drop the bracket first.  (Refine Further's bracket must be
+        # dropped here too: nothing below rejects an interpolation.)
+        _iso_call(self, "_iso_drop", "patch switch")
         if self._smooth_running:
             self._reject_smooth()
         # ...and abandon a RefineWorker that has not produced anything yet,
@@ -11641,8 +19191,6 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._remove_add_candidate()
             self._remove_add_box_shapes()
         self._interp_refine_mode = False
-        self._refresh_merge_button_state()
-        self._refresh_label_action_buttons_state()
         # WP-3 / Bug J: Reset colormap authority and isolation state on
         # patch switch so stale _pre_isolation_colormap doesn't corrupt
         # the new patch's colormap.
@@ -11677,7 +19225,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._split_snapshot = None
         self._split_roi = None
         self._smooth_snapshot = None
-        self._draw_snapshot = None
+        self._clear_draw_snapshot()
+        # The button states read the snapshots, so they refresh only after
+        # the clears above; earlier they would keep Delete / New / Merge
+        # grey on the new patch.
+        self._refresh_merge_button_state()
+        self._refresh_label_action_buttons_state()
         # Phase 2: Remove proxy on patch switch
         if getattr(self, "_isolation_proxy_active", False):
             print(
@@ -11695,6 +19248,21 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._install_arrow_key_filters()
         self._sync_show_selected_label()
         self._connect_label_pinning()
+
+        # The labels layer is known only now (the base class names it): hand
+        # it to the navigator so the Painting badge follows the brush from
+        # the start, not from the first QC refresh.  set_label_layer
+        # disconnects the previous layer first, so a repeat is harmless.
+        nav = getattr(self, "_navigator_widget", None)
+        if nav is not None and hasattr(nav, "set_label_layer"):
+            try:
+                main_layer = self._layer_by_name(
+                    self.viewer.layers, self._active_labels_name)
+                if main_layer is not None:
+                    nav.set_label_layer(main_layer)
+            except Exception as exc:  # noqa: BLE001 - a deleted widget
+                print(f"[PATCH-SWITCH-ISO] navigator layer hand-off raised "
+                      f"{exc!r}", flush=True)
 
         print(
             "[PATCH-SWITCH-ISO] _load_selected_layers DONE — isolation "
@@ -11822,6 +19390,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     except (ValueError, AttributeError):
                         pass
                 # Reset curation-specific guard flags
+                try:
+                    layer.events.selected_label.disconnect(
+                        self._on_refine_selection_changed
+                    )
+                except (ValueError, AttributeError, TypeError):
+                    pass
                 for flag in (
                     "_epicycle_pin_connected",
                     "_epicycle_labels_update_connected",
@@ -11829,6 +19403,18 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 ):
                     if hasattr(layer, flag):
                         setattr(layer, flag, False)
+                # The refine hook flag stays while a different, live
+                # annotator owns the hook.
+                _ref = getattr(layer, "_epicycle_refine_sel_owner", None)
+                try:
+                    _own = _ref() if _ref is not None else None
+                except Exception:
+                    _own = None
+                if _own is None or _own is self:
+                    if hasattr(layer, "_epicycle_refine_sel_hooked"):
+                        layer._epicycle_refine_sel_hooked = False
+                    layer._epicycle_refine_sel_owner = None
+                    layer._epicycle_refine_sel_cb = None
         except Exception:
             pass
 
@@ -11881,6 +19467,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 self._pending_undo_sources = set()
             self._pending_undo_sources.add(source_layer)
 
+        _iso_call(self, "_schedule_painted_join")
         self._schedule_label_alive_check()
 
     def _parse_undo_candidates(self) -> set:
@@ -11975,6 +19562,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         has voxels) but it appeared in undo candidates, treat as
         intentional deletion — zero remaining voxels and reconcile.
         """
+        # A stroke still in flight (the pointer held down through a pause)
+        # is not finished: zeroing the label now would race its release.
+        _dh = getattr(self, "drawing_handler", None)
+        _n = int(getattr(self, "_alive_check_deferrals", 0))
+        if getattr(_dh, "_is_editing", False) and _n < 20:
+            self._alive_check_deferrals = _n + 1
+            self._schedule_label_alive_check()
+            return
+        self._alive_check_deferrals = 0
+
         undo_candidates = self._parse_undo_candidates()
 
         candidates = set(undo_candidates)
@@ -12020,8 +19617,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 # targeted this label.  No navigation requirement: the
                 # user may have clicked directly in the 3D viewer, or
                 # auto-advance moved past the label after deletion.
-                self._zero_label_in_volume(label_id)
-                self._handle_manually_deleted_label(label_id)
+                _roi, _snap = self._zero_label_in_volume(label_id)
+                self._handle_manually_deleted_label(
+                    label_id, roi_slices=_roi, old_roi_data=_snap)
                 self._last_navigated_label_id = None
 
     # ---------------------------------------------------------------
@@ -12078,6 +19676,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 "Finish or close Batch Refine first."
             )
             return
+        # A held result would be overwritten (its Reject then pastes the old
+        # region over the new one); an Add on screen owns the surface.
+        if (StagedOp.ADD in self.staged_kinds()
+                or getattr(self, "_interp_snapshot", None) is not None):
+            self._refuse_for_open_edit(
+                "interpolate", None,
+                self._interp_status_label.setText)
+            return
 
         from packages.epicycle_annotator.interpolation import (
             interpolate_label_all_orientations,
@@ -12126,8 +19732,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._refresh_merge_button_state()
             self._refresh_label_action_buttons_state()
             self._interp_label_id = selected_label
-            # Discard draw snapshot — interp snapshot now owns the undo point.
-            self._clear_draw_snapshot()
+            # The interp snapshot is the undo point for the preview.  The
+            # draw snapshot stays, so Clear Edits still works after a Reject
+            # (the hand-drawn slices survive it).  Clear Edits is grey while
+            # the preview is held.
+            _enable_if_alive(getattr(self, "_clear_edits_btn", None), False)
 
             total = interpolate_label_all_orientations(
                 shared_data, selected_label, edited
@@ -12225,11 +19834,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         # Notify controller so it can set tier → "curated" and recalculate QC
         cb = getattr(self, "_on_interpolation_accepted_cb", None)
-        if cb is not None:
+        if getattr(self, "_split_fragment_refine", False):
+            # A piece of a Reshape: the Accept all that follows is the one
+            # undo entry, and this region rides in it.
+            if undo_roi is not None and undo_snap is not None:
+                _frag_layers(self).append((undo_roi, undo_snap))
+        elif cb is not None:
             cb(label_id, roi_slices=undo_roi, old_roi_data=undo_snap)
 
         self._clear_draw_snapshot()
         self._restore_ready_to_draw_state()
+        # Hand Refine's Preview back (it was greyed while the interpolation
+        # was held), as the Refine accept / discard exits do.
+        self._refresh_refine_preview_gate()
 
         # Auto-advance to next triage label (matches split/smooth behavior).
         if self._is_auto_advance_enabled():
@@ -12266,13 +19883,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._interp_status_label.setText(
                 "ERROR: Label volume not found. Cannot reject."
             )
+            _enable_if_alive(getattr(self, "_clear_edits_btn", None), self._draw_snapshot is not None)
             self._interp_snapshot = None
+            self._interp_refine_mode = False
             self._refresh_merge_button_state()
             self._refresh_label_action_buttons_state()
             self._interp_roi = None
             self._interp_label_id = None
             self._accept_interp_btn.setEnabled(False)
             self._reject_interp_btn.setEnabled(False)
+            self._interp_refine_btn.setEnabled(False)
+            _iso_call(self, "_iso_end", "interp", restore=False)
             return
 
         if self._interp_snapshot is not None and self._interp_roi is not None:
@@ -12296,22 +19917,28 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._accept_interp_btn.setEnabled(False)
         self._reject_interp_btn.setEnabled(False)
         self._interp_refine_btn.setEnabled(False)
-        self._interp_status_label.setText("Interpolation rejected. Volume restored.")
-        self._clear_draw_snapshot()
+        self._interp_status_label.setText(
+            "Interpolation rejected. Your strokes are kept; Clear Edits removes them."
+        )
+        # The drawn slices are back in the volume, so Clear Edits is live
+        # again when a draw snapshot exists.
+        _enable_if_alive(getattr(self, "_clear_edits_btn", None), self._draw_snapshot is not None)
         self._restore_ready_to_draw_state()
+        self._refresh_refine_preview_gate()
 
         # FM6 fix: clear isolation ONLY if we came from refine-further
         # mode (where isolation was force-applied on entry).  Normal
         # Preview→Reject paths intentionally leave isolation as it was.
         if was_in_refine_mode:
+            # Refine Further greyed Interpolate; backing out hands it back
+            # (the Refine accept and discard paths do the same).
+            self._interpolate_btn.setEnabled(True)
+            self._refresh_refine_preview_gate()
             print(
-                "[INTERP-REJECT-ISO] firing _on_isolation_changed(set()) — "
-                "exiting refine-further mode, must clear forced isolation"
+                "[INTERP-REJECT-ISO] leaving refine-further mode, putting "
+                "the isolation back as it was"
             )
-            try:
-                self._on_isolation_changed(set())
-            except Exception as e:
-                print(f"[INTERP-REJECT-ISO] isolation clear raised: {e!r}")
+            _iso_call(self, "_iso_end", "interp")
 
     def _enter_interp_refine_mode(self) -> None:
         """Enter refine mode after interpolation preview.
@@ -12337,7 +19964,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             f"or Discard."
         )
 
-        # Keep label selected + isolated.
+        # Keep label selected + isolated.  Remember what was isolated, so
+        # Accept / Discard can leave it as the user had it.
+        self._iso_begin("interp", target=label_id)
         self._set_selected_label_all(label_id)
         self._on_isolation_changed({label_id})
 
@@ -12350,6 +19979,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         adv = self._get_advanced_features_widget()
         if adv is not None and hasattr(adv, "focus_tab"):
             adv.focus_tab("Refine")
+        # Before any Preview both Refine buttons would be grey and the
+        # handlers return early, leaving no way out: arm Discard (routed to
+        # the interpolation's own reject) and keep the Preview word plain.
+        self._update_smooth_ui(reject_enabled=True, preview_text="Preview")
 
     # ---------------------------------------------------------------
     # Refine layer helpers
@@ -12503,16 +20136,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
     def _remove_refine_layer(self) -> None:
         """Remove the Refine layer.  ``on_layer_removed`` auto-cleans subviewers."""
-        if self._refine_layer is not None:
-            try:
-                # Hide before removing — disconnects vispy visual from
-                # scene graph so no stale texture references remain.
-                self._refine_layer.visible = False
-                if self._refine_layer in self.viewer.layers:
-                    self.viewer.layers.remove(self._refine_layer)
-            except Exception:
-                pass
-            self._refine_layer = None
+        with _gc_batch(self):
+            if self._refine_layer is not None:
+                try:
+                    # Hide before removing — disconnects vispy visual from
+                    # scene graph so no stale texture references remain.
+                    self._refine_layer.visible = False
+                    if self._refine_layer in self.viewer.layers:
+                        self.viewer.layers.remove(self._refine_layer)
+                except Exception:
+                    pass
+                self._refine_layer = None
         self._refine_baseline = None
 
     def _refresh_refine_in_subviewers(self) -> None:
@@ -12558,8 +20192,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         volume.  Clearing the cache forces a fresh rebuild on the
         next ``_apply_multi_isolation_colormap`` call.
         """
+        # the auto-detect histogram (a pyqtgraph plot) goes with the session,
+        # as the Add one does (measured: Detect, Cancel, then napari's close
+        # aborted while it was alive); the next Detect builds a fresh one
+        try:
+            _rel = getattr(self._get_advanced_features_widget(),
+                           "release_detect_plot", None)
+            if _rel is not None:
+                _rel()
+        except Exception as exc:  # noqa: BLE001 - reset never raises
+            print(f"[RESHAPE] histogram release skipped: {exc!r}")
         self._split_snapshot = None
         self._split_roi = None
+        self._frag_undo_layers = []
         self._split_label_id = None
         self._split_running = False
         self._refresh_merge_button_state()
@@ -12582,7 +20227,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._detected_peaks = None
         self._auto_detect_active = False
         self._seed_id_base = 0
-        # Reshape R1: the guided session's own state.  The GUIDE LAYER is
+        # The guided session's own state.  The GUIDE LAYER is
         # deliberately NOT dropped here -- it survives across successive
         # splits in one sitting and is torn down on patch switch / run
         # switch / annotator close.
@@ -12606,11 +20251,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._reshape_found_seeds = None
         self._reshape_found_marker_ids = []
         self._reshape_found_marker_stats = {}
+        # A Find's list is on the panel (its status line follows the
+        # ticks while no preview is on screen).
+        self._reshape_find_listed = False
         # The ids the LAST Find wrote into the Refine layer, so the next
         # Find can take them out again (fix pass H2).  Session state --
         # it goes with the session, or the next object's first Find
         # would try to erase ids that belong to somebody else.
         self._materialised_ids = []
+        # The Find's guide-id -> painted-id map goes with those ids.
+        self._materialised_id_map = {}
         # ...and so is the parked-marker stash.  It holds ROI
         # coordinates, and the ROI belongs to THIS object: carrying it
         # into the next session would let a re-tick paint one object's
@@ -12633,6 +20283,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         layer to ``max + 1`` for the first seed.  Painting happens on the
         refine layer; the main volume is restored/merged on accept/reject.
         """
+        _st = _StepTimer("[RESHAPE-PERF] start")
         if self._split_running:
             self._update_split_ui(status_text="Split session already active.")
             return
@@ -12647,6 +20298,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._update_split_ui(
                 status_text="Finish or close Batch Refine before starting a split."
             )
+            return
+        # An Add on screen or a held interpolation result would be pasted
+        # over (or pasted back) by this edit's later Accept / Reject.
+        if (StagedOp.ADD in self.staged_kinds()
+                or getattr(self, "_interp_snapshot", None) is not None):
+            self._refuse_for_open_edit(
+                "reshape start", "Reshape",
+                lambda t: self._update_split_ui(status_text=t))
             return
 
         labels_name = self._active_labels_name
@@ -12663,6 +20322,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._update_split_ui(status_text="No shared label volume found.")
             return
 
+        _st.lap("checks_align")
         selected_label = self._get_selected_label()
         if selected_label <= 0:
             self._update_split_ui(status_text="Select an object to reshape.")
@@ -12677,7 +20337,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             )
             return
 
-        # --- Reshape R1: is this a GUIDED split? -------------
+        _st.lap("mask")
+        # --- Is this a GUIDED split? -------------------------
         # Decided here, once, so every branch below reads one flag.  This
         # is the last thing before the destructive steps, and it is after
         # every validation early-return -- so the lock below cannot be
@@ -12700,6 +20361,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._refresh_reshape_inputs()
             print("[RESHAPE] guided split armed - lock ON before the punch")
 
+        _st.lap("guided_lock")
         # 1. Snapshot for reject (full ROI from shared_data).
         #    The Reshape panel's "Search padding" is read HERE and nowhere
         #    else: the engine ignores its own margin= once a roi is passed,
@@ -12711,47 +20373,54 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         )
         print("[RESHAPE] search padding at Start = {} voxels".format(_padding))
 
+        _st.lap("snapshot")
         self._split_label_id = selected_label
         self._split_running = True
         self._refresh_merge_button_state()
         self._refresh_label_action_buttons_state()
         self._clear_draw_snapshot()
 
+        _st.lap("buttons")
         # 2. Create Refine layer with target label extracted.
         refine_layer = self._create_refine_layer(
             shared_data, selected_label, _precomputed_mask=label_mask
         )
 
+        _st.lap("refine_layer")
         # 3. Save refine baseline (ROI, for seed detection in watershed).
         self._refine_baseline = refine_layer.data[self._split_roi].copy()
 
+        _st.lap("baseline")
         # 4. Zero out target in shared volume (creates "hole").
         # Reuse the mask instead of recomputing shared_data == selected_label.
         shared_data[label_mask] = 0
 
+        _st.lap("hole")
         # 5. Hide main layer FIRST, then clear isolation state.
         #    Hiding first prevents the expensive full-volume 3D re-render
         #    that _on_isolation_changed(set()) would trigger when restoring
         #    all labels to visible.
         main_layer = self._layer_by_name(self.viewer.layers, labels_name)
         if isinstance(main_layer, Labels):
-            self._split_isolate_was_on = self._isolation_active
             self._split_main_visible = bool(getattr(main_layer, "visible", True))
+            # Record what is isolated (Accept and Cancel put it back), then
+            # clear it AFTER hiding -- no 3D render triggered.
+            _snap = self._iso_begin("reshape", target=selected_label)
+            self._split_isolate_was_on = _snap.mode != MODE_OFF
             main_layer.visible = False
-            # Clear isolation state after hiding — no 3D render triggered.
-            if self._isolation_active:
-                self._remove_isolation_proxy(restore_visibility=False)
-                self._isolation_active = False
-                self._propagate_show_selected_label(False)
+            self._iso_suspend()
 
+        _st.lap("iso_bracket")
         # 6. Refresh main subviewers (propagate the zeroed-out hole).
         self._sync_all_views_after_operation(roi=self._split_roi)
 
+        _st.lap("sync_views")
         # 7. Lock main labels layer (prevent accidental edits during split).
         if isinstance(main_layer, Labels):
             main_layer.editable = False
             main_layer.mode = "pan_zoom"
 
+        _st.lap("main_lock")
         # 8. Set refine layer active, paint mode, selected_label = seed ID.
         # Use navigator items for max label ID (fast path) to avoid two
         # full-volume np.max() scans.  Falls back to volume scan if needed.
@@ -12765,12 +20434,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # Setting paint here triggers sync_label_modes → subviewers get paint.
         refine_layer.mode = "paint"
 
+        _st.lap("activate")
         # 9. Auto-enable EDT overlay (highlights target on refine layer).
         # Safe to auto-enable: the overlay is hidden in the main 3D viewer
         # (visible=False) to avoid expensive MIP rendering, but visible in
         # the 2D subviewers where it's useful for seed placement.
         self._auto_enable_edt_for_split()
 
+        _st.lap("edt_overlay")
         # Restore active layer to Refine — adding the EDT overlay via
         # viewer.add_image() auto-selects it, and sync_active_layer
         # propagates that to subviewers.  Without this, painting targets
@@ -12826,6 +20497,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 preview_enabled=True,
                 status_text=self._reshape_ready_text(selected_label),
             )
+        _st.lap("panel")
+        _st.line(label=int(selected_label), guided=bool(self._reshape_active),
+                 roi="x".join(str(s.stop - s.start) for s in self._split_roi))
 
     def _next_seed(self) -> None:
         """Advance to the next seed ID for painting.
@@ -13138,9 +20812,83 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         then, and `_leave_reshape_review` returns at once, but the tick
         still has to lift a marker off the object or put it back.
         """
+        _on_screen = getattr(self, "_review_is_on_screen", None)
+        on_screen = bool(_on_screen()) if callable(_on_screen) else True
         self._leave_reshape_review(
             "Markers changed - press Preview to cut again.")
         self._sync_marker_parking()
+        # A Find's status line counts what is ticked, so it follows a
+        # tick -- unless a preview was just put away, whose own line
+        # ("Markers changed...") is the one to read.
+        if not on_screen and getattr(self, "_reshape_find_listed", False):
+            Curation3DAnnotator._render_find_status(self)
+
+    def _render_find_status(self, **extra) -> None:
+        """The status after a Find: "Object 7 - 9 markers found, 4 ticked".
+
+        Counted off the panel's list, so the ticked number is what is
+        ticked NOW -- the touching rule's unticked rows included.
+        """
+        from napari_epicycle.annotator import _reshape_text as RT
+
+        adv = self._get_advanced_features_widget()
+        checked = unticked = None
+        if adv is not None:
+            try:
+                checked = adv.get_checked_marker_ids()
+                unticked = adv.get_unticked_marker_ids()
+            except Exception:
+                checked = unticked = None
+        if checked is None:
+            n = len(getattr(self, "_split_painted_marker_ids", None) or [])
+            ticked = n
+        else:
+            n = len(checked) + len(unticked or [])
+            ticked = len(checked)
+        self._update_split_ui(
+            status_text=RT.STATUS_FOUND.format(
+                id=self._split_label_id, n=n, s=RT.plural(n), ticked=ticked),
+            **extra)
+
+    def _touching_rule_wanted(self, spec) -> bool:
+        """Should this Find / Preview measure the markers against the object?
+
+        Only for markers taken from LABELS -- another run of the patch, or
+        a mask file -- and only while the recipe still reads them as
+        labels (a found set already painted on the object is read back as
+        paint, and its ticks decide).  Hand-painted, shape and image
+        markers never are.
+        """
+        from napari_epicycle.annotator.advanced_features_widget import (
+            GUIDED_SEED_SOURCES,
+        )
+
+        if getattr(spec, "seeds", None) != "labels":
+            return False
+        return bool(
+            Curation3DAnnotator._marker_source_index(self)
+            in GUIDED_SEED_SOURCES)
+
+    def _touching_start_off(self, report):
+        """The rows a Find starts UNTICKED: ``{marker id: contact}``.
+
+        The verdicts are keyed by the guide's own label ids; a Find
+        paints its markers onto the object under new ids, so they are
+        carried over through the materialise's map.  ``None`` when the
+        report carries no verdicts (any source but a label mask).
+        """
+        contacts = dict(getattr(report, "contacts", None) or {})
+        if not contacts:
+            return None
+        id_map = dict(getattr(self, "_materialised_id_map", None) or {})
+        out = {}
+        for old, c in contacts.items():
+            if getattr(c, "keep", True):
+                continue
+            mid = int(id_map.get(int(old), int(old)))
+            out[mid] = {"inside": int(getattr(c, "inside", 0)),
+                        "object_voxels": int(getattr(c, "object_voxels", 0))}
+        return out
 
     def _marker_rows_from_refine(self) -> list:
         """Reconcile the marker list with what is PAINTED on the layer.
@@ -13618,6 +21366,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             max_existing = max(max_existing, int(np.max(shared_data)))
         if self._refine_baseline is not None:
             max_existing = max(max_existing, int(np.max(self._refine_baseline)))
+        # seeds become the cut's ids: never a removed (reserved) number
+        max_existing = max(max_existing,
+                           Curation3DAnnotator._fresh_label_floor(self))
         self._seed_id_base = max_existing + 1
 
         # Default threshold: 25th percentile of EDT values (keeps most peaks).
@@ -13760,7 +21511,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """Run seeded watershed on the Refine layer and show the result."""
         if not self._split_running or self._refine_baseline is None:
             return
-        # Reshape R1: a guided session takes the threaded engine path.
+        # A guided session takes the threaded engine path.
         # While `_reshape_active` is False NOTHING below changes.
         #
         # Belt and braces (2026-09-18): the pickers arm this as they move,
@@ -13845,6 +21596,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             image_roi=image_roi,
             method=method,
         )
+        # What the object held before the cut: the yardstick for how
+        # much of it the pieces still cover once smoothing has run.
+        object_now = self._refine_baseline == self._split_label_id
+        n_object = int(np.count_nonzero(object_now))
 
         # Apply result to the Refine layer (NOT shared_data).
         n_modified = apply_split_to_volume(
@@ -13854,21 +21609,60 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # Auto-smooth preview: if auto-smooth is enabled, smooth the split
         # fragments now so the preview shows the final result.
         smooth_msg = ""
+        # How much of the object the pieces cover before smoothing
+        # touches them; the warning is about the DROP from here.
+        covered_before = int(np.count_nonzero(
+            np.isin(refine_data[self._split_roi], new_ids) & object_now
+        ))
         adv = self._get_advanced_features_widget()
-        if (
-            adv is not None
-            and getattr(adv, "split_auto_smooth_cb", None) is not None
-            and adv.split_auto_smooth_cb.isChecked()
-        ):
+        # 0 = off, 1 = smooth the pieces, 2 = smooth and keep the object.
+        from napari_epicycle.annotator.advanced_features_widget import (
+            SMOOTH_MODE_KEEP as _SMOOTH_KEEP,
+            SMOOTH_MODE_OFF as _SMOOTH_OFF,
+            SMOOTH_MODE_PIECES as _SMOOTH_PIECES,
+        )
+        smooth_mode = _SMOOTH_OFF
+        if adv is not None:
+            if hasattr(adv, "get_split_smooth_mode"):
+                smooth_mode = int(adv.get_split_smooth_mode())
+            elif (
+                getattr(adv, "split_auto_smooth_cb", None) is not None
+                and adv.split_auto_smooth_cb.isChecked()
+            ):
+                smooth_mode = _SMOOTH_PIECES
+        if smooth_mode != _SMOOTH_OFF:
             sigma_z = adv.smooth_sigma_z_sb.value() if hasattr(adv, "smooth_sigma_z_sb") else 3.0
             sigma_xy = adv.smooth_sigma_xy_sb.value() if hasattr(adv, "smooth_sigma_xy_sb") else 1.5
             from packages.epicycle_annotator.smooth import smooth_split_fragments
             n_smooth, _smsg = smooth_split_fragments(
                 refine_data, self._split_roi, new_ids,
                 sigma_z=sigma_z, sigma_xy=sigma_xy,
+                keep_object=(smooth_mode == _SMOOTH_KEEP),
+                object_mask=object_now if smooth_mode == _SMOOTH_KEEP else None,
+                marker_labels=(
+                    np.where(np.isin(solve_roi, new_ids), solve_roi, 0)
+                    if smooth_mode == _SMOOTH_KEEP else None
+                ),
             )
             if n_smooth > 0:
                 smooth_msg = f" Smoothed {n_smooth} voxels."
+
+        # Smoothing can empty a piece, so count what is really in the
+        # volume now -- for the status line and for Accept.
+        roi_now = refine_data[self._split_roi]
+        present = {int(i) for i in np.unique(roi_now)}
+        new_ids = [int(i) for i in new_ids if int(i) in present]
+        if smooth_mode != _SMOOTH_OFF and n_object > 0:
+            covered_after = int(np.count_nonzero(
+                np.isin(roi_now, new_ids) & object_now
+            ))
+            lost = (covered_before - covered_after) / n_object
+            if lost > 0.05:
+                smooth_msg += (
+                    f" Only {round((1 - lost) * 100)}% of the object is kept - "
+                    f"turn smoothing off, choose 'Keep the object', or "
+                    f"use fewer markers."
+                )
 
         from napari_epicycle.annotator.advanced_features_widget import (
             WALLS_TOGGLE_MANUAL as _WALLS_TOGGLE_MANUAL,
@@ -13979,6 +21773,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 # Capture undo data before state reset.
                 undo_roi = self._split_roi
                 undo_snap = self._split_snapshot
+                # The fragment edits accepted along the way (oldest first):
+                # one Undo puts them back before the parent's state.
+                _layer_kw = (
+                    {"pre_layers": list(_frag_layers(self))}
+                    if _frag_layers(self) else {}
+                )
 
                 # U4 (2.7 B2).  A GUIDED cut taken through fragment
                 # refine used to be reported as a MANUAL split, so it
@@ -14026,6 +21826,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                                   sorted(_frag_commit["new_ids"])))
                     new_ids = list(_frag_commit["new_ids"])
 
+                # The isolation bracket outlives the reset below: take it
+                # into a local now, end it once the controller has rebuilt.
+                _iso_b = _iso_call(self, "_iso_take", "reshape")
+
                 # Clean up split state.
                 self._reset_split_state()
 
@@ -14064,6 +21868,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                             rcb(
                                 original_id, new_ids,
                                 roi_slices=undo_roi, old_roi_data=undo_snap,
+                                **_layer_kw,
                                 flags=_frag_commit["flags"],
                                 superseded=_frag_commit["superseded"],
                                 piece_stats=_frag_commit["piece_stats"],
@@ -14079,24 +21884,56 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     cb = getattr(self, "_on_label_split_cb", None)
                     if cb is not None:
                         cb(original_id, new_ids,
-                           roi_slices=undo_roi, old_roi_data=undo_snap)
+                           roi_slices=undo_roi, old_roi_data=undo_snap,
+                           **_layer_kw)
 
                 self._clear_draw_snapshot()
                 self._restore_ready_to_draw_state()
 
-                # Auto-advance.
+                # Put the isolation back: the pieces join what was isolated
+                # before Reshape.  Auto-advance isolates the next cell
+                # itself, so it only needs the bracket dropped.
+                _adv_on = self._is_auto_advance_enabled()
+                _had_b = _iso_b is not None
+                if _iso_b is not None:
+                    _sized = _iso_call(
+                        self, "_iso_pieces_by_size", new_ids, undo_roi,
+                        stats=(_frag_commit["piece_stats"]
+                               if _frag_commit is not None else None))
+                    _consumed, _created = _reshape_iso_sets(
+                        original_id,
+                        new_ids if _sized is None else _sized,
+                        _frag_commit)
+                    if not _adv_on:
+                        self._iso_end(
+                            "reshape", _consumed, _created,
+                            restore=True, bracket=_iso_b)
+                        _iso_b = None
+
+                # Auto-advance.  With a bracket still open it ends after the
+                # advance: dropped when a next row took over, restored
+                # exactly when there was none (else the main view stays
+                # blank).
+                _advanced = False
+                _before = _iso_mark(self)
                 nav = getattr(self, "_navigator_widget", None)
                 if nav is not None:
                     try:
-                        if restore_isolate:
+                        if restore_isolate and (not _had_b or _adv_on):
                             nav._isolate_cb.blockSignals(True)
                             nav._isolate_cb.setChecked(True)
                             nav._isolate_cb.blockSignals(False)
                         if self._is_auto_advance_enabled():
-                            if not nav.select_next_triage():
+                            _advanced = _advance_clearing_selection(nav)
+                            if not _advanced and _iso_b is None:
                                 self._on_isolation_changed(set())
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[ISO-BRACKET] advance failed: {exc!r}", flush=True)
+                if _iso_b is not None:
+                    self._iso_end(
+                        "reshape", _consumed, _created,
+                        restore=_restore_after_advance(self, _advanced, _before),
+                        bracket=_iso_b)
                 return
 
             # --- Normal split Accept path ---
@@ -14147,7 +21984,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # so it is what decides.
             if (getattr(self, "_reshape_active", False)
                     and getattr(self, "_reshape_result", None) is not None):
-                # Reshape R1: the SAME safe-write, expressed in the engine's
+                # Guided Split: the SAME safe-write, expressed in the engine's
                 # explicit `allowed_ids` form -- `(volume == 0) | (volume ==
                 # target)` -- so it does not silently depend on the
                 # hole-punch that precedes it.  Returns the
@@ -14162,7 +21999,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     # so returning with the lock still on would strand the whole
                     # of Step 3 with no button left to press (AUDIT 2026-09-09).
                     self._restore_reshape_target("accept found no result")
+                    # The cell is back as it was: put the isolation back as
+                    # it was too (the teardown below only drops a bracket).
+                    _iso_nb = _iso_call(self, "_iso_take", "reshape")
                     self._teardown_reshape_for_switch()
+                    _iso_call(self, "_iso_end", "reshape", bracket=_iso_nb)
                     self._update_split_ui(
                         split_active=False, start_enabled=True,
                         accept_enabled=False, reject_enabled=False,
@@ -14182,10 +22023,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 committed = True
 
             # 2. Remove EDT overlay + Refine layer (fast layer cleanup).
-            #    Process Qt events after removal so vispy completes texture
-            #    (processEvents runs inside each removal method automatically.)
-            self._remove_edt_overlay()
-            self._remove_refine_layer()
+            #    (the removals share one garbage collection; no event-loop turn
+            #    runs between them.)
+            with _gc_batch(self):
+                self._remove_edt_overlay()
+                self._remove_refine_layer()
 
             # 3. Prepare main layer (unlock) + sync views.
             main_layer = self._layer_by_name(self.viewer.layers, labels_name)
@@ -14206,6 +22048,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             #    multi-label cache in the skip predicate.
             _single_iso = bool(getattr(self, "_isolation_proxy_active", False))
             _multi_iso = getattr(self, "_isolation_label_set", None) is not None
+            # Start took the isolation away, so the live flags read "off";
+            # the bracket remembers what the user had.
+            _open_b = _iso_call(self, "_iso_bracket_open", "reshape")
+            if _open_b is not None:
+                _single_iso = _open_b.snapshot.mode == MODE_SINGLE
+                _multi_iso = _open_b.snapshot.mode == MODE_MULTI
             _skip_3d = (
                 self._is_auto_advance_enabled()
                 and restore_isolate
@@ -14226,12 +22074,18 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             if new_ids:
                 result_label = new_ids[0]
             elif shared_data is not None:
-                result_label = int(np.max(shared_data)) + 1
+                result_label = max(
+                    int(np.max(shared_data)) + 1,
+                    Curation3DAnnotator._fresh_label_floor(self) + 1)
             else:
-                result_label = max(1, original_id + 1)
+                result_label = max(
+                    1, original_id + 1,
+                    Curation3DAnnotator._fresh_label_floor(self) + 1)
             self._set_selected_label_all(result_label)
 
             # 6. Reset state (before callbacks so navigator methods see clean state).
+            #    The isolation bracket is taken first: it ends after step 7.
+            _iso_b = _iso_call(self, "_iso_take", "reshape")
             self._reset_split_state()
 
             self._update_split_ui(
@@ -14258,7 +22112,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # 7. Fire callback to controller (rebuilds navigator table with
             #    new split labels, updates QC DataFrame).
             if _reshape_commit is not None:
-                # Reshape R1: its OWN callback, because a guided commit can
+                # Guided Split: its OWN callback, because a guided commit can
                 # leave the original id ALIVE (an unticked piece went back to
                 # the cell, or the arbiter kept it whole) -- the split
                 # callback always supersedes, which would be a lie.
@@ -14287,21 +22141,53 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._clear_draw_snapshot()
             self._restore_ready_to_draw_state()
 
+            # 7b. Put the isolation back (the main layer is still hidden):
+            #     the new pieces join what was isolated before Reshape.
+            #     Auto-advance isolates the next cell itself, so it only
+            #     needs the bracket dropped.
+            #     With a bracket still open after this step, it ends after
+            #     the advance (see step 8).
+            _adv_on = self._is_auto_advance_enabled()
+            _had_b = _iso_b is not None
+            if _iso_b is not None:
+                _sized = _iso_call(self, "_iso_pieces_by_size",
+                                   new_ids, undo_roi)
+                _consumed, _created = _reshape_iso_sets(
+                    original_id,
+                    new_ids if _sized is None else _sized,
+                    _reshape_commit)
+                if not _adv_on:
+                    self._iso_end(
+                        "reshape", _consumed, _created,
+                        restore=True, bracket=_iso_b)
+                    _iso_b = None
+
             # 8. Post-split auto-advance: restore isolate checkbox state and
             #    advance to the next triage label (review/bad/garbage).
+            #    The bracket is dropped when a next row took over; when
+            #    there is none it is restored exactly (else the main view
+            #    stays blank).
+            _advanced = False
+            _before = _iso_mark(self)
             nav = getattr(self, "_navigator_widget", None)
             if nav is not None:
                 try:
-                    if restore_isolate:
+                    if restore_isolate and (not _had_b or _adv_on):
                         nav._isolate_cb.blockSignals(True)
                         nav._isolate_cb.setChecked(True)
                         nav._isolate_cb.blockSignals(False)
                     if self._is_auto_advance_enabled():
-                        if not nav.select_next_triage():
+                        _advanced = _advance_clearing_selection(nav)
+                        if not _advanced and _iso_b is None:
                             # No triage labels remain — clear isolation.
                             self._on_isolation_changed(set())
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[ISO-BRACKET] advance failed: {exc!r}", flush=True)
+            if _iso_b is not None:
+                self._iso_end(
+                    "reshape", _consumed, _created,
+                    restore=_restore_after_advance(self, _advanced, _before),
+                    bracket=_iso_b)
 
             # 9. NOW make the main layer visible — deferred to this point so
             #    the isolation colormap from step 8 is already applied.  This
@@ -14310,7 +22196,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 main_layer.visible = True
                 _heal_render(self, main_layer, tag="split-accept")
 
-            # 10. Reshape R1: release the Step-3 lock LAST, once the target is
+            # 10. Guided Split: release the Step-3 lock LAST, once the target is
             #     written and the surface is whole again.  Idempotent, so the
             #     legacy path's call is a no-op.
             self._fire_reshape_lock(False)
@@ -14324,7 +22210,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 )
 
         # ====================================================================== #
-        # Reshape R1 -- guided Split
+        # Guided Split
         #
         # The whole mode rides the EXISTING split lifecycle: `_start_split`
         # punches the hole and builds the Refine layer, and the Refine layer IS
@@ -14365,6 +22251,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 self._reshape_found_seeds = None
                 self._reshape_found_marker_ids = []
                 self._reshape_found_marker_stats = {}
+                self._reshape_find_listed = False
                 self._refine_pre_preview = None
                 print("[MARKERS] Accept committed - marker ticks, the "
                       "marker layer and the expected-count tick cleared")
@@ -14433,6 +22320,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         return ctx
 
     def _reshape_ready_text(self, label_id) -> str:
+        from napari_epicycle.annotator import _reshape_text as RT
+
         adv = self._get_advanced_features_widget()
         needs = bool(
             adv is not None
@@ -14440,14 +22329,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             and adv.guided_needs_guide_mask()
         )
         if needs and self._reshape_guide is None:
-            return (
-                "Object {} is ready. Load a mask to take the markers from, "
-                "then press Preview.".format(label_id)
-            )
-        return (
-            "Object {} is ready. Press Preview - the window stays alive while "
-            "it thinks.".format(label_id)
-        )
+            return RT.STATUS_READY_LOAD_MASK.format(id=label_id)
+        return RT.STATUS_READY_PREVIEW.format(id=label_id)
 
     # ------------------------------------------------------------- inputs --
     def _refresh_reshape_inputs(self) -> None:
@@ -14463,7 +22346,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 if isinstance(layer, Image):
                     names.append(layer.name)
             try:
-                adv.set_wall_channels(names)
+                adv.set_wall_channels(
+                    names, self._channel_memory(
+                        adv, "split_wall_channel_combo",
+                        "_last_wall_channel"))
             except Exception:
                 pass
         # The MARKER channel is the fifth combo and follows the same
@@ -14478,9 +22364,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 from napari_epicycle.annotator import reshape_guide as RG
 
                 ctx = self._reshape_context()
+                # The Default run's context says run_id=None, and None
+                # excludes nothing -- the patch's OWN run would be offered
+                # as "another run".  The Add tab's picker does the same.
                 sources = RG.list_guide_sources(
                     ctx["workspace"], ctx["patch_name"],
-                    exclude_run_id=ctx.get("run_id"),
+                    exclude_run_id=ctx.get("run_id") or RG._DEFAULT_RUN_ID,
                 ) if ctx["workspace"] and ctx["patch_name"] else []
                 adv.set_guide_sources(sources)
             except Exception as exc:  # noqa: BLE001
@@ -14567,9 +22456,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._reshape_guide_path = str(path)
         adv = self._get_advanced_features_widget()
         if adv is not None:
+            from napari_epicycle.annotator import _reshape_text as RT
+
             adv.update_split_guided_ui(
-                guide_note="Chosen: {}. Press Load mask.".format(
-                    _Path(path).name)
+                guide_note=RT.GUIDE_NOTE_CHOSEN.format(
+                    name=_Path(path).name),
+                guide_note_kind=RT.GUIDE_NOTE_INFO,
             )
 
     def _on_reshape_guide_load(self) -> None:
@@ -14581,6 +22473,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         within roughly 100 ms).  Only the napari layer add happens here, because only
         that has to.
         """
+        from napari_epicycle.annotator import _reshape_text as RT
         from napari_epicycle.annotator import reshape_guide as RG
         from napari_epicycle.annotator.advanced_features_widget import (
             SEEDS_FROM_EXTERNAL_MASK,
@@ -14596,18 +22489,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             path = self._reshape_guide_path
             if not path:
                 adv.update_split_guided_ui(
-                    guide_note="Press Browse first, then Load mask.")
+                    guide_note="Press Browse first, then Load mask.",
+                    guide_note_kind=RT.GUIDE_NOTE_WARN)
                 return
             src = RG.guide_source_for_file(path)
         else:
             src = adv.selected_guide_source()
             if src is None:
+                # This card has no Browse button: name the choice that has.
                 adv.update_split_guided_ui(
-                    guide_note=(
-                        "No other run of this patch has labels to trust. Use "
-                        "Browse to pick a mask file instead."
-                    )
-                )
+                    guide_note=RT.NO_RUN_NOTE,
+                    guide_note_kind=RT.GUIDE_NOTE_WARN)
                 return
             path = getattr(src, "path", "")
         run_id = getattr(src, "run_id", "") or ""
@@ -14616,7 +22508,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         ctx = self._reshape_context()
         main = self._layer_by_name(self.viewer.layers, self._active_labels_name)
         if main is None:
-            adv.update_split_guided_ui(guide_note="No labels are loaded.")
+            adv.update_split_guided_ui(guide_note="No labels are loaded.",
+                                       guide_note_kind=RT.GUIDE_NOTE_WARN)
             return
 
         self._guide_pending = {
@@ -14625,7 +22518,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             "t0": _time.perf_counter(),
         }
         adv.update_split_guided_ui(busy=True, busy_progress=(0, 0),
-                                   guide_note="Reading the mask...")
+                                   guide_note=RT.GUIDE_NOTE_READING,
+                                   guide_note_kind=RT.GUIDE_NOTE_INFO)
 
         from qtpy.QtCore import QThread
 
@@ -14651,6 +22545,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             adv.update_split_guided_ui(
                 busy=False,
                 guide_note="That mask could not be read: {}".format(exc),
+                guide_note_kind=RT.GUIDE_NOTE_WARN,
             )
             print("[RESHAPE] guide read FAILED to start: {!r}".format(exc))
 
@@ -14704,9 +22599,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._guide_pending = None
         adv = self._get_advanced_features_widget()
         if adv is not None:
+            from napari_epicycle.annotator import _reshape_text as RT
+
             adv.update_split_guided_ui(
                 busy=False, guide_loaded=False,
                 guide_note=str(message).splitlines()[0],
+                guide_note_kind=RT.GUIDE_NOTE_WARN,
             )
         print("[RESHAPE] guide refused: {}".format(
             str(message).splitlines()[0]))
@@ -14739,16 +22637,30 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             pending["path"]).name
         name = RG.guide_layer_name(pending["patch"], pending["src"])
         self._add_guide_layer(guide, name)
+        from napari_epicycle.annotator import _reshape_text as RT
+
         n = RG.seed_count(guide)
         note = " ".join(notes or [])
+        # Information in grey -- unless the mask had to be matched to a
+        # downsampled session, which can lose a small nucleus: amber.
+        caution = any(RG.guide_note_is_caution(t) for t in (notes or []))
         if adv is not None:
             adv.update_split_guided_ui(
                 busy=False, guide_loaded=True,
-                guide_note=(
-                    "{} - {:,} labels in the mask. {}".format(
-                        pending["display"], n, note)
-                ).strip(),
+                guide_note=RT.GUIDE_NOTE_LOADED.format(
+                    display=pending["display"], n=n, notes=note).strip(),
+                guide_note_kind=(RT.GUIDE_NOTE_WARN if caution
+                                 else RT.GUIDE_NOTE_INFO),
             )
+        _on_screen = getattr(self, "_review_is_on_screen", None)
+        if (getattr(self, "_split_running", False)
+                and getattr(self, "_split_label_id", None) is not None
+                and not (callable(_on_screen) and _on_screen())):
+            # The ready line asked for a mask; it is here now.  Not while
+            # a preview is up: its line is the one about the cut.
+            self._update_split_ui(
+                status_text=RT.STATUS_MASK_LOADED.format(
+                    id=self._split_label_id))
         print(
             "[RESHAPE-PERF] guide load wall={:.0f}ms labels={} bytes={} "
             "notes={}".format(
@@ -14757,7 +22669,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         )
 
     def _add_temp_layer(self, key, array, *, kind="labels", name=None,
-                        translate=None, scale=None, units=None):
+                        translate=None, scale=None, units=None,
+                        image_kw=None):
         """Add ONE unmanaged, read-only ``guide_``-prefixed layer under *key*.
 
         The registry that replaces the single ``_reshape_guide_layer``
@@ -14813,9 +22726,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 continue                       # nothing left to drop
             try:
                 if kind == "image":
-                    layer = Image(
-                        array, name=name, opacity=0.5, colormap="magma",
-                        **attempt)
+                    # ``image_kw``: an Image layer's own look (opacity,
+                    # colormap, blending, contrast limits, built hidden)
+                    look = dict(opacity=0.5, colormap="magma")
+                    look.update(image_kw or {})
+                    layer = Image(array, name=name, **look, **attempt)
                 else:
                     layer = Labels(array, name=name, opacity=0.45, **attempt)
                 break
@@ -14880,6 +22795,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         registry[key] = layer
         if key == "mask":
             self._reshape_guide_layer = layer
+        if kind == "image" and image_kw and image_kw.get("visible") is False:
+            # built hidden, its look set, then shown
+            try:
+                layer.visible = True
+            except Exception:  # noqa: BLE001
+                pass
         def _placed(attr):
             """The layer's own placement, for the log -- and never a
             reason for the add to fail.
@@ -14927,6 +22848,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if key == "mask":
             layer = layer or getattr(self, "_reshape_guide_layer", None)
             self._reshape_guide_layer = None
+        if key == "add_walls":
+            # every exit of the walls slice comes through here: it stops
+            # following the XY view first
+            unfollow = getattr(self, "_add_walls_unfollow", None)
+            if unfollow is not None:
+                unfollow()
         if layer is None:
             return
         sm = getattr(self, "sync_manager", None)
@@ -14938,27 +22865,29 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         try:
             layer.visible = False
             if layer in self.viewer.layers:
-                self.viewer.layers.remove(layer)
+                with _gc_batch(self):
+                    self.viewer.layers.remove(layer)
         except Exception:
             pass
         # If it was the active layer, hand focus back to the layer the
         # user is actually curating -- otherwise the next paint has no
         # target.
-        try:
-            main = self._layer_by_name(
-                self.viewer.layers, self._active_labels_name
-            )
-            if main is not None and self.viewer.layers.selection.active is None:
-                self.viewer.layers.selection.active = main
-        except Exception:
-            pass
+        _refocus_main_layer(self)
         print("[RESHAPE] temp layer removed key={}".format(key))
 
     def _remove_all_temp_layers(self) -> None:
         """Every temporary layer, in one call.  Idempotent."""
-        for key in list(getattr(self, "_temp_guide_layers", {}) or {}):
-            self._remove_temp_layer(key)
-        self._remove_temp_layer("mask")
+        with _gc_batch(self):
+            for key in list(getattr(self, "_temp_guide_layers", {}) or {}):
+                self._remove_temp_layer(key)
+            self._remove_temp_layer("mask")
+        # the Add page's outline layer went with them; its side copies too
+        try:
+            self._add_drop_outline_side()
+        except Exception:  # noqa: BLE001
+            pass
+        self._add_outline_layer = None
+        self._add_outline_layer_key = None
 
     # ------------------------------------------------------------------ #
     # Brick U3 -- "Show what the tool sees"
@@ -15442,7 +23371,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             if not wanted or not seed_layer.any():
                 if keep is not None and self._split_painted_marker_ids:
                     # They HAVE markers; they unticked them all.  The
-                    # "paint one first" line would be a lie.
+                    # "paint one first" line would be a lie.  Unless the
+                    # touching rule did the unticking: then the user
+                    # unticked nothing, and "Find again" would loop.
+                    if not wanted and _only_touching_unticked(adv):
+                        from napari_epicycle.annotator import (
+                            _reshape_text as RT,
+                        )
+
+                        return None, RT.STATUS_TICK_A_TOUCHING, None
                     return (
                         None,
                         "You unticked every marker - tick at least one, "
@@ -15534,11 +23471,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 }
                 print(
                     "[COUNT-DIAG] recipe target_count={} refine={} "
-                    "guided_now={} seeds={} walls={} min_size={} arbiter={}"
+                    "guided_now={} seeds={} walls={} min_size={} arbiter={} "
+                    "wall_channel={!r} seed_channel={!r}"
                     .format(
                         p["target_count"], list(refine),
                         self._is_guided_now(), seeds_kind, walls_kind,
                         p["min_size"], arbiter,
+                        p.get("wall_channel"), p.get("seed_channel"),
                     )
                 )
             except Exception as exc:  # noqa: BLE001
@@ -15574,26 +23513,75 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         except Exception:
             return 15
 
+    def _iso_pieces_by_size(self, new_ids, roi, stats=None):
+        """*new_ids* as they are in the written volume, biggest first.
+
+        An id with no voxels is left out, so the list is empty when every id
+        is empty.  When the volume cannot be measured the ids come back in the
+        order given.  *stats* are rows (``id``, ``voxels``) the caller has
+        already measured from the written volume; they save a second pass.
+        """
+        ids = [int(i) for i in (new_ids or [])]
+        try:
+            rows = (self._live_piece_stats(ids, roi) if stats is None
+                    else stats)
+            if not rows and (roi is None or self.sync_manager.shared_labels
+                             .get(self._active_labels_name) is None):
+                return ids
+            counts = {int(r["id"]): int(r["voxels"]) for r in rows}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ISO-BRACKET] piece sizes unavailable: {exc!r}",
+                  flush=True)
+            return ids
+        ordered = biggest_first(ids, counts)
+        if ids and not ordered:
+            print("[ISO-BRACKET] every created id is empty - nothing new "
+                  "to isolate", flush=True)
+        print("[ISO-BRACKET] created ids={}".format(
+            [(i, counts[i]) for i in ordered]), flush=True)
+        return list(ordered)
+
+    def _reshape_pieces_cap(self) -> int:
+        """The "Pieces kept in view after Accept" knob.
+
+        Read at Accept time.  Anything unreadable falls back to the default.
+        """
+        adv = self._get_advanced_features_widget()
+        if adv is None or not hasattr(adv, "get_split_params"):
+            return DEFAULT_PIECES_CAP
+        try:
+            return max(1, int(adv.get_split_params().get(
+                "pieces_cap", DEFAULT_PIECES_CAP)))
+        except Exception:
+            return DEFAULT_PIECES_CAP
+
     def _signal_sender(self):
-        """The QObject whose signal we are handling, or None.
+        """The worker / thread whose signal we are handling, or None.
 
         A seam, because the stale-finish gates need the token of the
-        FINISHING worker and a test drives those handlers directly.
-        Qt sets ``sender()`` correctly for a queued connection, which
-        is exactly the late-result case the token exists for.
+        FINISHING worker and a test drives those handlers directly.  Read
+        from the tag of the slot ``_from_sender`` wired, NEVER from Qt's
+        ``sender()``: for a Python slot that is one process-wide pointer
+        a worker thread writes back on its way out (see ``_from_sender``),
+        so it can name a stranger or a deleted object.
         """
-        try:
-            return self.sender()
-        except Exception:
-            return None
+        tag = getattr(self, "_signal_from", None)
+        return None if tag is None else tag[0]()
 
     def _result_token(self):
         """The launch token carried by the worker that just finished.
 
-        ``None`` when there is no sender (outside Qt); the gate then
-        abstains on the token leg and the other three guards stand.
+        ``None`` outside a wired slot; the gate then abstains on the token
+        leg and the other guards stand.  A sender gone by the time its slot
+        runs still answers with the token it was wired with.
         """
-        return getattr(self._signal_sender(), "_epicycle_token", None)
+        sender = self._signal_sender()
+        if sender is not None:
+            return getattr(sender, "_epicycle_token", None)
+        tag = getattr(self, "_signal_from", None)
+        if tag is not None and tag[0]() is None:
+            return tag[1]
+        return None
 
     def _reshape_labels_for_engine(self):
         """The FULL-VOLUME labels array both the Find and the Preview use.
@@ -15646,6 +23634,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # becomes a silent no-op (A-H2).
         self._leave_reshape_review(
             "New markers - press Preview to cut again.")
+        self._reshape_find_listed = False
 
         spec, images_or_reason, seed_layer = self._reshape_recipe(
             for_find=True)
@@ -15711,6 +23700,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 labels_for_engine, images, spec,
                 target_id=self._split_label_id, roi=roi,
                 seed_layer=seed_layer, spacing=tuple(ctx["spacing"]),
+                touching_rule=Curation3DAnnotator._touching_rule_wanted(
+                    self, spec),
             )
             # THE token has to travel with the worker.  Reading it back
             # off `self` at finish time compares the launch token with
@@ -15719,9 +23710,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._seed_find_worker.moveToThread(self._seed_find_thread)
             self._seed_find_thread.started.connect(
                 self._seed_find_worker.run)
-            self._seed_find_worker.finished.connect(
-                self._on_seed_find_finished)
-            self._seed_find_worker.error.connect(self._on_seed_find_error)
+            self._seed_find_worker.finished.connect(_from_sender(
+                self, self._seed_find_worker, self._on_seed_find_finished))
+            self._seed_find_worker.error.connect(_from_sender(
+                self, self._seed_find_worker, self._on_seed_find_error))
             self._seed_find_thread.start()
             print(
                 "[RESHAPE-FIND] worker started token={} target={} "
@@ -15776,6 +23768,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._reshape_found_seeds = None
         self._reshape_found_marker_ids = []
         self._reshape_found_marker_stats = {}
+        self._reshape_find_listed = False
         print("[RESHAPE-FIND] markers invalidated - layer removed")
 
     def _seed_find_is_stale(self, result_token=None) -> bool:
@@ -15935,6 +23928,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         if status != "ok":
             self._remove_temp_layer("markers")
+            self._reshape_find_listed = False
             if adv is not None:
                 adv.update_split_ui_state(
                     marker_ids=[],
@@ -16014,10 +24008,20 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # Belt and braces: a `guide_markers` layer from a session
             # that pre-dates U1b must not outlive its list.
             self._remove_temp_layer("markers")
+        # Markers taken from labels: the ones that only touch the object
+        # start unticked -- and the parking below lifts them off it,
+        # exactly as an untick by hand does.
+        # Called through the class: the helpers are new, and every
+        # harness that drives this handler binds its methods by name.
+        start_off = Curation3DAnnotator._touching_start_off(self, report)
+        if start_off is not None:
+            print("[RESHAPE-FIND] {} marker(s) start unticked as touching: "
+                  "{}".format(len(start_off), sorted(start_off)))
         if adv is not None:
             adv.update_split_ui_state(
                 marker_ids=marker_ids, marker_stats=marker_stats,
-                marker_preserve_ids=preserve_ids)
+                marker_preserve_ids=preserve_ids,
+                marker_start_off=start_off)
             # H2, and the reason it is here on the SUCCESS path too: the
             # rows have been replaced wholesale, and only the ids named
             # in `preserve_ids` keep an OFF tick.  Anything parked that
@@ -16025,12 +24029,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # released it; anything re-ticked by the repopulate has to
             # come back on the object to match its own tick.
             self._sync_marker_parking()
-        self._update_split_ui(
+        self._reshape_find_listed = True
+        Curation3DAnnotator._render_find_status(
+            self,
             preview_enabled=True, accept_enabled=False, reject_enabled=True,
             reject_text="Discard",
-            status_text="Object {} - {} marker{} found, {} ticked".format(
-                self._split_label_id, len(marker_ids),
-                "" if len(marker_ids) == 1 else "s", len(marker_ids)),
         )
         if adv is not None and hasattr(adv, "_focus_panel_stage"):
             try:
@@ -16190,6 +24193,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """
         seeds = getattr(report, "seeds", None)
         self._materialise_ok = False
+        # The report's id -> the id painted on the object, so a verdict
+        # keyed by the report's ids can follow its marker.
+        self._materialised_id_map = {}
         if (seeds is None or self._refine_layer is None
                 or self._split_roi is None):
             return [int(m["id"]) for m in markers], {}
@@ -16217,6 +24223,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             int(np.max(self._refine_layer.data)),
             shared_max,
             max(self._split_painted_marker_ids or [0]),
+            # the markers become the cut's ids: never a removed number
+            Curation3DAnnotator._fresh_label_floor(self),
         ) + 1
         stats_by_old = {
             int(m["id"]): {
@@ -16234,6 +24242,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             nid = base + k
             roi_data[mask] = nid
             new_ids.append(nid)
+            self._materialised_id_map[int(old)] = int(nid)
             if old in stats_by_old:
                 new_stats[nid] = stats_by_old[old]
         # ADDITIVE: whatever was already painted stays painted and stays
@@ -16292,6 +24301,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """Launch the engine on a QThread.  The GUI stays alive."""
         if getattr(self, "_reshape_running", False):
             return
+        _st = _StepTimer("[RESHAPE-PERF] preview setup")
         adv = self._get_advanced_features_widget()
         if getattr(self, "_seed_find_running", False):
             # The mirror of the Find's own refusal.  Cutting while the
@@ -16309,6 +24319,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # than the images mapping -- the recipe cannot be built, and the user
         # is told what to do about it.
         spec, images_or_reason, seed_layer = self._reshape_recipe()
+        _st.lap("recipe")
         if spec is None:
             if adv is not None:
                 # A refusal is an ANSWER (inv. 6), so it is shown as one:
@@ -16325,6 +24336,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         roi = self._split_roi
         labels_for_engine = self._reshape_labels_for_engine()
+        _st.lap("labels")
         if labels_for_engine is None or roi is None:
             self._update_split_ui(
                 status_text=(
@@ -16336,8 +24348,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return
 
         # The cherry-pick: None means no Find has happened (the engine
-        # finds them itself and keeps them all); [] means the user
-        # unticked every one, which is a REFUSAL, not an unseeded cut.
+        # finds them itself; for markers taken from labels the worker
+        # leaves the touching ones out); [] means every row is unticked,
+        # which is a REFUSAL, not an unseeded cut.
         keep_seed_ids = None
         if adv is not None and hasattr(adv, "get_checked_marker_ids"):
             try:
@@ -16356,18 +24369,27 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                   "seed array, so keep_seed_ids is not sent")
             keep_seed_ids = None
         if keep_seed_ids is not None and not keep_seed_ids:
-            adv.update_split_ui_state(
-                marker_note=(
-                    "You unticked every marker - tick at least one, or "
-                    "Find again."
-                )
-            )
+            n_touching = _only_touching_unticked(adv)
+            if n_touching:
+                # The touching rule unticked them all, not the user: the
+                # count line keeps saying so, and the status says what
+                # to do -- "Find again" would bring the same list back.
+                from napari_epicycle.annotator import _reshape_text as RT
+
+                note = RT.none_kept_line(n_touching)
+                status = RT.STATUS_TICK_A_TOUCHING
+            else:
+                note = ("You unticked every marker - tick at least one, or "
+                        "Find again.")
+                status = "Tick at least one marker first."
+            adv.update_split_ui_state(marker_note=note)
             self._update_split_ui(
                 preview_enabled=True, accept_enabled=False,
                 reject_enabled=True,
-                status_text="Tick at least one marker first.",
+                status_text=status,
             )
-            print("[RESHAPE] preview refused - every marker unticked")
+            print("[RESHAPE] preview refused - every marker unticked "
+                  "(touching rule: {})".format(bool(n_touching)))
             return
 
         # THE SNAP-BACK'S SOURCE.  The guided path had
@@ -16421,9 +24443,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # being replaced, so it comes off while the solve runs.  The
         # LAYER only -- `_walls_wanted` survives, so a result that lands
         # with the box still wanted rebuilds it.
+        _st.lap("markers_snapshot")
         if "walls" in (getattr(self, "_temp_guide_layers", {}) or {}):
             self._remove_temp_layer("walls")
             print("[WALLS] removed guide_walls - a new cut is being solved")
+        _st.lap("walls_off")
         self._update_split_ui(
             preview_enabled=False, accept_enabled=False, reject_enabled=True,
             reject_text="Discard", review_active=False,
@@ -16435,6 +24459,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         from qtpy.QtCore import QThread
 
         from napari_epicycle.annotator.reshape_worker import ReshapeWorker
+        _st.lap("panel_lock")
 
         try:
             self._reshape_thread = QThread()
@@ -16444,6 +24469,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 target_id=self._split_label_id, roi=roi,
                 seed_layer=seed_layer, spacing=tuple(ctx["spacing"]),
                 keep_seed_ids=keep_seed_ids,
+                touching_rule=bool(keep_seed_ids is None
+                                   and Curation3DAnnotator._touching_rule_wanted(
+                                       self, spec)),
             )
             # Same tautology, same cure (the solve's was pre-existing).
             self._reshape_worker._epicycle_token = token
@@ -16451,8 +24479,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._reshape_thread.started.connect(self._reshape_worker.run)
             self._reshape_worker.progress.connect(self._on_reshape_progress)
             self._reshape_worker.message.connect(self._on_reshape_message)
-            self._reshape_worker.finished.connect(self._on_reshape_finished)
-            self._reshape_worker.error.connect(self._on_reshape_error)
+            self._reshape_worker.finished.connect(_from_sender(
+                self, self._reshape_worker, self._on_reshape_finished))
+            self._reshape_worker.error.connect(_from_sender(
+                self, self._reshape_worker, self._on_reshape_error))
             self._reshape_thread.start()
             print(
                 "[RESHAPE] worker started token={} target={} seeds={} "
@@ -16460,6 +24490,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     token, self._split_label_id, spec.seeds, spec.walls,
                     spec.solver, spec.arbiter)
             )
+            _st.lap("launch")
+            _st.line(target=self._split_label_id)
         except Exception as exc:  # noqa: BLE001 - never strand a locked surface
             self._reshape_running = False
             self._reshape_thread = None
@@ -16966,9 +24998,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         amber block are `coverage_percent` and its complement, so the two
         can never round apart.
         """
+        from napari_epicycle.annotator import _reshape_text as RT
         from packages.epicycle_annotator.reshape import coverage_percent
 
-        n_markers = len(self._split_painted_marker_ids or [])
+        # What the engine actually cut with: a parked marker, or one the
+        # touching rule left out, is not one of them.
+        n_markers = getattr(result, "n_seeds", None)
+        if n_markers is None:
+            n_markers = len(self._split_painted_marker_ids or [])
+        n_markers = int(n_markers)
         if n_pieces <= 1:
             # "0 piece" is not a sentence, and zero pieces IS reachable:
             # untick every piece and the count is zero.
@@ -16983,15 +25021,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # It used to stop at the percentage, so nothing on screen ever
         # said the markers were still editable.
         from_markers = (
-            " from {} marker{}".format(
-                n_markers, "" if n_markers == 1 else "s")
+            RT.REVIEW_FROM_MARKERS.format(n=n_markers, s=RT.plural(n_markers))
             if n_markers else ""
         )
-        return (
-            "Object {} - {} pieces{}.{} Scroll up to change the markers "
-            "and Preview again.".format(
-                self._split_label_id, n_pieces, from_markers, share)
-        )
+        return RT.REVIEW_STATUS.format(
+            id=self._split_label_id, n=n_pieces, from_markers=from_markers,
+            share=share)
 
     def _render_reshape_preview(self) -> None:
         """Paint the partition into the Refine layer, ticks respected.
@@ -17248,10 +25283,33 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             and self._split_snapshot is not None
             and self._split_roi is not None
         ):
+            _grown = self._restore_frag_layers(shared)
             shared[self._split_roi] = self._split_snapshot
             self._sync_all_views_after_operation(
-                roi=self._split_roi, label_id=self._split_label_id)
+                roi=_grown if _grown is not None else self._split_roi,
+                label_id=self._split_label_id)
         print("[RESHAPE] target restored ({})".format(reason))
+
+    def _restore_frag_layers(self, shared):
+        """Write the accepted fragment edits back, newest first.
+
+        Returns the bounding box of the split ROI and every layer ROI (the
+        region the caller must sync), or None when there were no layers.
+        """
+        layers = list(getattr(self, "_frag_undo_layers", None) or [])
+        if not layers:
+            return None
+        for roi, data in reversed(layers):
+            shared[roi] = data
+        rois = [r for r, _d in layers]
+        _sr = getattr(self, "_split_roi", None)
+        if _sr is not None:
+            rois.append(_sr)
+        return tuple(
+            slice(min(int(r[ax].start) for r in rois),
+                  max(int(r[ax].stop) for r in rois))
+            for ax in range(3)
+        )
 
     def _teardown_refine_for_switch(self) -> None:
         """Leave any Refine worker and staged result behind cleanly.
@@ -17326,11 +25384,27 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 # session is torn down, or the user loses it.
                 self._restore_reshape_target("teardown")
                 try:
-                    self._remove_edt_overlay()
-                    self._remove_refine_layer()
+                    with _gc_batch(self):
+                        self._remove_edt_overlay()
+                        self._remove_refine_layer()
                 except Exception:
                     pass
+                # Start hid the main layer and locked it: give both back.
+                try:
+                    _main = self._layer_by_name(
+                        self.viewer.layers, self._active_labels_name)
+                    if isinstance(_main, Labels):
+                        _main.visible = self._split_main_visible
+                        _main.editable = True
+                except Exception as exc:  # noqa: BLE001
+                    print("[RESHAPE] teardown: main layer restore raised: "
+                          "{!r}".format(exc))
                 self._reset_split_state()
+            # The layers this isolation was on are going away (a patch
+            # switch or a close): the bracket is dropped, nothing is put
+            # back.
+            if _iso_call(self, "_iso_bracket_open", "reshape") is not None:
+                _iso_call(self, "_iso_drop", "reshape teardown")
             self._guide_pending = None
             self._guide_thread_cleanup()
             self._remove_guide_layer()
@@ -17364,6 +25438,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._drop_walls_picture()
             # --- Fragment Refine Reject path ---
             if self._split_fragment_refine:
+                # An open interpolation preview holds fragment ids: it goes
+                # back first, so the restore below is the last write.
+                if getattr(self, "_interp_snapshot", None) is not None:
+                    self._reject_interpolation()
                 # Clear any pending smooth WITHOUT calling _reject_smooth()
                 # (smooth snapshot is intermediate; split snapshot overrides).
                 self._reset_smooth_state()
@@ -17378,22 +25456,28 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     # the hole punch, so one assignment is the answer on
                     # both the guided and the legacy path.
                     roi = self._split_roi
+                    # Fragment edits accepted so far may reach past the
+                    # split ROI: newest first, then the parent state.
+                    _grown = self._restore_frag_layers(shared_data)
                     shared_data[roi] = self._split_snapshot
                     print("[FRAG] discard - the object is back whole")
                     self._sync_all_views_after_operation(
-                        roi=roi, label_id=self._split_label_id
+                        roi=_grown if _grown is not None else roi,
+                        label_id=self._split_label_id,
                     )
 
-                # Restore selected label.
+                # Restore selected label, then the isolation exactly as it
+                # was before Reshape began.
                 label_id = self._split_label_id
-                restore_isolate = self._split_isolate_was_on
                 if label_id is not None:
                     self._set_selected_label_all(label_id)
-                if restore_isolate and label_id is not None:
-                    self._on_isolation_changed({label_id})
+                # The reset clears the multi-isolation cache the restore
+                # sets, so the bracket is taken first and ended after it.
+                _iso_b = _iso_call(self, "_iso_take", "reshape")
 
                 # Reset all state.
                 self._reset_split_state()
+                _iso_call(self, "_iso_end", "reshape", bracket=_iso_b)
 
                 self._update_split_ui(
                     seed_count=0,
@@ -17438,6 +25522,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     detect_visible=False,
                 )
                 self._remove_refine_layer()
+                _iso_call(self, "_iso_end", "reshape", restore=False)
                 self._reset_split_state()
                 return
 
@@ -17446,9 +25531,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 shared_data[self._split_roi] = self._split_snapshot
 
             # 2. Remove EDT overlay + Refine layer.
-            #    (processEvents runs inside each removal method automatically.)
-            self._remove_edt_overlay()
-            self._remove_refine_layer()
+            #    (the removals share one garbage collection; no event-loop turn
+            #    runs between them.)
+            with _gc_batch(self):
+                self._remove_edt_overlay()
+                self._remove_refine_layer()
 
             # 3. Unlock main layer + sync data to all views BEFORE setting
             #    visible.  This ensures the 3D render triggered by
@@ -17463,16 +25550,18 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             if isinstance(main_layer, Labels):
                 main_layer.visible = restore_visible
 
-            # 5. Restore selected_label to original + re-isolate if was active.
+            # 5. Restore selected_label to original + the isolation exactly
+            #    as it was before Reshape began.
             label_id = self._split_label_id
-            restore_isolate = self._split_isolate_was_on
             if label_id is not None:
                 self._set_selected_label_all(label_id)
-            if restore_isolate and label_id is not None:
-                self._on_isolation_changed({label_id})
+            # The reset clears the multi-isolation cache the restore sets,
+            # so the bracket is taken first and ended after it.
+            _iso_b = _iso_call(self, "_iso_take", "reshape")
 
             # 6. Reset state.
             self._reset_split_state()
+            _iso_call(self, "_iso_end", "reshape", bracket=_iso_b)
 
             self._update_split_ui(
                 seed_count=0,
@@ -17501,7 +25590,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # Fragment Refine Mode
         # ---------------------------------------------------------------
         finally:
-            # Reshape R1: the guided session ends here, on EVERY exit.
+            # The guided session ends here, on EVERY exit.
             # This used to sit at the end of the normal path only, so the
             # fragment-refine branch and the "volume not found" bail left
             # the panel-local Find busy LATCHED -- the Find button and the
@@ -17597,6 +25686,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             set(int(v) for v in np.unique(refine_roi) if v > 0 and v != orig_id)
         )
         self._split_fragment_ids = fragment_ids
+        self._frag_undo_layers = []
         self._split_fragment_refine = True
 
         # U4 (2.7 B2).  The panel's piece list is cleared three steps
@@ -17613,9 +25703,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._reshape_fragment_written = 0
 
         # 3. Remove EDT overlay + refine layer.
-        #    (processEvents runs inside each removal method automatically.)
-        self._remove_edt_overlay()
-        self._remove_refine_layer()
+        #    (the removals share one garbage collection; no event-loop turn
+        #    runs between them.)
+        with _gc_batch(self):
+            self._remove_edt_overlay()
+            self._remove_refine_layer()
 
         # 4. Unlock + sync views BEFORE setting visible (so 3D render
         #    triggered by visible=True sees correct data).
@@ -17736,6 +25828,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """
         if self._split_running and not self._split_fragment_refine:
             self._update_smooth_ui(status_text="Reshape is in progress.")
+            print("[REFINE] preview refused - a Reshape is in progress")
             return
         if getattr(self, "_batch_staged", False) or getattr(
             self, "_batch_running", False
@@ -17743,6 +25836,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._update_smooth_ui(
                 status_text="Finish or close Batch Refine first."
             )
+            print("[REFINE] preview refused - Batch Refine is open")
+            return
+        # Same rule as Reshape; Refine Further (an interpolation held on
+        # purpose) is the one place a Refine may sit on a held snapshot.
+        if (StagedOp.ADD in self.staged_kinds()
+                or (getattr(self, "_interp_snapshot", None) is not None
+                    and not getattr(self, "_interp_refine_mode", False))):
+            self._refuse_for_open_edit(
+                "refine preview", "Refine",
+                lambda t: self._update_smooth_ui(status_text=t))
+            print("[REFINE] preview refused - another edit is held open")
             return
         # A second Preview while a worker is in flight is REFUSED, not
         # queued: the ROI is copied at launch, so a second
@@ -17767,23 +25871,27 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         labels_name = self._active_labels_name
         if not labels_name:
             self._update_smooth_ui(status_text="No labels loaded.")
+            print("[REFINE] preview refused - no labels layer is active")
             return
 
         # Defensive shared_data alignment -- see _ensure_shared_data_aligned
         shared_data = self._ensure_shared_data_aligned(labels_name)
         if shared_data is None:
             self._update_smooth_ui(status_text="No shared label volume found.")
+            print("[REFINE] preview refused - no shared label volume")
             return
 
         # Get selected label from the main layer.
         main_layer = self._layer_by_name(self.viewer.layers, labels_name)
         if not isinstance(main_layer, Labels):
             self._update_smooth_ui(status_text="Labels layer not found.")
+            print("[REFINE] preview refused - labels layer not found")
             return
         label_id = int(main_layer.selected_label)
         if label_id <= 0:
             self._update_smooth_ui(status_text=REFINE_SELECT_OBJECT,
                                    status_kind="warn")
+            print("[REFINE] preview refused - no object selected")
             return
 
         # Determine refine method from Advanced Features widget.  The dict
@@ -17844,6 +25952,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                                  "Discard first."),
                     status_kind="warn",
                 )
+                print("[REFINE] chain refused - selected {} != staged {}"
+                      .format(label_id, self._smooth_label_id))
                 return
             # The chain reuses the FIRST step's ROI, cut with ITS margin.
             # A step that needs more (a later Settle with a wider band)
@@ -18327,12 +26437,26 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         except Exception:
             return (1.0, 1.0, 1.0)
 
+    def _refine_spacing_source(self):
+        """Where the voxel size came from ("patch" / "qc_settings" /
+        "unknown"), or ``None`` when the provider does not say.  Only the
+        ``[CONTOUR]`` line reads it."""
+        try:
+            return self._reshape_context().get("spacing_source")
+        except Exception:
+            return None
+
     def _refine_spacing_known(self) -> bool:
         ctx = {}
         try:
             ctx = self._reshape_context()
         except Exception:
             ctx = {}
+        # The context's own word about the source wins: a half-size session
+        # of 0.5 um voxels hands over (1, 1, 1) and is known.
+        src = ctx.get("spacing_source")
+        if src is not None:
+            return str(src) != "unknown"
         sp = tuple(ctx.get("spacing") or ())
         return bool(sp) and tuple(float(s) for s in sp) != (1.0, 1.0, 1.0)
 
@@ -18689,6 +26813,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             prep_chain=str(p.get("prep_chain", "none")),
             blur_um=float(p.get("contour_blur_um", 2.0)),
             spacing=self._refine_spacing(),
+            spacing_source=_spacing_source_of(self),
+            channel_name=(str(p.get("channel") or "") or None),
             limit_um=float(p.get("contour_limit_um", 3.0)),
             iterations=int(p.get("contour_iterations", 100)),
             balloon=float(p.get("contour_balloon", 0.0)),
@@ -18764,10 +26890,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._refine_worker._epicycle_token = token
             self._refine_worker.moveToThread(self._refine_thread)
             self._refine_thread.started.connect(self._refine_worker.run)
-            self._refine_worker.progress.connect(self._on_refine_progress)
+            self._refine_worker.progress.connect(_from_sender(
+                self, self._refine_worker, self._on_refine_progress))
             self._refine_worker.message.connect(self._on_refine_message)
-            self._refine_worker.finished.connect(self._on_refine_finished)
-            self._refine_worker.error.connect(self._on_refine_error)
+            self._refine_worker.finished.connect(_from_sender(
+                self, self._refine_worker, self._on_refine_finished))
+            self._refine_worker.error.connect(_from_sender(
+                self, self._refine_worker, self._on_refine_error))
             self._refine_thread.finished.connect(
                 self._on_refine_thread_finished)
             # the run's one judge for this step is
@@ -19479,7 +27608,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     elif ndim == 4 and int(layer.data.shape[-1]) in {3, 4}:
                         names.append(layer.name)
             try:
-                adv.set_refine_channels(names)
+                adv.set_refine_channels(
+                    names, self._channel_memory(
+                        adv, "refine_channel_combo", "_last_refine_channel"))
             except Exception:
                 pass
         if hasattr(adv, "set_refine_solver_available"):
@@ -19547,16 +27678,41 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                                         self._active_labels_name)
         except Exception:
             layer = None
-        if layer is None or getattr(layer, "_epicycle_refine_sel_hooked",
-                                    False):
+        if layer is None:
             return
         events = getattr(layer, "events", None)
         sel = getattr(events, "selected_label", None)
         if sel is None:
             return
+        if getattr(layer, "_epicycle_refine_sel_hooked", False):
+            # The flag lives on the layer, which outlives a closed annotator.
+            # Only a hook owned by THIS annotator counts; otherwise drop the
+            # old one (if it is still reachable) and hook the live one.
+            owner_ref = getattr(layer, "_epicycle_refine_sel_owner", None)
+            try:
+                owner = owner_ref() if owner_ref is not None else None
+            except Exception:
+                owner = None
+            if owner is self:
+                return
+            old_ref = getattr(layer, "_epicycle_refine_sel_cb", None)
+            old_cb = old_ref() if old_ref is not None else None
+            if old_cb is not None:
+                try:
+                    sel.disconnect(old_cb)
+                except Exception:
+                    pass
         try:
+            import weakref as _weakref
+
             sel.connect(self._on_refine_selection_changed)
             layer._epicycle_refine_sel_hooked = True
+            layer._epicycle_refine_sel_owner = _weakref.ref(self)
+            # Weak: a strong bound method on the layer would keep every
+            # closed annotator alive until the next reopen.
+            layer._epicycle_refine_sel_cb = _weakref.WeakMethod(
+                self._on_refine_selection_changed
+            )
         except Exception as exc:  # noqa: BLE001
             print("[REFINE] selection hook not wired: {!r}".format(exc))
 
@@ -19773,10 +27929,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # --- Interp refine branch: accept smooth = commit everything. ---
         if self._interp_refine_mode:
             label_id = self._smooth_label_id
-            # Capture undo data before clearing.
-            # Use explicit None checks — numpy arrays can't be used with `or`.
-            undo_roi = self._smooth_roi if self._smooth_roi is not None else self._interp_roi
-            undo_snap = self._smooth_snapshot if self._smooth_snapshot is not None else self._interp_snapshot
+            # Capture undo data before clearing: the two stages of this
+            # edit, oldest first.  The interpolation snapshot is the state
+            # before the whole edit (the smooth snapshot is taken after the
+            # interpolation filled the region), so it is the entry's own
+            # ROI and the refine stage rides along as a pre-layer.
+            _stages = [
+                (r, d)
+                for (r, d) in (
+                    (self._interp_roi, self._interp_snapshot),
+                    (self._smooth_roi, self._smooth_snapshot),
+                )
+                if r is not None and d is not None
+            ]
 
             # Clear smooth state.
             self._smooth_running = False
@@ -19824,15 +27989,21 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 status_text=f"Object {label_id} - accepted.",
             )
 
-            # Fire both callbacks.   the chain's steps
-            # and the recipes that contributed ride along as a debug trail.
-            cb = getattr(self, "_on_label_smoothed_cb", None)
-            if cb is not None:
-                cb(label_id, roi_slices=undo_roi, old_roi_data=undo_snap,
-                   steps=prov_steps, recipes=prov_recipes)
-            cb = getattr(self, "_on_interpolation_accepted_cb", None)
-            if cb is not None:
-                cb(label_id, roi_slices=undo_roi, old_roi_data=undo_snap)
+            # ONE callback for the whole edit; the chain's steps and the
+            # recipes that contributed ride along as a debug trail.
+            if getattr(self, "_split_fragment_refine", False):
+                # A piece of a Reshape: Accept all owns the one entry.
+                _frag_layers(self).extend(_stages)
+            else:
+                cb = getattr(self, "_on_interpolation_accepted_cb", None)
+                if cb is not None:
+                    if _stages:
+                        (undo_roi, undo_snap), rest = _stages[0], _stages[1:]
+                    else:
+                        undo_roi = undo_snap = None
+                        rest = []
+                    cb(label_id, roi_slices=undo_roi, old_roi_data=undo_snap,
+                       pre_layers=rest, steps=prov_steps, recipes=prov_recipes)
 
             self._interp_status_label.setText(
                 f"Accepted refined label {label_id}."
@@ -19842,15 +28013,34 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._restore_ready_to_draw_state()
             self._refresh_refine_preview_gate()      # UX-M1
 
+            # Put the isolation back as it was before Refine Further.  With
+            # auto-advance the next cell is isolated instead, unless the
+            # Isolate box was off before (then the forced isolation of this
+            # cell has to be cleared and the box unticked).
+            _adv_on = self._is_auto_advance_enabled()
+            _open_b = _iso_call(self, "_iso_bracket_open", "interp")
+            _box_was_on = True if _open_b is None else _open_b.snapshot.checkbox
+            # Deferred: the bracket ends after the advance, dropped when a
+            # next row took over, restored exactly when there was none.
+            _defer = _adv_on and _box_was_on and _open_b is not None
+            if not _defer:
+                _iso_call(self, "_iso_end", "interp")
+
             # Auto-advance to next triage label.
-            if self._is_auto_advance_enabled():
+            _advanced = False
+            _before = _iso_mark(self)
+            if _adv_on:
                 nav = getattr(self, "_navigator_widget", None)
                 if nav is not None:
                     try:
-                        if not nav.select_next_triage():
+                        _advanced = _advance_clearing_selection(nav)
+                        if not _advanced and _open_b is None:
                             self._on_isolation_changed(set())
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[ISO-BRACKET] advance failed: {exc!r}", flush=True)
+            if _defer:
+                _iso_call(self, "_iso_end", "interp",
+                          restore=_restore_after_advance(self, _advanced, _before))
             return
 
         label_id = self._smooth_label_id
@@ -19883,7 +28073,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # Fire callback to controller (sets tier to 'curated').  Recipes
         # the steps and recipes ride along as a debug trail.
         cb = getattr(self, "_on_label_smoothed_cb", None)
-        if cb is not None:
+        if getattr(self, "_split_fragment_refine", False):
+            # Editing the pieces of a Reshape: no entry of its own (its
+            # snapshot already holds the pieces, which Undo must not
+            # restore).  The region rides in Accept all's single entry.
+            if undo_roi is not None and undo_snap is not None:
+                _frag_layers(self).append((undo_roi, undo_snap))
+        elif cb is not None:
             cb(label_id, roi_slices=undo_roi, old_roi_data=undo_snap,
                steps=prov_steps, recipes=prov_recipes)
 
@@ -19937,6 +28133,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         _refine_clear_records(self)
         self._refine_staged_s5 = None
         self._fire_refine_lock(False)
+        if self._interp_refine_mode and not self._smooth_running:
+            # Refine Further before any Preview: Discard backs out of the
+            # whole interpolation, the only way out of this stage.
+            self._reject_interpolation()
+            self._update_smooth_ui(reject_enabled=False, accept_enabled=False)
+            return
         if not self._smooth_running:
             return
 
@@ -20008,9 +28210,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._interp_status_label.setText(
                 "Refine rejected. Volume restored to pre-interpolation state."
             )
-            self._clear_draw_snapshot()
+            _enable_if_alive(getattr(self, "_clear_edits_btn", None), self._draw_snapshot is not None)
             self._restore_ready_to_draw_state()
             self._refresh_refine_preview_gate()      # UX-M1
+            _iso_call(self, "_iso_end", "interp")
             return
 
         labels_name = self._active_labels_name
@@ -20050,7 +28253,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             result_note="", result_warning="", breadcrumb="",
             status_text=f"Object {label_id} - put back as it was.",
         )
-        self._clear_draw_snapshot()
+        _enable_if_alive(getattr(self, "_clear_edits_btn", None), self._draw_snapshot is not None)
         self._restore_ready_to_draw_state()
         # UX-M1: the gate decides the button for the method now on the
         # combo -- a Settle page with no channel must not come back live.
@@ -20065,6 +28268,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # the run ends), the stage line is composed "i/n · stage", and
             # the buttons themselves are held below.
             kwargs = _recipe_filter_ui(self, run, dict(kwargs))
+        if (kwargs.get("reject_enabled") is False
+                and getattr(self, "_interp_refine_mode", False)
+                and not getattr(self, "_smooth_running", False)
+                and not kwargs.get("busy")):
+            # Refine Further with nothing staged keeps Discard live: it is
+            # the only way out of that stage.
+            kwargs = dict(kwargs, reject_enabled=True, preview_text="Preview")
         adv_widget = self._get_advanced_features_widget()
         if adv_widget and hasattr(adv_widget, "update_smooth_ui_state"):
             adv_widget.update_smooth_ui_state(**kwargs)
@@ -20967,7 +29177,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             else:
                 # Hide before removing, so the render loop never draws a freed GPU texture.
                 existing.visible = False
-                self.viewer.layers.remove(existing)
+                with _gc_batch(self):
+                    self.viewer.layers.remove(existing)
                 self.viewer.add_image(
                     edt_crop,
                     name=overlay_name,
@@ -21038,7 +29249,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 else:
                     # Hide before removing, so the render loop never draws a freed GPU texture.
                     existing_sub.visible = False
-                    vm.layers.remove(existing_sub)
+                    with _gc_batch(self):
+                        vm.layers.remove(existing_sub)
                     vm.add_image(data, name=sub_name, translate=trans, **style)
             else:
                 vm.add_image(data, name=sub_name, translate=trans, **style)
@@ -21061,7 +29273,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             adv_widget.update_split_ui_state(**kwargs)
         # Also mirror status to the main interp label as a fallback.
         status = kwargs.get("status_text", "")
-        if status and hasattr(self, "_interp_status_label"):
+        # The label is None once the widget is closing.
+        if status and getattr(self, "_interp_status_label", None) is not None:
             self._interp_status_label.setText(status)
 
     def _invalidate_afw_cache(self) -> None:
@@ -21105,32 +29318,34 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _remove_edt_overlay(self) -> None:
         """Remove the 'EDT Overlay' layer from main viewer and subviewers."""
         overlay_name = "EDT Overlay"
-        existing = self._layer_by_name(self.viewer.layers, overlay_name)
-        if existing is not None:
-            try:
-                # Hide before removing — disconnect the vispy visual from the
-                # scene graph so the render loop cannot touch a freed GPU
-                # texture.
-                existing.visible = False
-                self.viewer.layers.remove(existing)
-            except Exception:
-                pass
-        # Remove from subviewers.
-        for suffix in ("_XY", "_XZ", "_YZ"):
-            sub_name = overlay_name + suffix
-            for vm in (
-                self.viewer_model_xy,
-                self.viewer_model_xz,
-                self.viewer_model_yz,
-            ):
-                layer = self._layer_by_name(vm.layers, sub_name)
-                if layer is not None:
-                    try:
-                        # Hide before removing, so the render loop never draws a freed GPU texture.
-                        layer.visible = False
-                        vm.layers.remove(layer)
-                    except Exception:
-                        pass
+        with _gc_batch(self):
+            existing = self._layer_by_name(self.viewer.layers, overlay_name)
+            if existing is not None:
+                try:
+                    # Hide before removing — disconnect the vispy visual from the
+                    # scene graph so the render loop cannot touch a freed GPU
+                    # texture.
+                    existing.visible = False
+                    self.viewer.layers.remove(existing)
+                except Exception:
+                    pass
+            # Remove from subviewers.
+            for suffix in ("_XY", "_XZ", "_YZ"):
+                sub_name = overlay_name + suffix
+                for vm in (
+                    self.viewer_model_xy,
+                    self.viewer_model_xz,
+                    self.viewer_model_yz,
+                ):
+                    layer = self._layer_by_name(vm.layers, sub_name)
+                    if layer is not None:
+                        try:
+                            # Hide before removing, so the render loop never draws a freed GPU texture.
+                            layer.visible = False
+                            vm.layers.remove(layer)
+                        except Exception:
+                            pass
+        _refocus_main_layer(self)
 
     # ---------------------------------------------------------------
     # Probability Overlay
@@ -21214,7 +29429,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             else:
                 # Hide before removing, so the render loop never draws a freed GPU texture.
                 existing.visible = False
-                self.viewer.layers.remove(existing)
+                with _gc_batch(self):
+                    self.viewer.layers.remove(existing)
                 self.viewer.add_image(
                     prob_crop, name=overlay_name, colormap=cmap,
                     opacity=0.5, blending="additive",
@@ -21272,7 +29488,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 else:
                     # Hide before removing, so the render loop never draws a freed GPU texture.
                     existing_sub.visible = False
-                    vm.layers.remove(existing_sub)
+                    with _gc_batch(self):
+                        vm.layers.remove(existing_sub)
                     vm.add_image(data, name=sub_name, translate=trans, **style)
             else:
                 vm.add_image(data, name=sub_name, translate=trans, **style)
@@ -21285,31 +29502,34 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _remove_prob_overlay(self) -> None:
         """Remove the 'Prob Overlay' layer from main viewer and subviewers."""
         overlay_name = "Prob Overlay"
-        existing = self._layer_by_name(self.viewer.layers, overlay_name)
-        if existing is not None:
-            try:
-                # Hide before removing — disconnect the vispy visual from the
-                # scene graph so the render loop cannot touch a freed GPU
-                # texture.
-                existing.visible = False
-                self.viewer.layers.remove(existing)
-            except Exception:
-                pass
-        for suffix in ("_XY", "_XZ", "_YZ"):
-            sub_name = overlay_name + suffix
-            for vm in (
-                self.viewer_model_xy,
-                self.viewer_model_xz,
-                self.viewer_model_yz,
-            ):
-                layer = self._layer_by_name(vm.layers, sub_name)
-                if layer is not None:
-                    try:
-                        # Hide before removing, so the render loop never draws a freed GPU texture.
-                        layer.visible = False
-                        vm.layers.remove(layer)
-                    except Exception:
-                        pass
+        with _gc_batch(self):
+            existing = self._layer_by_name(self.viewer.layers, overlay_name)
+            if existing is not None:
+                try:
+                    # Hide before removing — disconnect the vispy visual from the
+                    # scene graph so the render loop cannot touch a freed GPU
+                    # texture.
+                    existing.visible = False
+                    self.viewer.layers.remove(existing)
+                except Exception:
+                    pass
+            for suffix in ("_XY", "_XZ", "_YZ"):
+                sub_name = overlay_name + suffix
+                for vm in (
+                    self.viewer_model_xy,
+                    self.viewer_model_xz,
+                    self.viewer_model_yz,
+                ):
+                    layer = self._layer_by_name(vm.layers, sub_name)
+                    if layer is not None:
+                        try:
+                            # Hide before removing, so the render loop never draws a freed GPU texture.
+                            layer.visible = False
+                            vm.layers.remove(layer)
+                        except Exception:
+                            pass
+
+        _refocus_main_layer(self)
 
         # Uncheck the prob overlay checkbox if it exists.
         adv = self._get_advanced_features_widget()
@@ -21503,7 +29723,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     # scheduled re-show verifiable: proxy creation bumps the token so any
     # re-show scheduled before it becomes a no-op.
 
-    def _heal_label_render(self, main_layer=None, *, tag: str = "") -> int:
+    def _heal_label_render(self, main_layer=None, *, tag: str = "",
+                           extra_layers=()) -> int:
         """Repair vispy colormap nodes poisoned while hidden (napari >= 0.7).
 
         Call right after a Labels layer (main and/or its XY/XZ/YZ mirrors)
@@ -21528,6 +29749,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 pairs.append((main_layer, self.viewer.window._qt_viewer))
             except Exception:
                 pass
+        # Layers of the main viewer that were re-shown with main (the
+        # isolation proxy, the per-cell proxies).
+        try:
+            seen = {id(main_layer)}
+            main_ids = {id(x) for x in self.viewer.layers}
+            for lyr in extra_layers or ():
+                if id(lyr) in main_ids and id(lyr) not in seen:
+                    seen.add(id(lyr))
+                    pairs.append((lyr, self.viewer.window._qt_viewer))
+        except Exception:
+            pass
         sm = getattr(self, "subviewer_manager", None)
         if sm is not None:
             qt_by_vm = {
@@ -21535,6 +29767,27 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 id(getattr(sm, "viewer_model_xz", None)): getattr(sm, "qt_viewer_xz", None),
                 id(getattr(sm, "viewer_model_yz", None)): getattr(sm, "qt_viewer_yz", None),
             }
+            # The Add result's three side copies, when re-shown with main:
+            # each with its own view's Qt viewer.  No other side layer (a
+            # Refine or isolation copy) is touched here.
+            try:
+                listed = {id(x) for x in (extra_layers or ())}
+                for lyr in self._add_candidate_side_copies():
+                    if id(lyr) not in listed:
+                        continue
+                    for vm_name in ("viewer_model_xy", "viewer_model_xz",
+                                    "viewer_model_yz"):
+                        vm = getattr(sm, vm_name, None)
+                        try:
+                            owned = vm is not None and any(
+                                x is lyr for x in vm.layers)
+                        except Exception:  # noqa: BLE001
+                            owned = False
+                        if owned:
+                            pairs.append((lyr, qt_by_vm.get(id(vm))))
+                            break
+            except Exception:
+                pass
             try:
                 for layer in self._all_subviewer_label_layers():
                     # find the ViewerModel that owns this layer

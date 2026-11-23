@@ -39,6 +39,31 @@ def test_the_note_follows_the_spacing_with_no_other_change(h):
     assert h.adv.last("default_spacing") is True
 
 
+def test_a_half_size_patch_of_known_spacing_raises_no_note(h):
+    """A half-size session of a 0.5 um patch hands over (1, 1, 1) with the
+    word that the spacing came from the patch: it is known, so no note."""
+    h.ctx["downsample_factor"] = 2
+    h.ctx["spacing_source"] = "patch"
+    h._add_push_context(sources=False)
+    assert h.adv.last("default_spacing") is False
+
+
+def test_a_spacing_the_context_calls_unknown_raises_the_note(h):
+    h.ctx["downsample_factor"] = 2
+    h.ctx["spacing_source"] = "unknown"
+    h._add_push_context(sources=False)
+    assert h.adv.last("default_spacing") is True
+
+
+def test_with_no_word_about_the_source_the_numbers_decide(h):
+    assert "spacing_source" not in h.ctx
+    h._add_push_context(sources=False)
+    assert h.adv.last("default_spacing") is True
+    h.ctx["spacing"] = (0.5, 0.5, 0.5)
+    h._add_push_context(sources=False)
+    assert h.adv.last("default_spacing") is False
+
+
 def test_a_live_box_forgets_its_dark_threshold_and_re_measures(h):
     h.place_box((slice(2, 10), slice(2, 18), slice(2, 18)))
     h._add_dark_cache = {("P", 1, ()): {"t": 1}}
@@ -92,6 +117,9 @@ def test_the_qc_settings_accept_notifies_the_annotator(monkeypatch):
         def get_settings(self):
             return dict(new)
 
+        def get_match_run(self):
+            return None                     # no pairing run picked
+
     monkeypatch.setattr(qc_extraction_dialog, "QCExtractionDialog", _Dlg)
     told = []
     widget = types.SimpleNamespace(
@@ -101,6 +129,10 @@ def test_the_qc_settings_accept_notifies_the_annotator(monkeypatch):
         viewer=None, _qc_features_df=None,
         _append_log=lambda *_a: None,
         _detect_available_channels=lambda: [],
+        # the pairing row of the dialog (channel roles + the run picker)
+        _qc_channel_roles=lambda *_a: {},
+        _match_picker_state=lambda *_a: ([], None, False),
+        _extract_spacing_lines=lambda: [],
         _check_qc_extraction_staleness=lambda: None,
         _maybe_show_qc_staleness_notification=lambda: None,
         _get_curation_annotator_widget=lambda: widget)

@@ -65,6 +65,7 @@ def write_extraction_context(
     *,
     spacing: Sequence[float],
     downsample_factor: int,
+    pairing: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Write the extraction context as a JSON sidecar next to ``csv_path``.
 
@@ -76,16 +77,50 @@ def write_extraction_context(
         csv_path: path to the features CSV (sidecar goes next to it).
         spacing: (s_z, s_y, s_x) per-voxel physical size at extraction time.
         downsample_factor: downsample factor of the labels at extraction time.
+        pairing: the pairing check's fields of this extraction (the other
+            run and its file, the floors, the patch file's size and mtime),
+            added as top-level keys.  Recorded only: :func:`stale_reason`
+            never reads them.  The three keys above always win.
     """
     path = _sidecar_path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+    payload: Dict[str, Any] = {}
+    for key, value in dict(pairing or {}).items():
+        payload[str(key)] = value
+    payload.update({
         "spacing": [float(s) for s in spacing],
         "downsample_factor": int(downsample_factor),
         "extracted_at": datetime.now(timezone.utc).isoformat(),
-    }
+    })
     from . import _step3_manifests as _sm
     _sm.write_json_atomic(path, payload)
+
+
+def update_extraction_context(csv_path: Union[str, Path], **fields) -> bool:
+    """Add ``fields`` to the patch's own sidecar beside ``csv_path``, keeping
+    everything else (atomically, like :func:`write_extraction_context`).
+
+    Only the patch's own ``<patch>_extraction_context.json`` is touched: a
+    patch without one (never extracted) gets none, and the shared file of
+    an older workspace is never written.  The three keys of an extraction
+    (``spacing``, ``downsample_factor``, ``extracted_at``) cannot be set
+    here.  ``True`` when the sidecar was written.  Never raises.
+    """
+    try:
+        path = _sidecar_path(csv_path)
+        if path == _legacy_sidecar_path(csv_path) or not path.is_file():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        for key, value in fields.items():
+            if key not in ("spacing", "downsample_factor", "extracted_at"):
+                data[str(key)] = value
+        from . import _step3_manifests as _sm
+        _sm.write_json_atomic(path, data)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def read_extraction_context(

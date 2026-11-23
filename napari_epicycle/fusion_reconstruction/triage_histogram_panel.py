@@ -3,7 +3,9 @@
 A standalone widget -- it shares no code with ``qc_plot_widget.py``, so
 Step 4's EDA Workbench is untouched.  ``Triage by`` picks the X-axis
 feature; ``Colour bars by`` stacks the bars by a categorical column
-(``qc_tier`` by default) or colours them by a continuous one.  With
+(``qc_tier`` by default) or, after a comparison with another run, by the
+match words in the QC plot's colours, or colours them by a continuous
+one.  With
 ``Triage by = qc_score`` three draggable tier lines re-sort the labels
 that are not curated (``thresholds_changed`` while dragging,
 ``tier_drag_finished`` on release); on any other feature ``Gate`` draws
@@ -41,6 +43,9 @@ from ..ui_shell.theme import (
     PANEL_INPUT_STYLE,
     PANEL_ROW_LABEL_STYLE,
 )
+from . import _qc_pairing_text as _PT
+from .qc_pairing import MATCH_COLOURS
+from .qc_pairing_group import has_all_match_columns, match_words
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +86,8 @@ HIST_HELP = {
     HIST_COLOUR_BARS_BY: (
         "What the bars are coloured by. A tier or cluster column stacks "
         "the bars by group; \"value\" colours each bar by its position on "
-        "the Triage by axis."
+        "the Triage by axis. After a comparison with another run, "
+        "\"Overlap with …\" stacks them by the match words."
     ),
     HIST_RESET_LINES: (
         "Put the three tier lines back at the quartiles of qc_score on "
@@ -243,9 +249,9 @@ class TriageHistogramPanel(QWidget):
     """Tier-stacked histogram + draggable thresholds for triage.
 
     Public API: ``set_data(df)`` (``None`` = the empty state),
-    ``set_active_cmap``, ``set_ghosts_visible``, ``untick_gate_silently``,
-    ``reset_tier_lines``, ``get_thresholds``, ``empty_sentence`` and the
-    five signals below.
+    ``set_active_cmap``, ``set_ghosts_visible``, ``set_match_other``,
+    ``untick_gate_silently``, ``reset_tier_lines``, ``get_thresholds``,
+    ``empty_sentence`` and the five signals below.
     """
 
     # Emitted continuously while the user drags any tier line (Phase 2C).
@@ -301,6 +307,9 @@ class TriageHistogramPanel(QWidget):
         self._locked = False
         # The ghost stack is drawn unless set_ghosts_visible(False).
         self._ghosts_visible = True
+        # The name of the run the table was compared with (the pairing
+        # check), for the "Overlap with ..." item; set_match_other sets it.
+        self._match_other = ""
         # The sentence on screen in an empty state, else None.
         self._empty_sentence = None
         self._tier_lines: list = []
@@ -515,6 +524,33 @@ class TriageHistogramPanel(QWidget):
                 else:
                     tier_counts["unassigned"][i] += 1
             self._draw_stacked_bars(edges, tier_counts)
+        elif (_PT.is_match_colour_by(color_by)
+                and has_all_match_columns(self._df)):
+            # The pairing check: one stack per match word, in the QC
+            # plot's order and colours (the words read from the five
+            # columns the way the plot reads them); ghost rows keep the
+            # grey ghost stack.
+            df = self._df
+            finite = np.isfinite(df[feature].values.astype(np.float64))
+            words = match_words(df)[finite][shown]
+            if "label_status" in df.columns:
+                is_ghost = np.isin(
+                    df["label_status"].values[finite],
+                    ["deleted", "superseded"],
+                )[shown]
+            else:
+                is_ghost = np.zeros(len(words), dtype=bool)
+            palette = list(MATCH_COLOURS.values())
+            ghost_counts = np.bincount(
+                bin_idx[is_ghost], minlength=n_bins)
+            cat_counts = {
+                slot: np.bincount(bin_idx[~is_ghost & (words == word)],
+                                  minlength=n_bins)
+                for slot, word in enumerate(MATCH_COLOURS)
+            }
+            self._draw_categorical_stacked(
+                edges, cat_counts, palette, ghost_counts=ghost_counts,
+            )
         elif (
             color_by in self._CATEGORICAL_COLOR_BY
             and self._df is not None
@@ -1354,6 +1390,26 @@ class TriageHistogramPanel(QWidget):
         self._ghosts_visible = visible
         self._redraw()
 
+    def set_match_other(self, name) -> None:
+        """The name of the run the table in view was compared with (the
+        pairing check; empty when it is not known).  "Colour bars by" then
+        offers "Overlap with {name}", the QC plot's own item, while the
+        table has the five match columns.  The item is renamed in place,
+        signals blocked: the choice and the bars stay as they are."""
+        name = str(name or "")
+        if name == self._match_other:
+            return
+        self._match_other = name
+        combo = self._color_combo
+        for i in range(combo.count()):
+            if _PT.is_match_colour_by(combo.itemText(i)):
+                blocked = combo.blockSignals(True)
+                try:
+                    combo.setItemText(i, _PT.colour_by_match(name))
+                finally:
+                    combo.blockSignals(blocked)
+                break
+
     def _derive_thresholds_from_qc_tier(self) -> tuple:
         """Return (t1, t2, t3) implied by the current df's qc_tier column.
 
@@ -1412,7 +1468,7 @@ class TriageHistogramPanel(QWidget):
         # categorical / id columns.
         skip_x = {"label", "label_status", "qc_status", "qc_tier",
                   "feature_state", "patch_name", "cluster",
-                  "cluster_id", "border_cell"}
+                  "cluster_id", "border_cell", "match_id"}
         try:
             import numpy as _np
             numeric_cols = [
@@ -1441,9 +1497,15 @@ class TriageHistogramPanel(QWidget):
         # present in the df, then ONE gradient entry (HIST_VALUE_ITEM):
         # each bar coloured by its position on the Triage-by axis.
         # Numeric columns are not offered: the gradient never read them.
+        # The pairing check adds the plot's "Overlap with ..." item when the
+        # table carries the five match columns.
         color_options: list = [
             col for col in self._CATEGORICAL_COLOR_BY if col in df.columns
         ]
+        match_item = None
+        if has_all_match_columns(df):
+            match_item = _PT.colour_by_match(self._match_other)
+            color_options.append(match_item)
         color_options.append(HIST_VALUE_ITEM)
 
         prev_c = self._color_combo.currentText()
@@ -1455,7 +1517,16 @@ class TriageHistogramPanel(QWidget):
             HIST_HELP[HIST_VALUE_ITEM],
             Qt.ItemDataRole.ToolTipRole,
         )
-        if prev_c in color_options:
+        if match_item is not None:
+            self._color_combo.setItemData(
+                color_options.index(match_item),
+                _PT.HIST_COLOUR_BY_MATCH_TOOLTIP,
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        if match_item is not None and _PT.is_match_colour_by(prev_c):
+            # the same choice when the other run's name has changed
+            self._color_combo.setCurrentText(match_item)
+        elif prev_c in color_options:
             self._color_combo.setCurrentText(prev_c)
         elif "qc_tier" in color_options:
             self._color_combo.setCurrentText("qc_tier")

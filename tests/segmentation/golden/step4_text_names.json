@@ -106,13 +106,13 @@
   "SEG_MODEL_DESC": "The model that finds the cells.",
   "SEG_ACTIVE_LABEL": "Active:",
   "MODEL_CHANGE_BTN": "Change…",
-  "SEG_MODEL_TRAINED_ON": "Trained on {n} channels: {names}.",
+  "SEG_MODEL_TRAINED_ON": "Trained on {names}.",
   "SEG_MODEL_TRAINED_UNKNOWN": "The channels this model was trained on are not recorded.",
   "MODEL_MISSING": "The active model’s files are missing. Pick it again with Change…",
-  "SEG_MODEL_CHANNEL": "{name} ({index})",
-  "SEG_MODEL_ROLE_MEMBRANE": "membrane",
-  "SEG_MODEL_ROLE_NUCLEI": "nuclei",
-  "SEG_PICK_CHANNEL": "Pick the membrane channel.",
+  "SEG_MODEL_CHANNEL": "{role} {item}",
+  "SEG_MODEL_ROLE_MEMBRANE": "segment",
+  "SEG_MODEL_ROLE_NUCLEI": "helper",
+  "SEG_PICK_CHANNEL": "Pick the channel to segment.",
   "SEG_NONE_RUNNABLE": "No ticked stack can run with this model.",
   "SEG_NOTHING_TICKED": "Tick a stack to run.",
   "SEG_NOTHING_TO_RECONSTRUCT": "Predict the ticked stacks first.",
@@ -149,12 +149,12 @@
   "SEG_PRESET_USEG3D": "u-Segment3D defaults (without its flow filter)",
   "SEG_PRESET_CUSTOM": "Custom",
   "SEG_INFERENCE_TITLE": "Inference settings",
-  "SEG_MEMBRANE_LABEL": "Membrane channel:",
-  "SEG_NUCLEI_LABEL": "Nuclei channel:",
-  "SEG_CHANNEL_ITEM": "{i}: {name}",
+  "SEG_MEMBRANE_LABEL": "Channel to segment:",
+  "SEG_NUCLEI_LABEL": "Helper channel:",
+  "SEG_CHANNEL_ITEM": "{code}: {name}",
   "SEG_CHANNEL_ITEM_ROLE": "{i}: {name} ({role})",
   "SEG_CHANNEL_ITEM_ROLE_ONLY": "{i}: {role} (model)",
-  "SEG_CHANNEL_NONE": "none",
+  "SEG_CHANNEL_NONE": "0: none",
   "SEG_CHANNEL_NAME": "ch{i}",
   "SEG_CELL_WIDTH_LABEL": "Typical cell width:",
   "SEG_CELL_WIDTH_AUTO": "Auto",
@@ -407,8 +407,8 @@
    "row_chip": "The model that made this stack’s result; amber when it is not the model now active, so a new Reconstruct would not match it.",
    "row_eye": "Show or hide this stack in the viewer.",
    "start_from_combo": "Fill the settings below from your Step 3 run or from a standard set; you can still change any of them.",
-   "chan1_combo": "The channel the model reads as the cell membrane. A loaded or previewed stack shows its layer names here.",
-   "chan2_combo": "The channel the model reads as the nuclei, or none. A loaded or previewed stack shows its layer names here.",
+   "chan1_combo": "The channel that shows what this model finds: the cell outlines for a cell model, the nuclei for a nuclei model. A loaded or previewed stack shows its layer names here; hover an item to see whether this model was trained on it. Counted as Cellpose does: 0 gray (all channels averaged), then 1 for the first channel.",
+   "chan2_combo": "An optional second channel that helps a cell model tell touching cells apart, usually the nuclei, or none. A loaded or previewed stack shows its layer names here.",
    "cell_width_um_sb": "About how wide one cell is, in micrometres; the model looks for cells near this size.",
    "normalize_cb": "Stretch each slice’s brightness before the model sees it.",
    "rescale_cb": "Used only when no cell width is set: when ticked, the image is passed to the model at its own scale; when unticked, the model resizes it by its own trained cell size. The factor used is recorded with the result.",
@@ -761,7 +761,8 @@
   },
   "say": {
    "__callable__": "say"
-  }
+  },
+  "SEG_CHANNEL_GRAY": "0: gray"
  },
  "_step4_models": {
   "Path": {
@@ -885,9 +886,6 @@
   },
   "read_trained_channels": {
    "__callable__": "read_trained_channels"
-  },
-  "trained_channel_indices": {
-   "__callable__": "trained_channel_indices"
   },
   "trained_channels_text": {
    "__callable__": "trained_channels_text"
@@ -1180,6 +1178,12 @@
   },
   "finish_run_snapshot": {
    "__callable__": "finish_run_snapshot"
+  },
+  "trained_codes": {
+   "__callable__": "trained_codes"
+  },
+  "channel_item": {
+   "__callable__": "channel_item"
   }
  }
 }

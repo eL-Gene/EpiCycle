@@ -1,4 +1,4 @@
-"""Reshape R1 -- the guided-Split orchestration, on Qt-free fakes.
+"""The guided-Split orchestration, on Qt-free fakes.
 
 The real `Curation3DAnnotator` methods are bound to a minimal fake with
 `Method.__get__(fake)`, so these exercise the ACTUAL code rather than a
@@ -205,6 +205,8 @@ class FakeAnnotator:
         self._guide_worker = None
         self._guide_pending = None
         self._adv = adv or FakeAdv()
+        self._interp_snapshot = None
+        self._frag_undo_layers = []
         # recorders
         self.lock_calls = []
         self.ui_calls = []
@@ -213,6 +215,12 @@ class FakeAnnotator:
         self.subviewer_refreshes = 0
         self.restored = []
         self.removed = []
+
+    def _restore_frag_layers(self, shared):
+        from napari_epicycle.annotator.curation_3d_widget import (
+            Curation3DAnnotator as _K2,
+        )
+        return _K2._restore_frag_layers(self, shared)
 
     # --- the seams the real methods call --------------------------------- #
     def _get_advanced_features_widget(self):
@@ -1005,8 +1013,14 @@ class TestLock:
     def test_reshape_is_inside_the_navigator_isolation_gate(self):
         import inspect
 
-        src = inspect.getsource(_K()._refinement_op_active)
-        assert "_reshape_running" in src
+        # A guided Reshape is a Reshape kind from Start: its session flag
+        # (``_split_running``) feeds the kind, and the kind is in the set
+        # the navigator's isolation gate intersects.
+        from napari_epicycle.annotator.refinement_state import (
+            ISOLATION_BLOCKING, StagedOp)
+
+        assert StagedOp.RESHAPE in ISOLATION_BLOCKING
+        assert "_split_running" in inspect.getsource(_K()._sync_refine_state)
 
 
 # --------------------------------------------------------------------------- #
@@ -1282,7 +1296,7 @@ class TestUnstoppableWorkerIsParked:
 # 13. the navigator's isolation gate must survive a bare widget
 # --------------------------------------------------------------------------- #
 class TestFlagsResolveWithoutAnInstance:
-    """`_refinement_op_active` is read by the navigator's isolation gate, and
+    """The open-edit set is read by the navigator's isolation gate, and
     PyQt6 raises RuntimeError -- NOT AttributeError -- for a missing attribute
     on a QObject whose C++ side was never constructed.  So
     `getattr(self, "_reshape_running", False)` does NOT fall back to its
@@ -1297,24 +1311,39 @@ class TestFlagsResolveWithoutAnInstance:
         assert K._reshape_running is False
         assert K._reshape_active is False
 
-    def test_the_predicate_works_on_a_widget_with_no_init(self):
+    @staticmethod
+    def _bare():
+        from napari_epicycle.annotator.refinement_state import RefinementOpState
+
         K = _K()
         ann = K.__new__(K)
-        ann._split_running = False
-        ann._smooth_running = False
-        ann._interp_snapshot = None
-        ann._interp_refine_mode = False
-        assert K._refinement_op_active(ann) is False
+        ann._refine_state = RefinementOpState()
+        for name in ("_split_running", "_smooth_running", "_interp_running",
+                     "_interp_refine_mode", "_add_running", "_batch_running",
+                     "_batch_staged"):
+            setattr(ann, name, False)
+        for name in ("_interp_snapshot", "_batch_refine_dialog",
+                     "_merge_dialog", "_draw_snapshot", "_interp_label_id",
+                     "_interp_roi", "_split_snapshot", "_split_label_id",
+                     "_split_roi", "_smooth_snapshot", "_smooth_label_id",
+                     "_smooth_roi"):
+            setattr(ann, name, None)
+        ann._split_previewed = False
+        ann._split_fragment_refine = False
+        ann._split_fragment_ids = []
+        ann._smooth_chain_count = 0
+        return K, ann
+
+    def test_the_predicate_works_on_a_widget_with_no_init(self):
+        K, ann = self._bare()
+        assert K.staged_kinds(ann) == frozenset()
 
     def test_the_predicate_still_reports_a_running_reshape(self):
-        K = _K()
-        ann = K.__new__(K)
-        ann._split_running = False
-        ann._smooth_running = False
-        ann._interp_snapshot = None
-        ann._interp_refine_mode = False
-        ann._reshape_running = True
-        assert K._refinement_op_active(ann) is True
+        from napari_epicycle.annotator.refinement_state import StagedOp
+
+        K, ann = self._bare()
+        ann._split_running = True
+        assert StagedOp.RESHAPE in K.staged_kinds(ann)
 
 # =========================================================================== #
 # LIFECYCLE AUDIT (2026-09-09) -- the punched-out-cell window.
@@ -1352,7 +1381,7 @@ class _RealRejectFake(FakeAnnotator):
     def _set_selected_label_all(self, lid):
         self.selected_all.append(lid)
 
-    def _on_isolation_changed(self, s):
+    def _on_isolation_changed(self, s, **k):
         pass
 
     def _clear_draw_snapshot(self):
@@ -2414,7 +2443,8 @@ class TestTheStaleTokenComesFromTheWorker:
         bind(f, "_seed_find_is_stale", "_on_seed_find_finished",
              "_on_seed_find_error")
         # AFTER bind(): the shared binder installs the REAL `_signal_sender`
-        # (which calls Qt's sender()), so the seam is re-pointed here.
+        # (which reads the tag of the slot that is running -- none in this
+        # direct call), so the seam is re-pointed here.
         f._signal_sender = lambda: f._sender
         f._remove_temp_layer = lambda key: f.removed_keys.append(key)
         f._seed_find_thread_cleanup = lambda: setattr(
@@ -2951,7 +2981,7 @@ class TestDiscardAlwaysHandsThePanelBack:
         f._remove_prob_overlay = lambda: None
         f._reset_smooth_state = lambda: None
         f._set_selected_label_all = lambda _i: None
-        f._on_isolation_changed = lambda _s: None
+        f._on_isolation_changed = lambda _s, **k: None
         f._clear_draw_snapshot = lambda: None
         f._split_isolate_was_on = False
         f._split_main_visible = True
@@ -3809,3 +3839,157 @@ class TestTheReshapeFlowSaysObject:
         assert "No markers found in this object" in find_src
         assert "lie outside this object" in find_src
         assert "this cell" not in find_src
+
+
+# --------------------------------------------------------------------------- #
+# Auto-smooth must not report pieces it emptied, nor hide a big loss
+# --------------------------------------------------------------------------- #
+class _SmoothAdv(FakeAdv):
+    def __init__(self, mode):
+        super().__init__()
+        self.mode = mode
+
+    def get_split_smooth_mode(self):
+        return self.mode
+
+
+class TestPreviewReportsWhatSmoothingLeft:
+    def _run(self, monkeypatch, mode, erase_id=None, shrink=False):
+        import packages.epicycle_annotator.smooth as smooth
+
+        calls = []
+
+        def fake_smooth(data, roi, ids, **kw):
+            calls.append(kw)
+            if erase_id is not None:
+                data[roi][data[roi] == erase_id] = 0
+            return 1, "stub"
+
+        monkeypatch.setattr(smooth, "smooth_split_fragments", fake_smooth)
+        labels = np.zeros((6, 10, 10), np.int32)
+        labels[1:5, 1:9, 1:9] = 7
+        roi = (slice(0, 6), slice(0, 10), slice(0, 10))
+        vol = labels.copy()
+        vol[vol == 7] = 0
+        refine = FakeLayer(labels.copy(), "Refine")
+        refine.data[2, 3, 3] = 101
+        refine.data[2, 6, 6] = 102
+        fake = FakeAnnotator(vol, roi, 7, refine=refine,
+                             adv=_SmoothAdv(mode))
+        fake._reshape_active = False
+        fake._refine_baseline = labels[roi].copy()
+        fake._split_painted_marker_ids = [101, 102]
+        bind(fake, "_preview_split")
+        fake._arm_guided_if_needed = lambda: False
+        fake._is_guided_now = lambda: False
+        fake._preview_split()
+        return fake, calls
+
+    def test_an_emptied_piece_is_not_counted_or_reported(self, monkeypatch):
+        fake, _ = self._run(monkeypatch, 1, erase_id=102)
+        present = {int(i) for i in np.unique(fake._refine_layer.data)} - {0}
+        assert fake._split_seed_ids == [101]
+        assert 102 not in present
+        text = fake.ui_calls[-1]["status_text"]
+        assert "1 pieces" in text, text
+        assert "of the object is kept" in text, text
+
+    def test_no_warning_when_the_object_is_whole(self, monkeypatch):
+        fake, calls = self._run(monkeypatch, 2)
+        text = fake.ui_calls[-1]["status_text"]
+        assert "2 pieces" in text and "is kept" not in text, text
+        assert calls[0]["keep_object"] is True
+        assert sorted(fake._split_seed_ids) == [101, 102]
+
+    def test_mode_maps_to_the_smoother(self, monkeypatch):
+        _, calls = self._run(monkeypatch, 1)
+        assert calls[0]["keep_object"] is False
+        _, calls = self._run(monkeypatch, 0)
+        assert calls == []
+
+
+class TestKeptFractionIsOverlapWithTheObject:
+    def test_growth_outside_the_object_does_not_hide_the_loss(
+            self, monkeypatch):
+        import packages.epicycle_annotator.smooth as smooth
+
+        def fake_smooth(data, roi, ids, **kw):
+            view = data[roi]
+            view[view == 102] = 0           # loss inside the object
+            view[0, :, :] = 101             # growth outside the object
+            return 1, "stub"
+
+        monkeypatch.setattr(smooth, "smooth_split_fragments", fake_smooth)
+        t = TestPreviewReportsWhatSmoothingLeft()
+        labels = np.zeros((6, 10, 10), np.int32)
+        labels[1:5, 1:9, 1:9] = 7
+        roi = (slice(0, 6), slice(0, 10), slice(0, 10))
+        vol = labels.copy()
+        vol[vol == 7] = 0
+        refine = FakeLayer(labels.copy(), "Refine")
+        refine.data[2, 3, 3] = 101
+        refine.data[2, 6, 6] = 102
+        fake = FakeAnnotator(vol, roi, 7, refine=refine,
+                             adv=_SmoothAdv(1))
+        fake._reshape_active = False
+        fake._refine_baseline = labels[roi].copy()
+        fake._split_painted_marker_ids = [101, 102]
+        bind(fake, "_preview_split")
+        fake._arm_guided_if_needed = lambda: False
+        fake._is_guided_now = lambda: False
+        fake._preview_split()
+        text = fake.ui_calls[-1]["status_text"]
+        assert "of the object is kept" in text, text
+
+
+class TestNoSmoothingNoSmoothingAdvice:
+    def test_mode_off_with_a_lossy_partition_gives_no_warning(self):
+        labels = np.zeros((6, 10, 10), np.int32)
+        labels[1:5, 1:5, 1:5] = 7
+        labels[1:5, 7:9, 7:9] = 7      # a blob no marker reaches
+        roi = (slice(0, 6), slice(0, 10), slice(0, 10))
+        vol = labels.copy()
+        vol[vol == 7] = 0
+        refine = FakeLayer(labels.copy(), "Refine")
+        refine.data[2, 2, 2] = 101
+        refine.data[2, 3, 3] = 102
+        fake = FakeAnnotator(vol, roi, 7, refine=refine,
+                             adv=_SmoothAdv(0))
+        fake._reshape_active = False
+        fake._refine_baseline = labels[roi].copy()
+        fake._split_painted_marker_ids = [101, 102]
+        bind(fake, "_preview_split")
+        fake._arm_guided_if_needed = lambda: False
+        fake._is_guided_now = lambda: False
+        fake._preview_split()
+        text = fake.ui_calls[-1]["status_text"]
+        assert "pieces" in text and "is kept" not in text, text
+
+
+class TestKeepModeNeverBlamesSmoothingForStrays:
+    def test_keep_mode_with_an_unreached_blob_gives_no_warning(
+            self, monkeypatch):
+        import packages.epicycle_annotator.smooth as smooth
+
+        monkeypatch.setattr(smooth, "smooth_split_fragments",
+                            lambda *a, **k: (0, "stub"))
+        labels = np.zeros((6, 10, 10), np.int32)
+        labels[1:5, 1:5, 1:5] = 7
+        labels[1:5, 7:9, 7:9] = 7      # a blob no marker reaches
+        roi = (slice(0, 6), slice(0, 10), slice(0, 10))
+        vol = labels.copy()
+        vol[vol == 7] = 0
+        refine = FakeLayer(labels.copy(), "Refine")
+        refine.data[2, 2, 2] = 101
+        refine.data[2, 3, 3] = 102
+        fake = FakeAnnotator(vol, roi, 7, refine=refine,
+                             adv=_SmoothAdv(2))
+        fake._reshape_active = False
+        fake._refine_baseline = labels[roi].copy()
+        fake._split_painted_marker_ids = [101, 102]
+        bind(fake, "_preview_split")
+        fake._arm_guided_if_needed = lambda: False
+        fake._is_guided_now = lambda: False
+        fake._preview_split()
+        text = fake.ui_calls[-1]["status_text"]
+        assert "is kept" not in text, text

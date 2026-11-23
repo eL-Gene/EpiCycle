@@ -17,7 +17,7 @@ from ._step4_panel import close, make_workspace, panel, pump, tick
 def _ready(w, qapp):
     c = w.controller
     c._on_model_use({"_kind": "pretrained", "name": "cyto3"})
-    w.set_channel_choice(w.chan1_combo, 0)
+    w.set_channel_choice(w.chan1_combo, 1)    # code 1: the first channel
     w.set_channel_choice(w.chan2_combo, None)
     pump(qapp)
     return c
@@ -62,7 +62,7 @@ def test_only_ticked_runnable_stacks_run(qapp, tmp_path, monkeypatch):
     w = panel(qapp, ws)
     try:
         c = _ready(w, qapp)
-        w.set_channel_choice(w.chan2_combo, 1)   # nuclei = channel 1
+        w.set_channel_choice(w.chan2_combo, 2)   # code 2: the second channel
         pump(qapp)
         seen = []
         monkeypatch.setattr(c, "_launch_prediction_worker", seen.extend)

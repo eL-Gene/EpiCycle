@@ -327,6 +327,9 @@ class StartHarness:
     def __init__(self, panel, target=7):
         import numpy as np
 
+        from napari_epicycle.annotator.refinement_state import RefinementOpState
+
+        self._refine_state = RefinementOpState()
         self._panel = panel
         self.viewer = _Viewer()
         self._active_labels_name = "labels"
@@ -453,7 +456,9 @@ def started(widget):
     _bind_start(h, "_start_split", "_update_split_ui", "_reshape_ready_text",
                 "_marker_rows_from_refine", "_painted_marker_ids_on_layer",
                 "_checked_marker_ids", "_preview_reshape",
-                "_marker_finder_name")
+                "_marker_finder_name",
+                # the open-edit set Start reads before it begins
+                "staged_kinds", "_sync_refine_state", "_refuse_for_open_edit")
     widget.set_split_callbacks(on_start=h._start_split,
                                on_preview=h._preview_reshape)
     return h

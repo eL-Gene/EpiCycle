@@ -379,7 +379,7 @@ def test_apply_survives_csv_round_trip(tmp_path):
 
 
 # ----------------------------------------------------------------------------
-# The re-extraction survival test the spec demands (grill A15 / B4)
+# A reshape flag must survive a QC re-extraction
 # ----------------------------------------------------------------------------
 
 def test_flag_survives_re_extraction(tmp_path):

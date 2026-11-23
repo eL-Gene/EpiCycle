@@ -325,6 +325,9 @@ def _filter_host():
         def _add_nudge_box(self, _o, _k):
             return False
 
+        def _add_marker_key(self, _o, _n, dry=False):
+            return False
+
     host = _Host()
     host._slice_step_sb = QSpinBox(host)
     for o in ("xy", "xz", "yz"):

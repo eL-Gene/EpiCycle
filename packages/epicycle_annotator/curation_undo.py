@@ -81,6 +81,11 @@ class CurationUndoStack:
     def __bool__(self) -> bool:
         return bool(self._stack)
 
+    def __iter__(self):
+        """The entries, oldest first (a copy, so a pop while iterating is
+        safe)."""
+        return iter(list(self._stack))
+
     @property
     def max_depth(self) -> int:
         return self._max_depth

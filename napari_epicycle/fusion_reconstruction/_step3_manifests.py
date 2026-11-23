@@ -144,6 +144,17 @@ def with_diameter(seg_config, diameter):
     return dataclasses.replace(seg_config, diameter=diameter)
 
 
+def with_channels(seg_config, codes):
+    """A copy of *seg_config* with ``channels`` = *codes* (a new list); the
+    input is never changed.  A one-channel patch runs on such a copy with
+    ``[0, 0]`` while the run's config keeps the codes the user asked for.
+    *seg_config* that is not a dataclass comes back as it is."""
+    if seg_config is None or not dataclasses.is_dataclass(seg_config):
+        return seg_config
+    return dataclasses.replace(
+        seg_config, channels=None if codes is None else list(codes))
+
+
 # ---------------------------------------------------------------------------
 # The resize rule (Step 4's F25 vocabulary)
 # ---------------------------------------------------------------------------
@@ -193,17 +204,25 @@ def build_prediction_manifest(*, patch_name: str, axes: str, seg_config,
                               cell_width_um=None,
                               diameter_from: Optional[str] = None,
                               predicted_at: Optional[str] = None,
+                              one_channel: bool = False,
                               ) -> Dict[str, Any]:
     """The record of one patch's Predict: every ``SegmentationConfig``
     field as Cellpose got it (the per-patch ``diameter`` included), the
     patch's pixel number, how it was found, and the resize rule.  JSON-safe.
-    ``spacing`` (R7) and ``model_provenance`` (R6) are slots, ``None``."""
+    ``spacing`` (the voxel size) and ``model_provenance`` (which model made it) are slots, ``None``.
+
+    ``seg_config.channels`` is always the codes the user ASKED for (``None``
+    when the channel to segment was left blank).  A patch with one channel
+    is read as gray by Cellpose whatever the codes say; it adds
+    ``one_channel: true`` (the key is written only then), so a reader that
+    copies the codes -- "This run's last reconstruction", the run's channel
+    memory, Step 4's "Step 3 run" -- never gets ``[0, 0]`` from it."""
     seg = config_record(seg_config)
-    if "channels" in seg:
+    if isinstance(seg.get("channels"), (list, tuple)):
         seg["channels"] = list(seg["channels"])
     diameter = seg.get("diameter")
     rule = rescale_rule(seg.get("rescale"), diameter)
-    return json_safe({
+    record = {
         "manifest_version": PREDICTION_MANIFEST_VERSION,
         "patch_name": patch_name,
         "predicted_at": predicted_at
@@ -218,7 +237,10 @@ def build_prediction_manifest(*, patch_name: str, axes: str, seg_config,
         "rescale_factor": rescale_factor(rule),
         "spacing": None,             # R7
         "model_provenance": None,    # R6
-    })
+    }
+    if one_channel:
+        record["one_channel"] = True
+    return json_safe(record)
 
 
 def write_json_atomic(path, data) -> None:

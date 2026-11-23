@@ -59,6 +59,7 @@ class BatchRefineWorker(QObject):
         channel=None,
         prob=None,
         orphans=None,
+        spacing_source=None,
     ):
         super().__init__()
         self._volume = volume
@@ -75,6 +76,7 @@ class BatchRefineWorker(QObject):
         self._channel = channel
         self._prob = prob
         self._orphans = orphans
+        self._spacing_source = spacing_source
 
     @property
     def cancel_event(self) -> threading.Event:
@@ -107,6 +109,7 @@ class BatchRefineWorker(QObject):
                 channel=self._channel,
                 prob=self._prob,
                 orphans=self._orphans,
+                spacing_source=self._spacing_source,
             )
         except Exception as exc:  # pragma: no cover - defensive
             self.error.emit(f"{exc}\n{traceback.format_exc()}")

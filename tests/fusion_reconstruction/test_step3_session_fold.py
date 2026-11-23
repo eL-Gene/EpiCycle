@@ -107,7 +107,7 @@ def _trigger_lines(fn):
 
 def test_the_extraction_counts_after_its_auto_save_only():
     """The top-of-handler count runs only when the auto-save will NOT
-    (no table in memory, another patch, another run); the post-save count
+    (another patch, another run); the post-save count
     sits OUTSIDE the auto-save's try, so a count failure is never logged
     as "Auto-save FAILED"."""
     src = textwrap.dedent(inspect.getsource(C._on_qc_extract_finished))
@@ -133,8 +133,8 @@ def test_the_auto_save_predicate(tmp_path):
     c._qc_view_patch_name = "A.tif"
     c._run_epoch = 2
     c._qc_extract_launch_epoch = 2
-    c._qc_features_df = None
-    assert c._extract_autosave_will_run("A.tif") is False
+    c._qc_features_df = None          # a first extraction saves too
+    assert c._extract_autosave_will_run("A.tif") is True
     c._qc_features_df = pd.DataFrame({"label": [1]})
     assert c._extract_autosave_will_run("A.tif") is True
     assert c._extract_autosave_will_run("B.tif") is False

@@ -19,6 +19,8 @@ Two deliberate changes to the ports:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy import ndimage as ndi
 from skimage import morphology
@@ -257,3 +259,138 @@ def seeds_threshold_cc(img, thresh=None, smooth=2.0, region=None, spacing=(1, 1,
     if region is not None:
         seeds = np.where(region, seeds, 0)
     return seeds
+
+
+# --------------------------------------------------------------------------- #
+# The touching-marker rule (markers taken from labels)
+# --------------------------------------------------------------------------- #
+#: A label of another segmentation is kept as a marker when it covers at
+#: least this share of the object being split ...
+TOUCH_OBJECT_SHARE = 0.10
+#: ... or when MORE than this share of the label itself lies inside the
+#: object.  Either half alone fails one way: a nucleus is small next to a
+#: cell (a real one can cover under 2 % of a four-nucleus cell), and a cell
+#: is big next to a nucleus (a real one rarely has half of itself inside).
+TOUCH_LABEL_SHARE = 0.50
+#: The label-side half is not counted for a label smaller than this: a
+#: one-voxel speck lying wholly inside the object is "all inside" and would
+#: grow a full piece.  The same size as the panel's sliver size.
+TOUCH_MIN_LABEL_VOXELS = 20
+
+#: The label sizes are counted over the whole mask this many z-planes at a
+#: time, so the memory held is one slab, never a copy of the mask.
+TOUCH_SLAB_PLANES = 16
+
+
+def _as_fraction(share):
+    from fractions import Fraction
+
+    f = Fraction(share).limit_denominator(1000)
+    return int(f.numerator), int(f.denominator)
+
+
+_OBJ_NUM, _OBJ_DEN = _as_fraction(TOUCH_OBJECT_SHARE)
+_LAB_NUM, _LAB_DEN = _as_fraction(TOUCH_LABEL_SHARE)
+
+
+@dataclass(frozen=True)
+class MarkerContact:
+    """How one label touches the object, and the rule's verdict.
+
+    ``inside`` -- its voxels inside the object; ``label_voxels`` -- its
+    size in the WHOLE mask (a label crossing the search box is counted in
+    full); ``object_voxels`` -- the object's size; ``keep`` -- the verdict.
+    """
+
+    inside: int
+    label_voxels: int
+    object_voxels: int
+    keep: bool
+
+
+def touching_keeps(inside, label_voxels, object_voxels) -> bool:
+    """The rule, in exact integer arithmetic.
+
+    Kept when ``inside`` is at least a tenth of the object, or when more
+    than half of the label lies inside the object and the label has at
+    least :data:`TOUCH_MIN_LABEL_VOXELS` voxels.  An object of fewer than
+    ten voxels therefore keeps every contact (a tenth of it is under one
+    voxel).
+    """
+    inside = int(inside)
+    label_voxels = int(label_voxels)
+    object_voxels = int(object_voxels)
+    if inside <= 0:
+        return False
+    if inside * _OBJ_DEN >= _OBJ_NUM * object_voxels:
+        return True
+    return (label_voxels >= TOUCH_MIN_LABEL_VOXELS
+            and inside * _LAB_DEN > _LAB_NUM * label_voxels)
+
+
+def _as_cut_ids(a):
+    """The label ids as the cut reads them (:func:`seeds_from_labels`
+    casts to int32).  An int32-safe dtype is left as it is; anything
+    wider wraps the same way that cast does, so both agree on every id."""
+    a = np.asarray(a)
+    if a.dtype == np.int32 or np.can_cast(a.dtype, np.int32):
+        return a
+    return np.asarray(a, np.int32)
+
+
+def marker_contacts(seeds_in_region, region, guide, *, slab=TOUCH_SLAB_PLANES,
+                    cancel_event=None):
+    """Measure every label inside the object and apply the touching rule.
+
+    ``seeds_in_region`` is the guide cropped to the search box and masked
+    to the object (what :func:`seeds_from_labels` gives, masked);
+    ``region`` the object's mask in the same box; ``guide`` the WHOLE mask
+    the labels came from, which is where each label's size is counted --
+    only for the ids found in the object, one z-slab at a time.  Negative
+    ids are counted like any other; 0 is background and never a marker.
+
+    Ids are read as the cut reads them (int32), so an id of 2**31 or more
+    in a wider mask is keyed the same way on every path.  A set
+    ``cancel_event`` ends the sweep between slabs and returns ``{}``.
+
+    Returns ``{label_id: MarkerContact}``; never mutates its inputs.
+    """
+    seeds_in_region = _as_cut_ids(seeds_in_region)
+    region = np.asarray(region, dtype=bool)
+    object_voxels = int(np.count_nonzero(region))
+    if object_voxels == 0:
+        return {}
+    vals = seeds_in_region[region]
+    vals = vals[vals != 0]
+    if vals.size == 0:
+        return {}
+    ids, inside = np.unique(vals, return_counts=True)
+    sizes = {int(i): 0 for i in ids}
+    guide = np.asarray(guide)
+    step = max(1, int(slab))
+    if guide.ndim == 0 or guide.shape[0] == 0:
+        planes = 0
+    else:
+        planes = int(guide.shape[0])
+    for z0 in range(0, planes, step):
+        if cancel_event is not None and cancel_event.is_set():
+            return {}
+        part = _as_cut_ids(guide[z0:z0 + step])
+        hit = part[np.isin(part, ids)]
+        if hit.size == 0:
+            continue
+        u, c = np.unique(hit, return_counts=True)
+        for value, count in zip(u.tolist(), c.tolist()):
+            if int(value) in sizes:
+                sizes[int(value)] += int(count)
+    out = {}
+    for label, n_in in zip(ids.tolist(), inside.tolist()):
+        label = int(label)
+        n_in = int(n_in)
+        # the guide is never smaller than what lies inside the object
+        n_label = max(sizes.get(label, 0), n_in)
+        out[label] = MarkerContact(
+            inside=n_in, label_voxels=n_label, object_voxels=object_voxels,
+            keep=touching_keeps(n_in, n_label, object_voxels),
+        )
+    return out

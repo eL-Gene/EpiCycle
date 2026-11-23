@@ -314,6 +314,12 @@ class TestWorkspaceRestoreOrder:
             "Label", (), {"setText": lambda self, text: None}
         )()
         ctrl.working_dir = ""
+        # a clean unsaved-edits guard: the folder change asks it first
+        ctrl._tiers_dirty = False
+        ctrl._curation_dirty = False
+        ctrl._save_in_flight = False
+        from packages.epicycle_annotator.curation_undo import CurationUndoStack
+        ctrl._curation_undo_stack = CurationUndoStack(max_depth=20)
         ctrl._load_stack_dir = (
             lambda path: ctrl.state_manager.calls.append(("load_stack_dir", path))
         )

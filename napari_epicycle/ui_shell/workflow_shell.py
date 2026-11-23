@@ -3,14 +3,17 @@ from __future__ import annotations
 import html
 import os
 import subprocess
+import sys
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Callable, Dict, Optional
 
 import psutil
 import qtawesome as qta
-from qtpy.QtCore import QSize, QTimer, Qt
+from qtpy.QtCore import QEvent, QObject, QSize, QTimer, Qt, Signal
 from qtpy.QtGui import QFont, QFontMetrics
 from qtpy.QtWidgets import (
     QDockWidget,
@@ -20,6 +23,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -37,7 +41,107 @@ from ..fusion_reconstruction.ui import FusionReconstructionCuration
 from ..hitl_training_annotation.ui.main_widget import TrainingAnnotationHITL2D
 from ..segmentation.ui import SegmentStack
 from ..tiled_segmentation.ui import LargeScaleSegmentation
+from ..utils import crash_logger
 from . import _workspace_facts
+
+# Set once the session log's clean-exit line is hooked to the application.
+_QUIT_HOOKED = False
+
+
+def _hook_session_log_footer() -> None:
+    """Write the session log's clean-exit line when the application quits."""
+    global _QUIT_HOOKED
+    if _QUIT_HOOKED:
+        return
+    try:
+        from qtpy.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.aboutToQuit.connect(crash_logger.write_footer)
+        _QUIT_HOOKED = True
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class _AppCloseGuard(QObject):
+    """Ask every step about its unsaved work before napari's window closes.
+
+    Installed as an event filter on napari's main window, so it sees the
+    window X and File > Quit alike.  On a Close event it calls each step
+    controller's ``on_app_close()``; a step that answers False, or raises,
+    keeps the window open.  A step that raises does not: the user is
+    asked whether to close anyway, so no step can trap the window.  A Close
+    that arrives while a step is asking (the question is modal and pumps
+    events) is refused without asking again.  The shell is held weakly:
+    once it is gone, nothing is asked.
+    """
+
+    def __init__(self, shell) -> None:
+        super().__init__()
+        self._shell_ref = weakref.ref(shell)
+        self._asking = False
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt name)
+        try:
+            if event.type() != QEvent.Close:
+                return False
+            if self._asking:
+                print("[APP-CLOSE] close refused: still asking about "
+                      "unsaved work")
+                event.ignore()
+                return True
+            shell = self._shell_ref()
+            if shell is None:
+                return False
+            self._asking = True
+            try:
+                refused_by = self._first_refusal(shell)
+            finally:
+                self._asking = False
+            if refused_by is None:
+                return False
+            print(f"[APP-CLOSE] close refused by step {refused_by}")
+            event.ignore()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            # Never trap the user in the window over a fault of the guard.
+            print(f"[APP-CLOSE] guard failed, closing anyway: {exc!r}")
+            return False
+
+    @staticmethod
+    def _first_refusal(shell) -> Optional[str]:
+        """The id of the first step that refuses the close, or None."""
+        for spec in getattr(shell, "_step_specs", None) or []:
+            step_id = getattr(spec, "step_id", "")
+            try:
+                ctrl = shell._get_step_controller(step_id)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[APP-CLOSE] step {step_id}: no controller ({exc!r})")
+                continue
+            hook = getattr(ctrl, "on_app_close", None)
+            if not callable(hook):
+                continue
+            try:
+                ok = hook()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[APP-CLOSE] step {step_id}: on_app_close raised "
+                      f"{exc!r}; asking whether to close anyway")
+                reply = QMessageBox.question(
+                    shell,
+                    "Closing EpiCycle",
+                    "EpiCycle could not check for unsaved work.\n\n"
+                    "Close anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply == QMessageBox.Yes:
+                    continue
+                return step_id
+            if ok is False:
+                return step_id
+        return None
 
 
 @dataclass(frozen=True)
@@ -483,6 +587,33 @@ def _read_gpu_utilization() -> Optional[int]:
     return None
 
 
+class _LinkLabel(QLabel):
+    """A plain text label that can be clicked (and tells when the mouse is over)."""
+
+    clicked = Signal()
+    entered = Signal()
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if (event.button() == Qt.LeftButton
+                and self.rect().contains(event.pos())):
+            self.clicked.emit()
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        self.entered.emit()
+
+
+def _open_folder(folder: str) -> None:
+    """Show a folder in the system file browser."""
+    if sys.platform.startswith("win"):
+        os.startfile(folder)  # type: ignore[attr-defined]
+    elif sys.platform == "darwin":
+        subprocess.run(["open", folder], check=False)
+    else:
+        subprocess.run(["xdg-open", folder], check=False)
+
+
 class _StatusCard(QWidget):
     """Compact at-a-glance project status + live resource monitors."""
 
@@ -604,7 +735,31 @@ class _StatusCard(QWidget):
         cpu_gpu_row.addWidget(self._bars["gpu"])
         card_layout.addLayout(cpu_gpu_row)
 
+        # ── Session log link ──
+        self._log_link = _LinkLabel("Open log folder")
+        self._log_link.setStyleSheet(self._LABEL_DIM)
+        self._log_link.setCursor(Qt.PointingHandCursor)
+        self._log_link.entered.connect(self._refresh_log_tooltip)
+        self._log_link.clicked.connect(self._open_log_folder)
+        self._refresh_log_tooltip()
+        card_layout.addWidget(self._log_link)
+
         root.addWidget(card)
+
+    def _refresh_log_tooltip(self) -> None:
+        path = crash_logger.log_path()
+        self._log_link.setToolTip(str(path) if path else "no session log")
+
+    def _open_log_folder(self) -> None:
+        """Open the folder holding this session's log (a console line on failure)."""
+        path = crash_logger.log_path()
+        if not path:
+            print("[SESSION-LOG] no session log to show")
+            return
+        try:
+            _open_folder(str(Path(path).parent))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[SESSION-LOG] could not open the log folder: {exc}")
 
     def _start_resource_polling(self) -> None:
         self._resource_timer = QTimer(self)
@@ -897,6 +1052,37 @@ class EpiCycleWorkflowShell(QWidget):
         # has already run against an empty box, so the remembered path cannot
         # drag a source restore or a migration prompt into start-up.
         self._prefill_step1_from_suggestion()
+        _hook_session_log_footer()
+        self._install_app_close_guard()
+
+    def _install_app_close_guard(self) -> None:
+        """Put the unsaved-work question in front of napari's window close.
+
+        Installs one ``_AppCloseGuard`` on napari's main window (once; a
+        second call does nothing).  A guard left on the same window by an
+        earlier shell (the dock closed and reopened) is removed first, so a
+        dead shell's controllers are never asked.  A viewer without a Qt
+        window, as in tests, is left alone.
+        """
+        if getattr(self, "_app_close_guard", None) is not None:
+            return
+        try:
+            window = getattr(getattr(self, "viewer", None), "window", None)
+            qt_window = getattr(window, "_qt_window", None)
+            if qt_window is None or not hasattr(qt_window,
+                                                "installEventFilter"):
+                return
+            old = getattr(qt_window, "_epicycle_app_close_guard", None)
+            if old is not None:
+                qt_window.removeEventFilter(old)
+            guard = _AppCloseGuard(self)
+            qt_window.installEventFilter(guard)
+            # The shell keeps the filter alive; PyQt does not.  The window
+            # remembers it so the next shell can take it off.
+            self._app_close_guard = guard
+            qt_window._epicycle_app_close_guard = guard
+        except Exception as exc:  # noqa: BLE001
+            print(f"[APP-CLOSE] guard not installed: {exc!r}")
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1520,6 +1706,9 @@ class EpiCycleWorkflowShell(QWidget):
                           f"hook refused the change to {step_id!r}")
                     return
 
+        if previous_step != step_id:
+            crash_logger.breadcrumb(f"step {previous_step or '-'} -> {step_id}")
+
         index = self._step_index_by_id[step_id]
         self.step_stack.setCurrentIndex(index)
 
@@ -1792,6 +1981,8 @@ class EpiCycleWorkflowShell(QWidget):
         _workspace_facts.save_last_workspace(path)
         print(f"[WORKSPACE] shared workspace set from {source_step or '?'}: "
               f"{path}")
+        crash_logger.breadcrumb(
+            f"workspace set from {source_step or '?'}: {path}")
 
         # Re-adopt the step the user is looking at, so its banner + path box
         # follow immediately; the others follow on entry (`_select_step`).

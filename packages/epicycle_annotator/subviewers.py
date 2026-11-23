@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from napari.layers import Image, Labels
 
+from .layer_batch import batched_layer_removals
 from .orientation import transpose_data
 from .sync import lock_brush_size_to_1
 
@@ -354,7 +355,11 @@ class SubviewerManager:
                 drag_callback = drawing_handler.create_mouse_drag_callback(
                     lbl.name[-2:], self._viewer_model_for_orientation(lbl.name[-2:])
                 )
-                lbl.mouse_drag_callbacks.append(drag_callback)
+                # FIRST in the list: napari's draw callback paints the press
+                # dab before its first yield, and the stroke-begin hook must
+                # copy its plane before that.  Mode changes append napari's
+                # callbacks after ours, so the order holds.
+                lbl.mouse_drag_callbacks.insert(0, drag_callback)
                 lbl._epicycle_drag_connected = True
             # Right-click → navigator-focus (subviewer-only feature,
             # 2026-05-10).  Idempotent guard prevents N callbacks if
@@ -466,19 +471,27 @@ class SubviewerManager:
             if src is not None:
                 src.name = f"{new_name}_{orient}"
 
+    def _qt_viewers(self) -> list:
+        """The side-view Qt viewers that exist (flushed after a batch)."""
+        return [
+            qv for qv in (self.qt_viewer_xy, self.qt_viewer_xz, self.qt_viewer_yz)
+            if qv is not None
+        ]
+
     def remove_layer_from_subviewers(self, layer_name: str) -> None:
         expected = {f"{layer_name}_{o}" for o in ("XY", "XZ", "YZ")}
-        for vm in [self.viewer_model_xy, self.viewer_model_xz, self.viewer_model_yz]:
-            for layer in list(vm.layers):
-                if layer.name in expected or layer.name == layer_name:
-                    # Hide before remove — disconnect the vispy visual from the
-                    # scene graph before freeing it (prevents freed-texture
-                    # access violations).
-                    try:
-                        layer.visible = False
-                    except Exception:
-                        pass
-                    vm.layers.remove(layer)
+        with batched_layer_removals(*self._qt_viewers()):
+            for vm in [self.viewer_model_xy, self.viewer_model_xz, self.viewer_model_yz]:
+                for layer in list(vm.layers):
+                    if layer.name in expected or layer.name == layer_name:
+                        # Hide before remove — disconnect the vispy visual from the
+                        # scene graph before freeing it (prevents freed-texture
+                        # access violations).
+                        try:
+                            layer.visible = False
+                        except Exception:
+                            pass
+                        vm.layers.remove(layer)
 
     def get_subviewer_layer(self, base_name: str, orientation: str):
         vm = self._viewer_model_for_orientation(orientation)
@@ -638,6 +651,7 @@ class SubviewerManager:
         if n > 0:
             print(f"[SUBVIEWER-CLEAR] clearing {n} subviewer layers — caller stack:")
             _tb.print_stack(limit=10)
-        for vm in [self.viewer_model_xy, self.viewer_model_xz, self.viewer_model_yz]:
-            for layer in list(vm.layers):
-                vm.layers.remove(layer)
+        with batched_layer_removals(*self._qt_viewers()):
+            for vm in [self.viewer_model_xy, self.viewer_model_xz, self.viewer_model_yz]:
+                for layer in list(vm.layers):
+                    vm.layers.remove(layer)

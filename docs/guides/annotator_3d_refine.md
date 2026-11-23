@@ -70,6 +70,10 @@ its holes, then settle it onto the wall — and accept the lot at once. See
 - **Accept / Discard** — the two buttons at the bottom, which never move. With
   nothing staged the second one reads **Cancel**.
 
+Closing this window with its **X** only hides it: a staged step stays staged,
+in the volume, until you Accept or Discard it, and **Advanced Features...** in
+the annotator brings the same page back.
+
 ---
 
 ## The seven methods
@@ -313,7 +317,7 @@ would flatten the very contrast it looks for.
 If the layer named in the picker is gone (renamed, removed) the picker goes
 **blank and stays blank**, and **Preview is greyed with the reason**
 (*"Pick a channel first."*). It never quietly works on the first image it can
-find.
+find. The picker starts blank the first time you open the dock on a patch; pick one. After that it remembers your choice by name, and if that layer is renamed or removed it goes blank again and the tool says so.
 
 ---
 
@@ -458,8 +462,8 @@ the **⚙ Batch Refine…** button in the Label Navigator's side bar, or
 1. **Pick the recipe.** At the top of the RECIPE section, choose it under
    **Refine-tab recipe** — every recipe saved on this tab is listed with its
    steps (*"tidy — Smooth -> Settle"*). The steps then appear one per line in
-   this page's own words (*"2. Settle onto the wall signal — walls: Membrane
-   signal; preparation: Subtract background"*). The step builder underneath
+   this page's own words (*"2. Settle — walls: Membrane sheets; preparation:
+   Remove haze"*). The step builder underneath
    is hidden, and **Recent**, **Saved steps** and **Save recipe…** are greyed:
    *"The steps are the Refine recipe's. Pick “none” above to build steps
    here."* A recipe that cannot be read is greyed in the list, and its text
@@ -490,6 +494,12 @@ the **⚙ Batch Refine…** button in the Label Navigator's side bar, or
    to preview on."*). **Run on N objects** runs it on the whole target. Either
    way the result is staged: **Accept** keeps all of it as ONE step the main
    Undo takes back; **Reject** puts every object back exactly as it was.
+
+**Keep original QC tier (don't mark curated)**, a tick at the foot of the
+recipe section, is off to start. Off, every refined object is moved to the
+*curated* tier. Ticked, each object stays in the tier it had (good, review
+and so on). Either way its measurements are marked out of date; run
+Recalculate QC to refresh them.
 
 While it runs, the status line says what it is doing: *"Preparing — copying
 the labels and finding 40 objects…"* (the bar just moves), then *"Refining

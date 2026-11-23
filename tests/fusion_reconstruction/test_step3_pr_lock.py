@@ -42,9 +42,18 @@ def full(app, tmp_path):
     import numpy as np
     import tifffile
 
+    from qtpy.QtCore import QCoreApplication, QEvent
+
     from napari_epicycle.fusion_reconstruction.ui import (
         FusionReconstructionCuration,
     )
+    # Earlier tests (this file's own teardown too) deleteLater() their
+    # widgets and then at most call processEvents(), which does not run
+    # those deletions, so they pile up.  Without this flush the
+    # first wait in a test here drains them all at once and overruns the
+    # 450 ms window the lock tests time.  Run the pending deletions now,
+    # before the widget under test exists.
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     w = FusionReconstructionCuration(viewer=None)
     c = w.controller
     c.working_dir = str(tmp_path)
@@ -97,7 +106,9 @@ def test_every_block_flag_has_a_sentence_of_the_right_family():
     assert set(table) == set(STEP3_BLOCK_FLAGS)
     for flag, sentence in table.items():
         if flag in P.S3_LOCK_SESSION_FLAGS:       # the imperative
-            assert sentence.endswith(" there."), flag
+            # it says where the edit is finished: "there" (the annotator)
+            # or the tab it is open on (Add's names its tab)
+            assert sentence.endswith((" there.", " tab.")), flag
             assert "wait" not in sentence.lower(), flag
         else:                                     # a job: Step 4's form
             assert ("Cancel stops it" in sentence
@@ -208,6 +219,28 @@ def test_view_is_grey_under_every_other_flag(full):
     assert w.view_reconstructed_button.isEnabled()
 
 
+def test_the_patches_eye_follows_view(full):
+    """The rows' eye dims exactly when View is grey: live under Predict
+    (its own property, not the list's lock property), dimmed under every
+    other flag."""
+    from napari_epicycle.fusion_reconstruction.ui import (
+        PR_EYE_LOCK_PROPERTY, PR_LOCK_PROPERTY,
+    )
+    w, c = full
+    lst = w._patch_state_list
+    assert not lst.property(PR_EYE_LOCK_PROPERTY)
+    _set(c, "_prediction_running")
+    c._update_button_states()
+    assert lst.property(PR_LOCK_PROPERTY)            # the rows dim
+    assert not lst.property(PR_EYE_LOCK_PROPERTY)    # the eye still works
+    _set(c, "_prediction_running", False)
+    c._update_button_states()
+    _set(c, "_curation_busy")
+    assert lst.property(PR_EYE_LOCK_PROPERTY)
+    _set(c, "_curation_busy", False)
+    assert not lst.property(PR_EYE_LOCK_PROPERTY)
+
+
 def test_each_input_gets_its_own_state_back_and_the_gates_rerun(full):
     w, c = full
     w.ps_smooth_flows_cb.setChecked(False)        # the gate greys the two
@@ -253,10 +286,14 @@ def test_the_ticks_go_off_quietly_under_predict(full):
     assert w.pr_locked_list_note.isVisible()
     assert not w.pr_ticked_predict_label.isVisible()
     assert not w.pr_tick_all_link.isVisible()
+    assert not w.pr_untick_all_link.isVisible()
+    assert not w.pr_untick_all_link.isEnabled()
     _set(c, "_prediction_running", False)
     assert lst.item(0).flags() & Qt.ItemIsUserCheckable
     assert not w.pr_locked_list_note.isVisible()
     assert w.pr_tick_all_link.isVisible()
+    assert w.pr_untick_all_link.isVisible()
+    assert w.pr_untick_all_link.isEnabled() == w.pr_tick_all_link.isEnabled()
 
 
 def test_the_nav_lock_is_step_3s_own(full):

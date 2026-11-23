@@ -149,6 +149,28 @@ class TestMinSizeAndRelabel:
         )
         ids = sorted(int(v) for v in np.unique(out) if v != 0)
         assert ids == [42, 43]
+        assert out.dtype == np.int32, "ordinary ids stay int32"
+
+    @pytest.mark.parametrize("next_label", [2 ** 31 - 1, 2 ** 31,
+                                            2 ** 32 - 10])
+    def test_ids_past_the_int32_maximum_stay_positive(self, next_label):
+        """A uint32 volume whose next free id is near 2**31: the relabel
+        switches to int64 (as the preview's _mint does) instead of wrapping
+        the ids negative."""
+        img = np.zeros((10, 20, 20))
+        img[2:8, 3:8, 3:8] = 100
+        img[2:8, 12:17, 12:17] = 100
+        existing = np.zeros(img.shape, np.uint32)
+        out = add_segment_region(img, existing, threshold=50.0,
+                                 separate=False, next_label=next_label)
+        ids = sorted(int(v) for v in np.unique(out) if v != 0)
+        assert ids == [next_label, next_label + 1]
+        assert out.min() >= 0
+        assert out.dtype == np.int64
+        # written into the uint32 volume, the ids are kept exactly
+        vol = existing.copy()
+        vol[out > 0] = out[out > 0]
+        assert sorted(int(v) for v in np.unique(vol) if v) == ids
 
 
 class TestDegenerate:
@@ -235,4 +257,54 @@ def test_the_annotator_methods_delegate_to_the_pure_functions():
     assert Curation3DAnnotator._add_edge_flags(None, lab, 2) == edge_flag_ids(lab, 2)
     a = Curation3DAnnotator._smooth_add_result(None, lab.copy(), 1.5)
     b = smooth_pieces(lab.copy(), 1.5)
+    assert np.array_equal(a, b)
+
+
+# --------------------------------------------------------------------------- #
+# a Stop during the smoothing: checked between pieces
+# --------------------------------------------------------------------------- #
+def _three_cubes():
+    lab = np.zeros((20, 20, 20), np.int32)
+    lab[2:8, 2:8, 2:8] = 4
+    lab[2:8, 11:17, 2:8] = 5
+    lab[11:17, 2:8, 11:17] = 6
+    return lab
+
+
+def test_smooth_pieces_stops_between_pieces_on_a_stop(monkeypatch):
+    import threading
+
+    from packages.epicycle_annotator import batch_refine as BR
+    from packages.epicycle_annotator.add_segment import smooth_pieces
+    from packages.epicycle_annotator.reshape.engine import ReshapeCancelled
+
+    ev = threading.Event()
+    done = []
+    real = BR._compute_one
+
+    def one_then_stop(*a, **k):
+        out = real(*a, **k)
+        done.append(a[1])
+        ev.set()
+        return out
+
+    monkeypatch.setattr(BR, "_compute_one", one_then_stop)
+    # One thread: the exact count below holds there.  On the pool the
+    # pieces already running finish and are dropped (the pool's own test
+    # holds that: test_add_speed_smooth).
+    import packages.epicycle_annotator.add_segment as AS
+    monkeypatch.setattr(AS, "ADD_SMOOTH_MAX_WORKERS", 1)
+    with pytest.raises(ReshapeCancelled):
+        smooth_pieces(_three_cubes(), 1.5, cancel_event=ev)
+    assert done == [4], "the pieces after the Stop are not smoothed"
+
+
+def test_smooth_pieces_with_a_quiet_stop_token_is_unchanged():
+    import threading
+
+    from packages.epicycle_annotator.add_segment import smooth_pieces
+
+    lab = _three_cubes()
+    a = smooth_pieces(lab.copy(), 1.5)
+    b = smooth_pieces(lab.copy(), 1.5, cancel_event=threading.Event())
     assert np.array_equal(a, b)

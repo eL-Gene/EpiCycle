@@ -32,6 +32,8 @@ def _ann(monkeypatch, *, running=True, cand=True, balls=True):
     a._active_labels_names = ["L"]
     a._add_running = running
     a._add_candidate_layer = _L("_epicycle_add_candidate") if cand else None
+    # the labels key targets the candidate only while a result is drawn on it
+    a._add_drawn_roi = (slice(0, 1),) * 3 if cand else None
     a._add_marker_layer = _L("_epicycle_add_markers") if balls else None
     a._refine_layer = None
     copies = {}

@@ -114,6 +114,7 @@ CONTRACT_WIDGETS = {
     # orchestrator branch was unreachable.  Three entries left this
     # table in the commit that removed them.
     "split_auto_smooth_cb": "QCheckBox",
+    "split_smooth_mode_combo": "QComboBox",
     "smooth_sigma_z_sb": "QDoubleSpinBox",
     "smooth_sigma_xy_sb": "QDoubleSpinBox",
     "split_detect_min_dist_sb": "QSpinBox",
@@ -163,7 +164,8 @@ CONTRACT_WIDGETS = {
     "add_refine_piece_btn": "QPushButton",
     "add_merge_pieces_btn": "QPushButton",
     "add_again_btn": "QPushButton",
-    "add_undo_all_btn": "QPushButton",
+    # `add_undo_all_btn` RETIRED (the Add page redesign): REVIEW's Undo
+    # all is the footer's secondary, `add_reject_btn`.
     # Add_results_label merged into S1, and the
     # "Boundary -- soon" marker combo and the never-passed connectivity
     # combo are removed.
@@ -174,6 +176,8 @@ CONTRACT_WIDGETS = {
     # the 10 Advanced knobs re-run Preview on change
     "add_separate_cb": "QCheckBox",
     "add_min_distance_sb": "QSpinBox",
+    # the markers' own Spacing (beside Anywhere's)
+    "add_marker_spacing_sb": "QSpinBox",
     # --- ---
     "add_preset_combo": "QComboBox",
     "add_marker_source_combo": "QComboBox",
@@ -374,7 +378,7 @@ TOOLTIP_GOLDEN = (
     "add_min_size_sb", "add_otsu_btn", "add_pieces_list", "add_preview_btn",
     "add_recenter_btn", "add_refine_piece_btn", "add_separate_cb",
     "add_size_l_btn", "add_size_m_btn", "add_size_s_btn",
-    "add_smooth_sigma_sb", "add_start_btn", "add_undo_all_btn",
+    "add_smooth_sigma_sb", "add_start_btn",
     # Brick B1 RETIRED seven of these:
     # the three per-method image combos, the Guided Grow source picker, the
     # "Image weight" alpha and the two one-sided distance clamps.
@@ -404,7 +408,8 @@ TOOLTIP_GOLDEN = (
     "split_about_btn",
     "split_accept_btn", "split_advanced_btn", "split_anyway_btn",
     "split_arbiter_cb", "split_arbiter_pct_sb", "split_auto_advance_cb",
-    "split_auto_smooth_cb", "split_cancel_preview_btn",
+    # `split_auto_smooth_cb` is a hidden adapter; the combo carries the tip.
+    "split_smooth_mode_combo", "split_cancel_preview_btn",
     "split_compactness_sb", "split_contour_cb", "split_detect_bins_sb",
     "split_detect_min_dist_sb", "split_detect_seeds_btn", "split_edt_cb",
     "split_fragment_list", "split_guide_browse_btn", "split_guide_load_btn",
@@ -754,73 +759,74 @@ class TestGuideSubPickerBranches:
 
 
 class TestTheAddSecondary:
-    """State 3: add_reject_btn has had ONE label its whole life
-    ("Cancel", zero setText calls repo-wide).  It gains exactly one
-    transition -- with candidates staged it throws a RESULT away."""
+    """The footer's two buttons, one word per meaning: the secondary reads
+    Close box (a box is up, and grey with the same word before one is),
+    Discard (a result is staged), Undo all (REVIEW); the primary reads
+    Accept / Accept (k), and Done in REVIEW."""
 
-    def test_it_starts_as_cancel(self, widget):
-        assert widget.add_reject_btn.text() == "Cancel"
+    def test_it_starts_as_close_box(self, widget):
+        assert widget.add_reject_btn.text() == "Close box"
 
     def test_staged_candidates_make_it_discard(self, widget):
         widget.update_add_ui_state(
             candidate_ids=[3, 4], candidate_sizes={3: 900, 4: 800})
         assert widget.add_reject_btn.text() == "Discard"
 
-    def test_an_empty_result_puts_it_back_to_cancel(self, widget):
+    def test_an_empty_result_puts_it_back_to_close_box(self, widget):
         widget.update_add_ui_state(
             candidate_ids=[3], candidate_sizes={3: 900})
         widget.update_add_ui_state(candidate_ids=[])
-        assert widget.add_reject_btn.text() == "Cancel"
+        assert widget.add_reject_btn.text() == "Close box"
 
     def test_the_review_swap_retires_Discard(self, widget):
         """Discard means "throw the staged result away"; in REVIEW the
-        result is already written, so the label becomes "Done" (the
+        result is already written, so the secondary becomes Undo all (the
         REVIEW-only third value) and never stays "Discard"."""
         widget.update_add_ui_state(
             candidate_ids=[3], candidate_sizes={3: 900})
         assert widget.add_reject_btn.text() == "Discard"
         widget.update_add_ui_state(review_active=True, piece_ids=[3])
-        assert widget.add_reject_btn.text() == "Done"
+        assert widget.add_reject_btn.text() == "Undo all"
         widget.update_add_ui_state(review_active=False)
-        assert widget.add_reject_btn.text() == "Cancel"
+        assert widget.add_reject_btn.text() == "Close box"
 
-    def test_REVIEW_offers_a_live_Done_and_a_dead_Accept(self, widget):
-        """State 4 / I-5's third value.
-
-        In REVIEW the cells are already written: `_accept_add` returns at
-        its `_add_running` guard, so an enabled primary is a button that
-        does nothing, and the secondary -- which runs `_reject_add`, a
-        clean exit that keeps the committed work -- was labelled "Cancel"
-        while it actually meant "done".
-        """
+    def test_REVIEW_offers_a_live_Done_and_a_live_Undo_all(self, widget):
+        """In REVIEW the cells are already written: the primary is Done
+        (it closes the session and keeps them), the secondary Undo all."""
         widget.update_add_ui_state(
             candidate_ids=[3, 4], candidate_sizes={3: 900, 4: 800})
         widget.update_add_ui_state(review_active=True, piece_ids=[3, 4])
-        assert widget.add_accept_btn.isEnabled() is False
-        assert widget.add_accept_btn.text() == "Accept"
+        assert widget.add_accept_btn.isEnabled() is True
+        assert widget.add_accept_btn.text() == "Done"
         assert widget.add_reject_btn.isEnabled() is True
-        assert widget.add_reject_btn.text() == "Done"
-
-    def test_Done_is_a_REVIEW_only_value(self, widget):
-        widget.update_add_ui_state(review_active=True, piece_ids=[3])
-        assert widget.add_reject_btn.text() == "Done"
+        assert widget.add_reject_btn.text() == "Undo all"
         widget.update_add_ui_state(review_active=False)
-        assert widget.add_reject_btn.text() == "Cancel"
+        assert widget.add_accept_btn.text() == "Accept"
+        assert widget.add_accept_btn.isEnabled() is False
+
+    def test_Undo_all_is_a_REVIEW_only_value(self, widget):
+        widget.update_add_ui_state(review_active=True, piece_ids=[3])
+        assert widget.add_reject_btn.text() == "Undo all"
+        widget.update_add_ui_state(review_active=False)
+        assert widget.add_reject_btn.text() == "Close box"
 
     def test_a_late_reject_enabled_does_not_undo_the_REVIEW_labels(self, widget):
         """The orchestrator's REVIEW push carries neither flag, and the
         swap must win over whatever the previous stage left."""
-        widget.update_add_ui_state(reject_enabled=True, accept_enabled=True)
+        widget.update_add_ui_state(reject_enabled=True, accept_enabled=False)
         widget.update_add_ui_state(review_active=True, piece_ids=[3])
-        assert widget.add_reject_btn.text() == "Done"
-        assert widget.add_accept_btn.isEnabled() is False
+        assert widget.add_reject_btn.text() == "Undo all"
+        assert widget.add_accept_btn.text() == "Done"
+        assert widget.add_accept_btn.isEnabled() is True
+        widget.update_add_ui_state(review_active=False)
 
     def test_the_primary_stops_counting_a_committed_result(self, widget):
         widget.update_add_ui_state(
             candidate_ids=[3, 4], candidate_sizes={3: 900, 4: 800})
         assert widget.add_accept_btn.text() == "Accept (2)"
         widget.update_add_ui_state(review_active=True, piece_ids=[3, 4])
-        assert widget.add_accept_btn.text() == "Accept"
+        assert widget.add_accept_btn.text() == "Done"
+        widget.update_add_ui_state(review_active=False)
 
 
 class TestOrchestratorUsesFocusTab:

@@ -175,3 +175,110 @@ class TestGateRobustness:
         )
         # Must not raise.
         assert ctrl._should_warn_lossy_downsample("any_patch") is False
+
+
+# ---------------------------------------------------------------------------
+# The words: what a half-size save really does to the mask
+# ---------------------------------------------------------------------------
+
+
+class _FakeBox:
+    """Stands in for QMessageBox: records the texts, clicks Cancel."""
+    Warning = 2
+    AcceptRole = 0
+    RejectRole = 1
+    last = None
+
+    def __init__(self, parent=None):
+        self.texts = {}
+        self.buttons = []
+        _FakeBox.last = self
+
+    def setIcon(self, icon):
+        pass
+
+    def setWindowTitle(self, text):
+        self.texts["title"] = text
+
+    def setText(self, text):
+        self.texts["text"] = text
+
+    def setInformativeText(self, text):
+        self.texts["info"] = text
+
+    def addButton(self, text, role):
+        btn = object()
+        self.buttons.append((text, role, btn))
+        return btn
+
+    def setDefaultButton(self, btn):
+        pass
+
+    def exec_(self):
+        return 0
+
+    def clickedButton(self):
+        return self.buttons[-1][2]
+
+
+class TestWarningWords:
+    """The box tells the truth about a half-size save."""
+
+    def _box(self, monkeypatch):
+        import qtpy.QtWidgets as qw
+        monkeypatch.setattr(qw, "QMessageBox", _FakeBox)
+        ctrl, name = _make_controller()
+        ctrl._append_log = lambda *_a: None
+        assert ctrl._show_lossy_downsample_warning(name) is False
+        return _FakeBox.last
+
+    def test_no_false_promises(self, monkeypatch):
+        box = self._box(monkeypatch)
+        info = box.texts["info"]
+        assert "Cell IDs and tier assignments are preserved" not in info
+        assert "Saved canonical shape is preserved" not in info
+        assert "sub-2-voxel" not in info
+
+    def test_says_what_is_lost(self, monkeypatch):
+        info = self._box(monkeypatch).texts["info"]
+        assert "2-voxel steps" in info
+        assert "thin gaps between neighbouring cells can close" in info
+        assert ("small or very thin cells (a few voxels, or one voxel "
+                "thick) can disappear") in info
+        assert "8 voxels" not in info
+        # the cells go at load, the boundaries move at save
+        assert "On load, small or very thin cells" in info
+        assert ("on save the mask is upsampled back to full size with "
+                "boundaries in 2-voxel steps") in info
+        assert "marked deleted in the table when you save" in info
+        assert "Tier assignments of the remaining cells are kept" in info
+        assert "run Batch Refine once with a Smooth step" in info
+        assert "full resolution" in info
+        assert "Settle" not in info
+
+    def test_title_and_buttons_unchanged(self, monkeypatch):
+        box = self._box(monkeypatch)
+        assert box.texts["title"] == (
+            "Switching to downsample for a curated patch")
+        assert [b[0] for b in box.buttons] == [
+            "Continue — downsample anyway",
+            "Cancel — load full-res for this patch",
+        ]
+        assert "Choose Continue to downsample anyway" in box.texts["info"]
+
+
+def test_checkbox_tooltip_is_honest():
+    from napari_epicycle.fusion_reconstruction.ui import (
+        DOWNSAMPLE_MODE_TOOLTIP,
+    )
+    tip = DOWNSAMPLE_MODE_TOOLTIP
+    assert "preserved at full resolution" not in tip
+    assert "upsampled back to full size" in tip
+    assert "2-voxel steps" in tip
+    assert ("small or very thin cells (a few voxels, or one voxel "
+            "thick) can disappear") in tip
+    assert "8 voxels" not in tip
+    assert "on load small or very thin cells" in tip
+    assert ("on save the mask is upsampled back to full size with "
+            "boundaries in 2-voxel steps") in tip
+    assert "Re-click the patch in the bucket below" in tip

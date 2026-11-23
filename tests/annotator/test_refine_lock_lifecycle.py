@@ -86,6 +86,8 @@ class Fake:
         self._refine_walls_wanted = False
         self._temp_guide_layers = {}
         self._interp_refine_mode = False
+        self._split_fragment_refine = False
+        self._frag_undo_layers = []
         self._load_locked = False
         self._refine_token = 1
         self._refine_launch_labels_name = "labels"

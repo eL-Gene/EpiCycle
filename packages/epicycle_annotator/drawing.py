@@ -36,6 +36,11 @@ class DrawingHandler:
         # Used by 3D curation to snapshot shared_data before the stroke
         # is synced, enabling undo of raw draw corrections.
         self.pre_sync_callback = None
+        # Optional callback fired ONCE at the start of a stroke, before any
+        # sync, with ``(orientation, plane_index)``: the plane of the shared
+        # volume the stroke will write.  Used by 3D curation to copy that
+        # plane so one Undo takes the whole stroke back.
+        self.stroke_begin_callback = None
         # Optional callback fired ONCE on mouse-release AFTER final sync.
         # Used by 3D curation to rebuild the isolation proxy so the user
         # sees drawn corrections in the main 3D viewer.
@@ -86,6 +91,13 @@ class DrawingHandler:
         self._polygon_points = []
         last_sync = 0.0
         throttle = self._adaptive_throttle(layer)
+
+        begin_cb = self.stroke_begin_callback
+        if begin_cb is not None:
+            try:
+                begin_cb(orientation, int(viewer_model.dims.current_step[0]))
+            except Exception:
+                pass
 
         # Pre-sync: fire BEFORE any sync modifies shared_data.
         # Used by 3D curation to snapshot the label's ROI for undo.

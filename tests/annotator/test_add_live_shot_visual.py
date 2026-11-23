@@ -11,7 +11,8 @@ The themed live run (``EpiCycle-drivers/shots_step3_add_b2.py``,
   S1 read TICK_ONE and the found count never showed -- TICK_ONE is for the
   USER unticking the last row;
 * V4 the footer read "Accept" with candidates up; the mockup "Accept (n)";
-* V5 REVIEW's "Done" was red (danger); the mockup's is neutral;
+* V5 REVIEW's "Done" was red (danger); since the page redesign Done is
+  the primary (the accept colour) and Undo all the red secondary;
 * V6 a Cells preview's stage read "Finding bright objects..." while it
   found nuclei-mask markers (spec: "Finding markers...");
 * V7 a BLOCKING S1 reason ("Pick the membrane channel under Walls.") sat
@@ -121,9 +122,10 @@ def test_the_busy_strip_runs_the_marquee(panel, qapp):
 def test_all_started_unticked_shows_the_found_count():
     s = dict(has_box=True, preset="cells",
              candidates=(7, 7, 0, 0, 0), user_emptied=False)
-    assert AP.s1_sentence(s) == AP.found_line(7, k_edge=7)
+    assert AP.s1_sentence(s) == AP.found_none_ticked_line(7, AP.ADD_WHY_EDGE)
     assert AP.s1_sentence(s) == (
-        "7 new objects found · 7 left unticked (at the box edge)")
+        "7 new objects found · none ticked (at the box edge) — press All, or "
+        "tick the ones to add")
 
 
 def test_the_user_unticking_the_last_row_is_tick_one():
@@ -190,18 +192,21 @@ def test_accept_carries_the_ticked_count(panel):
 
 
 # --------------------------------------------------------------------------- #
-# V5 -- Done is neutral
+# V5 -- Done is never red: the primary; Undo all is the red secondary
 # --------------------------------------------------------------------------- #
-def test_done_is_neutral_and_cancel_goes_back(panel):
+def test_done_is_the_primary_and_undo_all_is_red(panel):
     from napari_epicycle.annotator import advanced_features_widget as M
 
     red = panel.add_reject_btn.styleSheet()
+    assert red == M._REFINEMENT_REJECT_STYLE
     panel.update_add_ui_state(review_active=True)
-    assert panel.add_reject_btn.text() == "Done"
-    assert panel.add_reject_btn.styleSheet() == M.PANEL_BTN_STYLE
-    assert panel.add_reject_btn.styleSheet() != red
+    assert panel.add_accept_btn.text() == "Done"
+    assert panel.add_accept_btn.styleSheet() == M._REFINEMENT_ACCEPT_STYLE
+    assert panel.add_reject_btn.text() == "Undo all"
+    assert panel.add_reject_btn.styleSheet() == red
     panel.update_add_ui_state(review_active=False)
-    assert panel.add_reject_btn.text() == "Cancel"
+    assert panel.add_reject_btn.text() == "Close box"
+    assert panel.add_accept_btn.text() == "Accept"
     assert panel.add_reject_btn.styleSheet() == red
 
 

@@ -16,7 +16,7 @@ pre-FM8 behavior (main labels + subviewer label layers).
 
   1. ``_refine_layer`` non-None         → SPLIT/REFINE mode
   2. ``_multi_label_proxy_layers`` set  → MULTI-ISO mode
-  3. ``_isolation_proxy_layer`` + 3D    → SINGLE-ISO-3D mode
+  3. ``_isolation_proxy_layer`` live     → SINGLE-ISO mode (any ndisplay)
   4. fallback to super()                → DEFAULT (no iso, or 2D)
 
 Tests are Qt-free.  Bare-instance pattern + lightweight fake layer
@@ -264,7 +264,7 @@ class TestCuration3DOverride:
         ann = self._make_bare_c3d(
             single_proxy=proxy,
             ndisplay=3,
-            main_layers=[main],
+            main_layers=[main, proxy],
             sub_xy_layers=[sub_xy],
             sub_xz_layers=[sub_xz],
             sub_yz_layers=[sub_yz],
@@ -275,10 +275,9 @@ class TestCuration3DOverride:
             assert s in targets
         assert main not in targets
 
-    def test_priority_3_single_proxy_2d_falls_through_to_default(self):
-        """Single-label isolation in 2D (ndisplay=2) uses
-        `show_selected_label` on the main labels layer directly, no
-        proxy.  Override must fall through to default behavior."""
+    def test_priority_3_single_proxy_2d_routes_to_the_proxy(self):
+        """Single-cell isolation in 2D also shows the proxy in the main
+        viewer, so the labels key must toggle it with the side views."""
         from napari_epicycle.annotator.curation_3d_widget import (
             Curation3DAnnotator,
         )
@@ -288,19 +287,18 @@ class TestCuration3DOverride:
         sub_yz = _FakeLabelsLayer("labels_3d_YZ")
         main = _FakeLabelsLayer("labels_3d")
         ann = self._make_bare_c3d(
-            single_proxy=proxy,  # proxy exists but
-            ndisplay=2,           # we're in 2D — fall through
-            main_layers=[main],
+            single_proxy=proxy,
+            ndisplay=2,
+            main_layers=[main, proxy],
             sub_xy_layers=[sub_xy],
             sub_xz_layers=[sub_xz],
             sub_yz_layers=[sub_yz],
         )
         targets = Curation3DAnnotator._get_toggle_targets_for_name(ann, "labels_3d")
-        # Default path: main + subviewer labels (proxy NOT included).
-        assert main in targets
+        assert proxy in targets
         for s in (sub_xy, sub_xz, sub_yz):
             assert s in targets
-        assert proxy not in targets
+        assert main not in targets
 
     def test_priority_4_no_isolation_falls_through_to_default(self):
         from napari_epicycle.annotator.curation_3d_widget import (

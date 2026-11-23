@@ -437,7 +437,7 @@ def test_every_automatic_marker_in_the_dark_refuses_with_its_constant(outside):
 def test_two_dark_channels_fill_a_nucleus_bright_interior(outside):
     """A membrane-only dark mask calls a cell's dim interior dark; with the
     nuclei channel in ``dark_channels`` the interior is not dark and the
-    run marker survives (grill E-M4)."""
+    run marker survives."""
     shape = (16, 30, 30)
     mem = np.full(shape, 0.02, np.float32)
     nuc = np.full(shape, 0.02, np.float32)

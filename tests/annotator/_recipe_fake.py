@@ -8,6 +8,8 @@ read off real widgets, and the recipe runner's own methods bound too.
 
 from __future__ import annotations
 
+import types
+
 import numpy as np
 
 
@@ -37,6 +39,9 @@ BOUND = (
     "_launch_refine_worker", "_refine_is_stale", "_on_refine_finished",
     "_on_refine_error", "_on_refine_progress", "_on_refine_message",
     "_result_token", "_signal_sender", "_refine_band_um",
+    # the open-edit set that Preview reads before it starts
+    "staged_kinds", "staged_op_kind", "_sync_refine_state",
+    "_refuse_for_open_edit",
 )
 
 #: The runner's own methods (bound when the class has them).
@@ -95,12 +100,19 @@ class Fake:
         self.store_problem = None
         self.saved = []
 
+        from napari_epicycle.annotator.refinement_state import RefinementOpState
+
+        self._refine_state = RefinementOpState()
         self._split_running = False
         self._split_fragment_refine = False
         self._batch_staged = False
         self._batch_running = False
         self._smooth_running = False
         self._smooth_snapshot = None
+        # Discard hands the Clear Edits button back to the draw snapshot
+        self._draw_snapshot = None
+        self._clear_edits_btn = types.SimpleNamespace(
+            setEnabled=lambda _v: None, setText=lambda _v: None)
         self._smooth_roi = None
         self._smooth_label_id = None
         self._smooth_chain_count = 0

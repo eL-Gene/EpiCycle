@@ -220,6 +220,18 @@ BATCH_CHAIN_UNREADABLE = "{name} — cannot be read (details in the console)"
 BATCH_STILL_STOPPING = "The last batch is still stopping — try again in a moment."
 BATCH_BUSY = "Step 3 is busy with another job — try again when it finishes."
 BATCH_NOT_CLEAN = "Accept or Discard the change on screen first."
+#: Under the Step 3 lock, the open edit that holds it names itself and the
+#: tab it is finished on (an Add, a guided split, a staged Refine step); a
+#: lock with none of them open is a job's (``BATCH_BUSY``).
+BATCH_ADD_OPEN = (
+    "An Add box is open in the annotator — finish it first: press Accept, "
+    "or Discard a result and close the box, on the Add tab.")
+BATCH_RESHAPE_OPEN = (
+    "A split is open in the annotator — Accept or Discard it on the "
+    "Reshape tab.")
+BATCH_REFINE_OPEN = (
+    "A refine step is staged in the annotator — Accept or Discard it on the "
+    "Refine tab.")
 #: Gate 0 (UX audit H1): another door clicked while the dialog runs or
 #: holds a staged result -- the open dialog is raised instead.
 BATCH_ALREADY_OPEN = (
@@ -758,6 +770,7 @@ def run_batch_recipe(
     channel=None,
     prob=None,
     orphans=None,
+    spacing_source=None,
 ):
     """Apply ``recipe`` to every id in ``label_ids`` over a copy of ``volume``.
 
@@ -858,7 +871,8 @@ def run_batch_recipe(
             snapshot, working, ids, boxes, absent_ids, recipe,
             cancelled=cancelled, n_workers=n_workers, tick=_tick,
             stage=_stage, cancel_event=cancel_event, spacing=spacing,
-            channel=channel, prob=prob, orphans=orphans)
+            channel=channel, prob=prob, orphans=orphans,
+            spacing_source=spacing_source)
 
     if not cancelled and ids:
         _stage("refining", 0, total)
@@ -966,7 +980,7 @@ def _is_chain_recipe(recipe) -> bool:
 
 def _run_chain_path(snapshot, working, ids, boxes, absent_ids, recipe, *,
                     cancelled, n_workers, tick, stage, cancel_event, spacing,
-                    channel, prob, orphans):
+                    channel, prob, orphans, spacing_source=None):
     """The chain branch of :func:`run_batch_recipe`.
 
     Objects are computed independently on a pool (``batch_chain``), then
@@ -998,7 +1012,8 @@ def _run_chain_path(snapshot, working, ids, boxes, absent_ids, recipe, *,
         outcomes, cancelled = run_chain_batch(
             snapshot, ids, boxes, tuple(recipe.steps), spacing=spacing,
             channel=channel, prob=prob, n_workers=n_workers,
-            cancel_event=cancel_event, tick=_one, orphans=orphans)
+            cancel_event=cancel_event, tick=_one, orphans=orphans,
+            spacing_source=spacing_source)
 
     touched_ids = []
     emptied_ids = []

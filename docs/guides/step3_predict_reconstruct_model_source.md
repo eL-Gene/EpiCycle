@@ -25,7 +25,9 @@ Above the two columns, full width:
   - "lat: wound-v2" — the top-down (XY, lateral) model;
   - "ax: wound-v2" — the side (XZ, YZ, axial) model.
 
-  A third grey line says what the models were trained on, for example "Trained on 2 channels: membrane (1), nuclei (0) · Step 2 run “wound-v2”." — the channels the models were trained to read (the number in brackets is the channel's place in your image, counting from 0) and, for a Step 2 model, the run it came from.  The line wraps onto a second line when it is long, and hovering over it shows it whole.  The number in brackets is the channel's position in your image, counting from 0; a model trained on a grayscale image says so ("Trained on one grayscale channel · Step 2 run “wound-v2”.") instead of naming a membrane.  When the models were not recorded as trained on any channels — a Step 2 or refined model whose training record is missing — the line says "The channels this model was trained on are not recorded." and never guesses.  When the two models were trained on different channels, it names both sets: "Trained on different channels: lateral membrane (1), nuclei (0) · axial membrane (0). Step 2 runs “a” / “b”."  A Cellpose built-in records no channels, so with one of those active — and with no model picked, with only one of the two picked, or with a model file that is gone — the line is not shown.
+  A third grey line says what the models were trained on, for example "Trained on segment 2: green, helper 1: red · Step 2 run “wound-v2”." — the channels the models were trained to read (segment is the channel the model finds things in, helper the optional second channel) and, for a Step 2 model, the run it came from.  The line wraps onto a second line when it is long, and hovering over it shows it whole.  Each channel is named the way the channel boxes in Settings name it; a model trained with 0: gray, which averages every channel into one image and ignores the helper, says so ("Trained on one grayscale image (all channels averaged) · Step 2 run “wound-v2”.") instead of naming a channel.  When the models were not recorded as trained on any channels — a Step 2 or refined model whose training record is missing — the line says "The channels this model was trained on are not recorded." and never guesses.  When the two models were trained on different channels, it names both sets: "Trained on lateral segment 2: green, helper 1: red · axial segment 1: red. Step 2 runs “a” / “b”."  A Cellpose built-in records no channels, so with one of those active — and with no model picked, with only one of the two picked, or with a model file that is gone — the line is not shown.
+
+  A new run made with **New Run** copies its model's training record with the model, so this line and the channel boxes in Settings read the channels it was trained on. A new run on a Cellpose built-in model starts with **Channel to segment** empty: pick it in Settings before Predict (see **Settings**).
 
   A refined model shows its own name; a Cellpose built-in shows *Pretrained:* before its name (for example *lat: Pretrained: cyto3*). A model that has not been picked yet reads "lat: none" or "ax: none". A long name is shortened in the middle, so both its beginning and its end (often the round number) stay readable; hover over the line to see the full name or path.
 
@@ -41,9 +43,11 @@ The model is no longer shown in **Session**: where its old block of model names 
 |---|---|
 | **Refined model** | A model you trained on your own curated patches (this plugin's **Model Refinement** section, or Step 2). |
 | **Cellpose built-in** | One of Cellpose's named pretrained models (`cyto3`, `nuclei`, etc.). Good starting point if you've never trained on your tissue. |
-| **Browse** | A model file somewhere on disk — a model shared by a colleague or trained elsewhere. |
+| **Browse external paths** | A model file somewhere on disk — a model shared by a colleague or trained elsewhere. Pick the **Lateral** file, the **Axial** file or both with their **Browse…** buttons, then press **Apply external paths** to make them the active models. A field left empty keeps the model it had. |
 
 The lateral and axial models can differ — for example a Cellpose built-in for one view and a trained model for the other.
+
+To use a refined model or a Cellpose built-in, click its row in the list and press **Use for re-prediction**. A file picked under **Browse external paths** is not used until you press **Apply external paths**.
 
 ---
 
@@ -58,7 +62,7 @@ The lateral and axial models can differ — for example a Cellpose built-in for 
 - Or open **Change…** and pick the refined model from the list.
 
 **For published or shared models:**
-- Use **Change…** → Browse, and pick the model file.
+- Use **Change…**, press **Browse…** under *Browse external paths*, pick the model file, then press **Apply external paths**.
 - Models trained on similar tissue (same species + organ + staining) usually transfer well.
 
 > **Tip:** the chosen models are saved with your workspace, so the next session opens with the same models already picked.

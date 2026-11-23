@@ -365,3 +365,26 @@ class TestComputeEdtOverlay:
         assert neck_edt < blob_center_edt, (
             f"Neck EDT {neck_edt} should be less than blob center {blob_center_edt}"
         )
+
+
+class TestUnreachableVoxelsAreAssigned:
+    """A voxel no marker can reach by face connectivity must not keep the
+    original id after a split."""
+
+    def test_diagonal_only_voxel_gets_a_split_id(self):
+        snap = np.zeros((8, 8, 12), dtype=np.int32)
+        snap[1:4, 1:4, 1:9] = 31
+        snap[4, 4, 9] = 31  # joined to the block only diagonally
+        cur = snap.copy()
+        cur[2, 2, 2] = 686
+        cur[2, 2, 7] = 687
+
+        result, new_ids, _ = seeded_watershed_split(snap, cur, 31, method="mask")
+
+        assert set(new_ids) == {686, 687}
+        assert np.all(result[snap == 31] > 0)
+        vol = snap.copy()
+        apply_split_to_volume(
+            vol, (slice(None),) * 3, result, 31
+        )
+        assert not np.any(vol == 31)

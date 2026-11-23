@@ -64,13 +64,17 @@ def test_sidebar_contains_all_action_buttons():
 
 
 def test_sidebar_has_three_separators_between_groups():
-    """Three separator lines split the four sidebar groups:
-    (Triage) — (Curated) — (Create) — (Navigate)."""
+    """Four separator lines split the five sidebar groups:
+    (Triage) — (Curated) — (Create) — (Navigate) — (Batch tools).
+
+    The test keeps its old name; the fifth group (Batch Refine) and its
+    separator were added later.
+    """
     src = inspect.getsource(CurationLabelNavigator._build_ui)
     # Helper-pattern: _sidebar_sep() factory called from sidebar_layout.
-    assert src.count("sidebar_layout.addWidget(_sidebar_sep())") == 3, (
-        "Sidebar must have exactly 3 separator lines (between routine "
-        "triage / Curated / + New Label / navigation groups)."
+    assert src.count("sidebar_layout.addWidget(_sidebar_sep())") == 4, (
+        "Sidebar must have exactly 4 separator lines (between routine "
+        "triage / Curated / + New Label / navigation / batch tools groups)."
     )
 
 

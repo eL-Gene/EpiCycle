@@ -664,3 +664,82 @@ class TestTheLegendFollowsTheStagedWallKind:
         f._finish_refine_preview("settle", new, 36, "moved.", 7,
                                  f._smooth_roi)
         assert seen and seen[-1] == "skeleton"
+
+
+# --------------------------------------------------------------------------- #
+# The overlay going leaves a layer active
+# --------------------------------------------------------------------------- #
+class TestRemovingAnOverlayKeepsALayerActive:
+    def test_prob_overlay_removed_main_is_active(self):
+        import types
+
+        from napari.components import ViewerModel
+        from napari_epicycle.annotator.curation_3d_widget import (
+            Curation3DAnnotator as K,
+        )
+
+        viewer = ViewerModel()
+        viewer.add_labels(np.zeros((4, 4, 4), np.int32), name="labels")
+        viewer.add_labels(np.zeros((4, 4, 4), np.int32), name="Prob Overlay")
+        assert viewer.layers.selection.active.name == "Prob Overlay"
+        f = types.SimpleNamespace(
+            viewer=viewer, _active_labels_name="labels",
+            viewer_model_xy=ViewerModel(), viewer_model_xz=ViewerModel(),
+            viewer_model_yz=ViewerModel(),
+            _get_advanced_features_widget=lambda: None,
+        )
+        f._layer_by_name = types.MethodType(K._layer_by_name, f)
+        K._remove_prob_overlay(f)
+        assert "Prob Overlay" not in [l.name for l in viewer.layers]
+        assert viewer.layers.selection.active.name == "labels"
+
+
+class TestSideViewsAndMultiSelectAfterOverlayGoes:
+    def _env(self):
+        import types
+
+        from napari.components import ViewerModel
+        from napari_epicycle.annotator.curation_3d_widget import (
+            Curation3DAnnotator as K,
+        )
+
+        viewer = ViewerModel()
+        viewer.add_labels(np.zeros((4, 4, 4), np.int32), name="labels")
+        side = {}
+        for o in ("XY", "XZ", "YZ"):
+            vm = ViewerModel()
+            lab = vm.add_labels(np.zeros((4, 4, 4), np.int32), name=f"labels_{o}")
+            lab.mode = "paint"
+            vm.add_image(np.zeros((4, 4, 4)), name=f"Prob Overlay_{o}")
+            side[o] = vm
+        viewer.add_labels(np.zeros((4, 4, 4), np.int32), name="Prob Overlay")
+        f = types.SimpleNamespace(
+            viewer=viewer, _active_labels_name="labels",
+            viewer_model_xy=side["XY"], viewer_model_xz=side["XZ"],
+            viewer_model_yz=side["YZ"],
+            _get_advanced_features_widget=lambda: None,
+        )
+        f._layer_by_name = types.MethodType(K._layer_by_name, f)
+        return f, K, viewer, side
+
+    def test_side_views_get_the_main_copy_active_and_keep_paint(self):
+        f, K, viewer, side = self._env()
+        K._remove_prob_overlay(f)
+        for o, vm in side.items():
+            assert vm.layers.selection.active is not None
+            assert vm.layers.selection.active.name == f"labels_{o}"
+            assert vm.layers[f"labels_{o}"].mode == "paint"
+
+    def test_a_multi_selection_is_not_collapsed(self):
+        from napari_epicycle.annotator.curation_3d_widget import (
+            _refocus_main_layer,
+        )
+
+        f, K, viewer, side = self._env()
+        sel = viewer.layers.selection
+        sel.clear()
+        sel.update([viewer.layers["labels"], viewer.layers["Prob Overlay"]])
+        sel._current = None
+        assert sel.active is None and len(sel) == 2
+        assert _refocus_main_layer(f) is False
+        assert len(sel) == 2

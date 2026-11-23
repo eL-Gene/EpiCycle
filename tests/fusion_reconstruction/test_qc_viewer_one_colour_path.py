@@ -762,3 +762,109 @@ def test_unwrap_is_bounded():
         __wrapped__=inner))
     assert _unwrap_proxy(chain) is inner
     assert _unwrap_proxy(inner) is inner
+
+
+# --------------------------------------------------------------------------
+# The annotator's isolation owns the colours
+# --------------------------------------------------------------------------
+
+class _FakeAnnotator:
+    def __init__(self):
+        self._plot_cmap = "unset"
+        self.recoloured = 0
+        self.live = {1, 2, 3}
+        self.saved = 0
+
+    def _iso_recolour(self):
+        self.recoloured += 1
+
+    def _iso_live_ids(self):
+        return self.live
+
+    def _iso_refresh_saved_colormap(self):
+        self.saved += 1
+
+
+def _annotator_owns(rig):
+    from napari_epicycle.fusion_reconstruction.colormap_authority import (
+        ColormapOwner,
+    )
+
+    widget = _FakeAnnotator()
+    rig.c._get_curation_annotator_widget = lambda: widget
+    rig.c._colormap_authority.reset()
+    assert rig.c._colormap_authority.claim(ColormapOwner.ANNOTATOR_ISOLATION)
+    return widget
+
+
+def test_a_colour_by_change_while_the_annotator_owns_reaches_it(rig):
+    rig.pick("QC tier")
+    widget = _annotator_owns(rig)
+    lyr = rig.layers[0]
+    cm = lyr.colormap
+    assert rig.pw.set_colour_by("area")
+    pump()
+    assert widget.recoloured >= 1
+    plot = rig.plot_rgba()
+    assert set(widget._plot_cmap) == set(plot)
+    for lid, rgba in plot.items():
+        assert np.allclose(widget._plot_cmap[lid], rgba, atol=1e-6)
+    assert lyr.colormap is cm                 # the layer itself is not written
+
+
+def test_untick_while_the_annotator_owns_does_not_reset_the_layers(rig):
+    rig.pick("QC tier")
+    widget = _annotator_owns(rig)
+    lyr = rig.layers[0]
+    cm = lyr.colormap
+    rig.cb.setChecked(False)
+    rig.c._on_sync_viewer_colors_toggled(False)
+    assert widget._plot_cmap is None
+    assert widget.recoloured == 1
+    assert lyr.colormap is cm
+
+
+def test_the_reset_refuses_while_the_annotator_owns(rig):
+    rig.pick("QC tier")
+    _annotator_owns(rig)
+    lyr = rig.layers[0]
+    cm = lyr.colormap
+    rig.c._reset_viewer_label_colors()
+    assert lyr.colormap is cm
+
+
+def test_untick_with_nothing_isolated_still_tells_the_annotator(rig):
+    rig.pick("QC tier")
+    widget = _FakeAnnotator()
+    widget._plot_cmap = {1: [1, 0, 0, 1]}
+    rig.c._get_curation_annotator_widget = lambda: widget
+    rig.cb.setChecked(False)
+    rig.c._on_sync_viewer_colors_toggled(False)
+    assert widget._plot_cmap is None
+
+
+def test_an_unchanged_plot_redraw_does_not_rebuild_the_isolation(rig):
+    rig.pick("QC tier")
+    widget = _annotator_owns(rig)
+    widget.live = {1, 2}
+    rig.c._apply_plot_colours_to_viewer("first")
+    n = widget.recoloured
+    rig.c._apply_plot_colours_to_viewer("second")
+    rig.c._apply_plot_colours_to_viewer("third")
+    assert widget.recoloured == n
+    assert rig.pw.set_colour_by("area")
+    pump()
+    assert widget.recoloured == n + 1
+
+
+def test_a_push_that_changes_only_other_cells_still_refreshes_the_saved_map(rig):
+    rig.pick("QC tier")
+    widget = _annotator_owns(rig)
+    widget.live = {1, 2}
+    rig.c._apply_plot_colours_to_viewer("first")
+    n, saved = widget.recoloured, widget.saved
+    widget._plot_cmap = dict(widget._plot_cmap)
+    widget._plot_cmap[30] = np.array([0.5, 0.5, 0.5, 1.0], np.float32)
+    rig.c._apply_plot_colours_to_viewer("second")      # only cell 30 differs
+    assert widget.recoloured == n
+    assert widget.saved == saved + 1

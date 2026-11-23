@@ -224,7 +224,15 @@ def harness(tmp_path):
         "_revert_labels_from_disk",
         "_reload_current_patch_features",
         "_check_csv_volume_consistency",
+        # 2026-10-31 (cross-run pairing): the tiers save records when the
+        # match values predate an edit, and the table reload reads the
+        # extraction-context sidecar.  Both never raise on a fake.
+        "_record_match_predate",
+        "_patch_extraction_context",
         "_maybe_lift_for_save",  # D2 helper used by all 3 save sites
+        # a half-size save marks rows whose cell left the mask deleted
+        "_reconcile_rows_with_layer",
+        "_halfsize_gone_ids",
         # 2026-05-17 fix: save sites call this to refresh the save
         # button enabled state based on both dirty flags.
         "_refresh_save_button_state",
@@ -1999,6 +2007,23 @@ class TestCommitTriageHandlerInvariants:
         assert triage_calls[0][1]["qc_triage"] == {"1": "good", "2": "review"}
         assert harness._commit_triage_in_flight is False
 
+    def test_ok_true_empties_both_undo_stacks(self, harness, tmp_path):
+        _setup_csv(harness, tmp_path)
+        harness._commit_triage_in_flight = True
+        harness._qc_view_patch_name = "test_patch.tif"
+        cleared = []
+        harness._curation_undo_stack = type(
+            "S", (), {"clear": lambda self_: cleared.append("curation")})()
+        harness._drop_tier_undo = lambda: cleared.append("tier")
+
+        harness._on_commit_triage_finished(
+            {"ok": True, "stage": "done", "triage_map": {"1": "good"},
+             "n_labels": 1},
+            harness._commit_triage_token, "test_patch.tif",
+            {"garbage_ids": set(), "labels_path": "labels.tif"},
+        )
+        assert sorted(cleared) == ["curation", "tier"]
+
     def test_worker_error_keeps_dirty(self, harness, tmp_path):
         harness._curation_dirty = True
         harness._tiers_dirty = True
@@ -2415,3 +2440,732 @@ class TestOnSaveCurationClicked:
         assert order == ["tiers", "async"], (
             "tiers must persist synchronously BEFORE the async mask save"
         )
+
+
+# ===========================================================================
+# Half-size (2x) sessions: the table follows the file; Commit keeps a .bak
+# ===========================================================================
+
+
+def _halfsize(harness, original_shape):
+    """Pretend the patch in view was loaded at half size."""
+    harness.state_manager.get_patch_downsample_factor = MagicMock(
+        return_value=2
+    )
+    harness.state_manager.get_patch_original_labels_shape = MagicMock(
+        return_value=tuple(original_shape)
+    )
+
+
+def _five_rows():
+    return pd.DataFrame({
+        "label": [1, 2, 3, 4, 5],
+        "area": [100] * 5,
+        "qc_tier": ["good", "review", "bad", "good", "review"],
+        "label_status": ["active"] * 5,
+    })
+
+
+def _half_layer_with(ids, shape=(2, 4, 4)):
+    """A half-size label array holding exactly ``ids`` (plus background)."""
+    data = np.zeros(shape, dtype=np.uint32)
+    flat = data.reshape(-1)
+    for k, lid in enumerate(ids):
+        flat[k + 1] = lid
+    return data
+
+
+class TestRowsAgainstLabelsPure:
+    """The two pure pieces: which active rows a mask lacks, and marking
+    rows deleted for a list of labels."""
+
+    def test_missing_ids(self):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _ids_missing_from_labels,
+        )
+        df = _five_rows()
+        df.loc[4, "label_status"] = "superseded"
+        assert _ids_missing_from_labels(df, _half_layer_with([1, 3])) == [2, 4]
+
+    def test_missing_ids_from_string_labels(self):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _ids_missing_from_labels,
+        )
+        df = _five_rows()
+        df["label"] = ["1", "2", "3", "4", "oops"]
+        # the text labels read as numbers; the unreadable one is never named
+        assert _ids_missing_from_labels(
+            df, _half_layer_with([1, 2, 3])) == [4]
+
+    def test_mark_ids(self):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _mark_ids_deleted,
+        )
+        df = _five_rows()
+        df.loc[3, "label_status"] = "superseded"
+        assert _mark_ids_deleted(df, [4, 5]) == 1
+        assert list(df["label_status"]) == [
+            "active", "active", "active", "superseded", "deleted"]
+        assert _mark_ids_deleted(df, []) == 0
+
+    def test_mark_ids_creates_the_status_column(self):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _mark_ids_deleted,
+        )
+        df = _five_rows().drop(columns=["label_status"])
+        assert _mark_ids_deleted(df, [2]) == 1
+        assert list(df["label_status"]) == [
+            "active", "deleted", "active", "active", "active"]
+
+
+class TestReconcileRowsWithLayer:
+    """At half size, rows whose cell is not in the mask turn deleted (the
+    Commit Triage and Undo entry point; it marks the live table)."""
+
+    def test_factor_2_marks_vanished_rows_deleted(self, harness):
+        harness._qc_features_df = _five_rows()
+        _halfsize(harness, (4, 8, 8))
+        tiers_before = list(harness._qc_features_df["qc_tier"])
+        n = harness._reconcile_rows_with_layer(
+            _half_layer_with([1, 2, 3]), "p.tif")
+        df = harness._qc_features_df
+        assert n == 2
+        assert list(df["label_status"]) == [
+            "active", "active", "active", "deleted", "deleted"]
+        assert list(df["qc_tier"]) == tiers_before
+        assert harness._curation_dirty is False
+        harness._curation_undo_stack.push.assert_not_called()
+
+    def test_factor_1_changes_nothing(self, harness):
+        harness._qc_features_df = _five_rows()
+        before = harness._qc_features_df.copy()
+        n = harness._reconcile_rows_with_layer(
+            _half_layer_with([1, 2, 3]), "p.tif")
+        assert n == 0
+        pd.testing.assert_frame_equal(harness._qc_features_df, before)
+
+    def test_no_table_returns_zero(self, harness):
+        harness._qc_features_df = None
+        _halfsize(harness, (4, 8, 8))
+        assert harness._reconcile_rows_with_layer(
+            _half_layer_with([1]), "p.tif") == 0
+
+    def test_missing_status_column_is_created(self, harness):
+        df = _five_rows().drop(columns=["label_status"])
+        harness._qc_features_df = df
+        _halfsize(harness, (4, 8, 8))
+        n = harness._reconcile_rows_with_layer(
+            _half_layer_with([2, 4]), "p.tif")
+        assert n == 3
+        assert list(harness._qc_features_df["label_status"]) == [
+            "deleted", "active", "deleted", "active", "deleted"]
+
+    def test_rows_already_not_active_are_left_alone(self, harness):
+        df = _five_rows()
+        df.loc[3, "label_status"] = "superseded"
+        df.loc[4, "label_status"] = "deleted"
+        harness._qc_features_df = df
+        _halfsize(harness, (4, 8, 8))
+        n = harness._reconcile_rows_with_layer(
+            _half_layer_with([1, 2, 3]), "p.tif")
+        assert n == 0
+        assert list(harness._qc_features_df["label_status"]) == [
+            "active", "active", "active", "superseded", "deleted"]
+
+    def test_string_labels_delete_nothing_wrongly(self, harness):
+        df = _five_rows()
+        df["label"] = df["label"].astype(str)
+        harness._qc_features_df = df
+        _halfsize(harness, (4, 8, 8))
+        n = harness._reconcile_rows_with_layer(
+            _half_layer_with([1, 2, 3, 4, 5]), "p.tif")
+        assert n == 0
+        assert (harness._qc_features_df["label_status"] == "active").all()
+
+    def test_never_raises(self, harness):
+        harness._qc_features_df = _five_rows()
+        harness.state_manager.get_patch_downsample_factor = MagicMock(
+            side_effect=RuntimeError("no state"))
+        assert harness._reconcile_rows_with_layer(
+            _half_layer_with([1]), "p.tif") == 0
+        assert (harness._qc_features_df["label_status"] == "active").all()
+
+    def test_upsampling_keeps_the_same_id_set(self):
+        """Counting IDs on the half-size array is enough: the full-size
+        file written from it holds exactly the same IDs."""
+        from napari_epicycle.fusion_reconstruction.downsample import (
+            upsample_labels_nn,
+        )
+        rng = np.random.default_rng(0)
+        half = rng.integers(0, 40, size=(5, 7, 6)).astype(np.uint32)
+        half[half % 7 == 3] = 0
+        # the shape a half-size load records: the original, which is at
+        # least twice the half-size shape (odd sizes pad by one at the end)
+        full = upsample_labels_nn(half, 2, target_shape=(11, 15, 13))
+        assert set(np.unique(full)) == set(np.unique(half))
+        even = upsample_labels_nn(half, 2, target_shape=(10, 14, 12))
+        assert set(np.unique(even)) == set(np.unique(half))
+
+
+class TestHalfSizeSaveKeepsTableInStep:
+    """A Save from a half-size session writes a CSV with no active row for
+    a cell that is not in the written mask; the live table follows only
+    once the save went through."""
+
+    def _setup(self, harness, tmp_path):
+        import tifffile
+        layer, labels_path = _setup_labels(
+            harness, tmp_path, label_data=_half_layer_with([1, 2, 3]))
+        tifffile.imwrite(str(labels_path), np.zeros((4, 8, 8), np.uint32))
+        _setup_csv(harness, tmp_path, labels=[1, 2, 3, 4, 5])
+        harness._qc_view_patch_name = "test_patch.tif"
+        _halfsize(harness, (4, 8, 8))
+        harness._curation_dirty = True
+        harness._refresh_curation_ui = MagicMock()
+        return labels_path
+
+    def _csv(self, tmp_path):
+        return (tmp_path / "artifacts" / "step3" / "qc"
+                / "test_patch_features.csv")
+
+    def test_save_writes_vanished_rows_as_deleted(self, harness, tmp_path):
+        import tifffile
+        labels_path = self._setup(harness, tmp_path)
+        harness._save_curation()
+        on_disk = pd.read_csv(self._csv(tmp_path))
+        active = on_disk.loc[on_disk["label_status"] == "active", "label"]
+        assert sorted(active) == [1, 2, 3]
+        file_ids = set(int(v) for v in np.unique(tifffile.imread(
+            str(labels_path)))) - {0}
+        assert set(int(v) for v in active) == file_ids
+        live = harness._qc_features_df
+        assert list(live.loc[live["label_status"] == "active", "label"]) == [
+            1, 2, 3]
+        assert (
+            "Saved curation: mask + CSV for test_patch.tif "
+            "(2×: boundaries re-quantized, 2 small cells gone)"
+            in harness._log), harness._log
+        harness._refresh_curation_ui.assert_called_once()
+
+    def test_refresh_keeps_the_plot_selection(self, harness, tmp_path):
+        """The refresh is the row-level one (update_data): set_features
+        would clear the lasso and, through it, the viewer isolation."""
+        import types
+        from napari_epicycle.fusion_reconstruction.controller import (
+            FusionReconstructionController,
+        )
+        self._setup(harness, tmp_path)
+        harness.__dict__["_refresh_curation_ui"] = types.MethodType(
+            FusionReconstructionController._refresh_curation_ui, harness)
+        pw = harness.ui.qc_plot_widget
+        harness._save_curation()
+        pw.update_data.assert_called()
+        pw.set_features.assert_not_called()
+        pw.labels_selected.emit.assert_not_called()
+
+    def test_one_cell_gone_reads_singular(self, harness, tmp_path):
+        self._setup(harness, tmp_path)
+        harness._qc_features_df = harness._qc_features_df.iloc[:4].copy()
+        harness._save_curation()
+        assert (
+            "Saved curation: mask + CSV for test_patch.tif "
+            "(2×: boundaries re-quantized, 1 small cell gone)"
+            in harness._log), harness._log
+
+    def test_nothing_gone_logs_no_count(self, harness, tmp_path):
+        self._setup(harness, tmp_path)
+        harness._qc_features_df = harness._qc_features_df.iloc[:3].copy()
+        harness._save_curation()
+        assert (
+            "Saved curation: mask + CSV for test_patch.tif "
+            "(2×: boundaries re-quantized)"
+            in harness._log), harness._log
+        harness._refresh_curation_ui.assert_not_called()
+
+    def test_full_size_save_keeps_the_old_line(self, harness, tmp_path):
+        _setup_labels(harness, tmp_path)
+        _setup_csv(harness, tmp_path, labels=[1, 2, 7])
+        harness._qc_view_patch_name = "test_patch.tif"
+        harness._curation_dirty = True
+        harness._refresh_curation_ui = MagicMock()
+        harness._save_curation()
+        assert "Saved curation: mask + CSV for test_patch.tif" in harness._log
+        assert list(harness._qc_features_df["label"]) == [1, 2, 7]
+        assert "label_status" not in harness._qc_features_df.columns
+        harness._refresh_curation_ui.assert_not_called()
+
+    def test_failed_save_leaves_the_live_table_then_retry_marks(
+            self, harness, tmp_path):
+        import tifffile
+        labels_path = self._setup(harness, tmp_path)
+        before = labels_path.read_bytes()
+        with patch(
+            "napari_epicycle.fusion_reconstruction.qc_features.save_patch_csv",
+            side_effect=OSError("permission denied"),
+        ):
+            harness._save_curation()
+        assert harness._curation_dirty is True
+        # the table in memory is untouched (no status column = all active)
+        assert "label_status" not in harness._qc_features_df.columns
+        assert labels_path.read_bytes() == before
+        assert not self._csv(tmp_path).exists()
+        harness._refresh_curation_ui.assert_not_called()
+
+        harness._save_curation()
+        live = harness._qc_features_df
+        assert list(live["label_status"]) == [
+            "active", "active", "active", "deleted", "deleted"]
+        assert any("2 small cells gone" in m for m in harness._log)
+        harness._refresh_curation_ui.assert_called_once()
+        assert set(np.unique(tifffile.imread(str(labels_path)))) == {
+            0, 1, 2, 3}
+
+    def test_the_guard_save_marks_rows_without_a_refresh(
+            self, harness, tmp_path, monkeypatch):
+        """The patch-switch guard saves the outgoing patch and rebuilds
+        nothing for it: the rows follow, the plot is not refreshed."""
+        import types
+        from napari_epicycle.fusion_reconstruction import controller as ctl
+        self._setup(harness, tmp_path)
+        harness.__dict__["_guard_unsaved_changes"] = types.MethodType(
+            ctl.FusionReconstructionController._guard_unsaved_changes,
+            harness)
+        harness._staged_annotator_work = lambda: False
+        monkeypatch.setattr(ctl.QMessageBox, "question", staticmethod(
+            lambda *a, **k: ctl.QMessageBox.Save))
+        assert harness._guard_unsaved_changes() is True
+        live = harness._qc_features_df
+        assert list(live["label_status"]) == [
+            "active", "active", "active", "deleted", "deleted"]
+        harness._refresh_curation_ui.assert_not_called()
+
+    def test_commit_writes_vanished_rows_as_deleted(self, harness, tmp_path):
+        self._setup(harness, tmp_path)
+        harness._tiers_dirty = True
+        harness._commit_triage_single_patch()
+        on_disk = pd.read_csv(self._csv(tmp_path))
+        active = on_disk.loc[on_disk["label_status"] == "active", "label"]
+        assert sorted(active) == [1, 2, 3]
+        assert harness._curation_dirty is False
+        assert any("2 small cells gone" in m for m in harness._log), \
+            harness._log
+
+
+class _FakeSignal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, *args):
+        for s in list(self.slots):
+            s(*args)
+
+
+class _FakeThread:
+    def __init__(self):
+        self.started = _FakeSignal()
+        self.finished = _FakeSignal()
+
+    def start(self):
+        pass
+
+    def quit(self, *_a):
+        pass
+
+
+class TestHalfSizeAsyncSave:
+    """The Save button's path: the worker's finish carries the half-size
+    facts to the handler, which marks the live rows and refreshes."""
+
+    def test_async_finish_marks_and_refreshes(self, harness, tmp_path,
+                                              monkeypatch):
+        import tifffile
+        from napari_epicycle.fusion_reconstruction import controller as ctl
+        workers = []
+
+        class _FakeWorker:
+            def __init__(self, persist_kwargs):
+                self.kwargs = persist_kwargs
+                self.finished = _FakeSignal()
+                self.error = _FakeSignal()
+                workers.append(self)
+
+            def moveToThread(self, _t):
+                pass
+
+            def run(self):
+                pass
+
+            def run_now(self):
+                self.finished.emit(ctl._save_curation_persist(**self.kwargs))
+
+        monkeypatch.setattr(ctl, "_SaveCurationWorker", _FakeWorker)
+        monkeypatch.setattr(ctl, "QThread", _FakeThread)
+        _bind_real_methods(harness, ["_cleanup_save_curation_thread"])
+        layer, labels_path = _setup_labels(
+            harness, tmp_path, label_data=_half_layer_with([1, 2, 3]))
+        _setup_csv(harness, tmp_path, labels=[1, 2, 3, 4, 5])
+        harness._qc_view_patch_name = "test_patch.tif"
+        _halfsize(harness, (4, 8, 8))
+        harness._curation_dirty = True
+        harness._run_epoch = 0
+        harness._refresh_curation_ui = MagicMock()
+        seen = {}
+        real_finish = harness._on_save_curation_finished
+
+        def spy(res, token, patch_name, **kw):
+            seen.update(kw)
+            return real_finish(res, token, patch_name, **kw)
+        harness._on_save_curation_finished = spy
+
+        harness._save_curation_async()
+        assert len(workers) == 1
+        # nothing is marked live while the write is still running
+        assert "label_status" not in harness._qc_features_df.columns
+        workers[0].run_now()
+        assert seen["ds_factor"] == 2
+        assert seen["gone_ids"] == [4, 5]
+        live = harness._qc_features_df
+        assert list(live["label_status"]) == [
+            "active", "active", "active", "deleted", "deleted"]
+        harness._refresh_curation_ui.assert_called_once()
+        assert set(np.unique(tifffile.imread(str(labels_path)))) == {
+            0, 1, 2, 3}
+
+
+class TestUndoAfterHalfSizeSave:
+    """Undo puts back an older table.  At half size, a label that was not
+    active before the Undo and is active in the restored table is checked
+    against the layer (after the voxels are restored): absent, its row
+    turns deleted again.  Nothing else is checked, so an Undo before any
+    save scans nothing."""
+
+    def _undo(self, harness, monkeypatch, *, current, snapshot, layer_ids,
+              roi=None, old_roi=None, factor=2):
+        from napari_epicycle.fusion_reconstruction import controller as ctl
+        layer = MagicMock()
+        layer.data = _half_layer_with(layer_ids)
+        harness._labels_layer = layer
+        harness._qc_view_patch_name = "test_patch.tif"
+        if factor > 1:
+            _halfsize(harness, (4, 8, 8))
+        harness._qc_features_df = current
+        entry = MagicMock()
+        entry.extra = {}
+        entry.roi_slices = roi
+        entry.old_mask_roi = old_roi
+        entry.action_type = "delete"
+        entry.description = "delete"
+        entry.old_df_snapshot = snapshot
+        stack = MagicMock()
+        stack.__bool__ = MagicMock(return_value=True)
+        stack.pop = MagicMock(return_value=entry)
+        harness._curation_undo_stack = stack
+        order = []
+        harness._refresh_curation_ui = lambda: order.append(
+            list(harness._qc_features_df["label_status"]))
+        harness._staged_annotator_work = lambda: False
+        harness._drop_tier_undo = lambda: None
+        harness._reisolate_after_undo = lambda e: None
+        scans = []
+        real = ctl._ids_present_in_labels
+        monkeypatch.setattr(ctl, "_ids_present_in_labels",
+                            lambda a: scans.append(1) or real(a))
+        ctl.FusionReconstructionController._undo_last_curation(harness)
+        return order, scans
+
+    def test_undo_before_any_save_scans_nothing(self, harness, monkeypatch):
+        order, scans = self._undo(
+            harness, monkeypatch, current=_five_rows(),
+            snapshot=_five_rows(), layer_ids=[1, 2, 3])
+        assert scans == []
+        assert order == [["active"] * 5]
+
+    def test_undo_after_a_save_keeps_vanished_rows_deleted(
+            self, harness, monkeypatch):
+        saved = _five_rows()
+        saved.loc[[3, 4], "label_status"] = "deleted"
+        order, scans = self._undo(
+            harness, monkeypatch, current=saved,
+            snapshot=_five_rows(),             # taken before the save
+            layer_ids=[1, 2, 3])
+        assert scans == [1]
+        assert order == [[
+            "active", "active", "active", "deleted", "deleted"]]
+
+    def test_a_cell_the_undo_paints_back_stays_active(
+            self, harness, monkeypatch):
+        """The check runs after the voxels are restored: undoing a delete
+        of label 4 brings its voxels back, so its row stays active."""
+        current = _five_rows()
+        current.loc[3, "label_status"] = "deleted"       # 4 was deleted
+        whole = (slice(0, 2), slice(0, 4), slice(0, 4))
+        old_roi = _half_layer_with([1, 2, 3, 4])         # before the delete
+        order, scans = self._undo(
+            harness, monkeypatch, current=current, snapshot=_five_rows(),
+            layer_ids=[1, 2, 3], roi=whole, old_roi=old_roi)
+        assert scans == [1]
+        assert order == [["active"] * 5]
+
+    def test_full_size_undo_restores_the_snapshot_as_is(
+            self, harness, monkeypatch):
+        saved = _five_rows()
+        saved.loc[[3, 4], "label_status"] = "deleted"
+        order, scans = self._undo(
+            harness, monkeypatch, current=saved, snapshot=_five_rows(),
+            layer_ids=[1, 2, 3], factor=1)
+        assert scans == []
+        assert (harness._qc_features_df["label_status"] == "active").all()
+
+
+class TestCommitTriageKeepsBak:
+    """Commit Triage keeps the mask on disk as ``<mask>.bak`` when it
+    overwrites it, as Save does; the .bak moves only after the write."""
+
+    def _kwargs(self, tmp_path):
+        csv_dir = tmp_path / "qc"
+        labels_path = tmp_path / "labels" / "labels_3d.tif"
+        labels_path.parent.mkdir(parents=True)
+        new = np.zeros((4, 8, 8), dtype=np.uint32)
+        new[1, 2:5, 2:5] = 1
+        df = pd.DataFrame({"label": [1], "qc_tier": ["good"],
+                           "label_status": ["active"]})
+        return dict(df=df, garbage_ids=set(), lifted_mask=new,
+                    labels_path=str(labels_path),
+                    csv_path=csv_dir / "p_features.csv",
+                    csv_dir=csv_dir), labels_path
+
+    def _bak(self, labels_path):
+        return labels_path.with_suffix(labels_path.suffix + ".bak")
+
+    def test_bak_holds_the_file_before_the_commit(self, tmp_path):
+        import tifffile
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _commit_triage_persist,
+        )
+        kwargs, labels_path = self._kwargs(tmp_path)
+        old = np.full((4, 8, 8), 9, dtype=np.uint32)
+        tifffile.imwrite(str(labels_path), old)
+        before = labels_path.read_bytes()
+        result = _commit_triage_persist(**kwargs)
+        assert result["ok"] is True
+        assert result["warnings"] == []
+        assert self._bak(labels_path).read_bytes() == before
+        np.testing.assert_array_equal(
+            tifffile.imread(str(labels_path)), kwargs["lifted_mask"])
+        assert list(labels_path.parent.glob("*.saving")) == []
+
+    def test_no_file_yet_no_bak_no_warning(self, tmp_path):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _commit_triage_persist,
+        )
+        kwargs, labels_path = self._kwargs(tmp_path)
+        result = _commit_triage_persist(**kwargs)
+        assert result["ok"] is True
+        assert result["warnings"] == []
+        assert not self._bak(labels_path).exists()
+
+    def test_failed_mask_write_keeps_the_previous_bak(self, tmp_path):
+        import tifffile
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _commit_triage_persist,
+        )
+        kwargs, labels_path = self._kwargs(tmp_path)
+        tifffile.imwrite(str(labels_path), np.ones((4, 8, 8), np.uint32))
+        self._bak(labels_path).write_bytes(b"the previous backup")
+        with patch(
+            "napari_epicycle.fusion_reconstruction.controller._atomic_tiff_write",
+            side_effect=OSError("disk full"),
+        ):
+            result = _commit_triage_persist(**kwargs)
+        assert result["ok"] is False
+        assert self._bak(labels_path).read_bytes() == b"the previous backup"
+        assert list(labels_path.parent.glob("*.saving")) == []
+
+    def test_copy_failure_still_commits_with_a_warning(self, tmp_path,
+                                                       monkeypatch):
+        import shutil
+        import tifffile
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _commit_triage_persist,
+        )
+        kwargs, labels_path = self._kwargs(tmp_path)
+        tifffile.imwrite(str(labels_path), np.zeros((4, 8, 8), np.uint32))
+
+        def boom(*_a, **_k):
+            raise OSError("disk says no")
+        monkeypatch.setattr(shutil, "copy2", boom)
+        result = _commit_triage_persist(**kwargs)
+        assert result["ok"] is True
+        assert len(result["warnings"]) == 1
+        assert "disk says no" in result["warnings"][0]
+        assert ".bak" in result["warnings"][0]
+        np.testing.assert_array_equal(
+            tifffile.imread(str(labels_path)), kwargs["lifted_mask"])
+
+    def test_finished_handler_logs_the_warning(self, harness, tmp_path):
+        _setup_labels(harness, tmp_path)
+        _setup_csv(harness, tmp_path)
+        harness._qc_view_patch_name = "test_patch.tif"
+        result = {"ok": True, "stage": "done", "triage_map": {},
+                  "warnings": [".bak copy failed: x"], "n_labels": 2}
+        harness._on_commit_triage_finished(
+            result, 0, "test_patch.tif",
+            {"garbage_ids": set(), "labels_path": None}, _sync=True)
+        assert "[WARN] .bak copy failed: x" in harness._log
+
+
+class TestHalfSizeAsyncSaveEditedMidway:
+    """A mask edit accepted while the async Save writes: the labels the
+    write said were gone are checked again against the layer first."""
+
+    def _launch(self, harness, tmp_path, monkeypatch):
+        from napari_epicycle.fusion_reconstruction import controller as ctl
+        workers = []
+
+        class _FakeWorker:
+            def __init__(self, persist_kwargs):
+                self.kwargs = persist_kwargs
+                self.finished = _FakeSignal()
+                self.error = _FakeSignal()
+                workers.append(self)
+
+            def moveToThread(self, _t):
+                pass
+
+            def run(self):
+                pass
+
+            def run_now(self):
+                self.finished.emit(ctl._save_curation_persist(**self.kwargs))
+
+        monkeypatch.setattr(ctl, "_SaveCurationWorker", _FakeWorker)
+        monkeypatch.setattr(ctl, "QThread", _FakeThread)
+        _bind_real_methods(harness, ["_cleanup_save_curation_thread"])
+        layer, _ = _setup_labels(
+            harness, tmp_path, label_data=_half_layer_with([1, 2, 3]))
+        _setup_csv(harness, tmp_path, labels=[1, 2, 3, 4, 5])
+        harness._qc_view_patch_name = "test_patch.tif"
+        _halfsize(harness, (4, 8, 8))
+        harness._curation_dirty = True
+        harness._curation_dirty_epoch = 0
+        harness._run_epoch = 0
+        harness._refresh_curation_ui = MagicMock()
+        harness._save_curation_async()
+        assert len(workers) == 1
+        return workers[0], layer
+
+    def test_a_repainted_id_is_not_marked(self, harness, tmp_path,
+                                          monkeypatch):
+        worker, layer = self._launch(harness, tmp_path, monkeypatch)
+        # an edit lands while the write runs: label 4 is painted back
+        layer.data = _half_layer_with([1, 2, 3, 4])
+        harness._curation_dirty_epoch = 1
+        worker.run_now()
+        live = harness._qc_features_df
+        assert list(live["label_status"]) == [
+            "active", "active", "active", "active", "deleted"]
+        assert harness._curation_dirty is True
+
+    def test_no_layer_marks_nothing_and_says_so(self, harness, tmp_path,
+                                                monkeypatch):
+        worker, layer = self._launch(harness, tmp_path, monkeypatch)
+        harness._curation_dirty_epoch = 1
+        harness._labels_layer = None
+        worker.run_now()
+        assert "label_status" not in harness._qc_features_df.columns
+        assert any(m.startswith("[WARN]") and "half-size" in m.lower()
+                   for m in harness._log), harness._log
+        harness._refresh_curation_ui.assert_not_called()
+
+    def test_unchanged_epoch_does_not_rescan(self, harness, tmp_path,
+                                             monkeypatch):
+        from napari_epicycle.fusion_reconstruction import controller as ctl
+        worker, layer = self._launch(harness, tmp_path, monkeypatch)
+        calls = []
+        real = ctl._ids_present_in_labels
+        monkeypatch.setattr(ctl, "_ids_present_in_labels",
+                            lambda a: calls.append(1) or real(a))
+        worker.run_now()
+        assert calls == []
+        assert list(harness._qc_features_df["label_status"]) == [
+            "active", "active", "active", "deleted", "deleted"]
+
+
+class TestCommitTriageStaleBakTemp:
+    """A ``.bak.saving`` left by an earlier interrupted commit is removed
+    first (housekeeping).  What keeps a stale temp from ever becoming the
+    .bak is that the temp is moved onto the .bak only after a fresh copy
+    in the same commit."""
+
+    def test_stale_temp_is_gone_even_when_the_copy_fails(self, tmp_path,
+                                                         monkeypatch):
+        import shutil
+        import tifffile
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _commit_triage_persist,
+        )
+        kwargs, labels_path = TestCommitTriageKeepsBak()._kwargs(tmp_path)
+        tifffile.imwrite(str(labels_path), np.full((4, 8, 8), 5, np.uint32))
+        bak = labels_path.with_suffix(labels_path.suffix + ".bak")
+        stale = bak.with_suffix(bak.suffix + ".saving")
+        stale.write_bytes(b"left over from a crash")
+
+        def boom(*_a, **_k):
+            raise OSError("disk says no")
+        monkeypatch.setattr(shutil, "copy2", boom)
+        result = _commit_triage_persist(**kwargs)
+        assert result["ok"] is True
+        assert len(result["warnings"]) == 1
+        assert not stale.exists()
+        assert not bak.exists()
+
+
+    def test_stale_temp_alone_is_cleared_when_no_mask_yet(self, tmp_path):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _commit_triage_persist,
+        )
+        kwargs, labels_path = TestCommitTriageKeepsBak()._kwargs(tmp_path)
+        bak = labels_path.with_suffix(labels_path.suffix + ".bak")
+        stale = bak.with_suffix(bak.suffix + ".saving")
+        stale.write_bytes(b"left over from a crash")
+        result = _commit_triage_persist(**kwargs)
+        assert result["ok"] is True
+        assert not stale.exists()
+        assert not bak.exists()
+
+
+class TestRowsAgainstLabelsDtypes:
+    """The ID count takes any label dtype; the marker takes an array."""
+
+    @pytest.mark.parametrize("dtype", [
+        np.uint8, np.uint16, np.int32, np.uint32, np.int64, np.uint64,
+        np.float32,
+    ])
+    def test_present_ids_for_each_dtype(self, dtype):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _ids_present_in_labels,
+        )
+        arr = _half_layer_with([3, 7, 9]).astype(dtype)
+        assert {int(v) for v in _ids_present_in_labels(arr)} == {0, 3, 7, 9}
+
+    def test_huge_uint64_labels(self):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _ids_present_in_labels,
+        )
+        arr = np.zeros((2, 2, 2), dtype=np.uint64)
+        arr[0, 0, 0] = np.uint64(2 ** 63 + 5)
+        got = _ids_present_in_labels(arr)
+        assert len(got) == 2
+
+    def test_mark_ids_takes_a_numpy_array(self):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            _mark_ids_deleted,
+        )
+        df = _five_rows()
+        assert _mark_ids_deleted(df, np.array([2, 5])) == 2
+        assert list(df["label_status"]) == [
+            "active", "deleted", "active", "active", "deleted"]
+        assert _mark_ids_deleted(df, np.array([], dtype=int)) == 0

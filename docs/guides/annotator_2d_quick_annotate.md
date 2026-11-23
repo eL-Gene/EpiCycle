@@ -24,8 +24,8 @@ These are the keys you'll press most often:
 |---|---|
 | **`2`** | Switch to **paint** mode (default tool when curating) |
 | **`1`** | Switch to **pan/zoom** mode (move around, no drawing) |
-| **`X`** | Erase the label under the crosshair (atomic — one undo step) |
-| **`R`** | Pick the label under the crosshair as the active label, switching to it for further refinement |
+| **`X`** | Erase the label under the mouse pointer on this slice (one Undo takes it back) |
+| **`R`** | Pick the label under the mouse pointer as the active label, switching to it for further refinement |
 | **`A` / `S` / `D` / `F`** | Toggle visibility of image channels (mapped positionally: A = channel 1, S = channel 2, etc.) |
 | **`Space` (held)** | Temporary pan while held (napari built-in) |
 | **Scroll wheel** | Move through Z-slices on the focused view |

@@ -21,7 +21,7 @@ def _model(w, qapp):
     pump(qapp)
 
 
-def _chan(w, qapp, c1=0):
+def _chan(w, qapp, c1=1):
     w.set_channel_choice(w.chan1_combo, c1)
     w.controller._on_channels_changed()
     pump(qapp)

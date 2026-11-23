@@ -1,5 +1,4 @@
-"""The Nuclei threshold keeps its full precision (grill U-H4,
-invariant 18; B2.4).
+"""The Nuclei threshold keeps its full precision.
 
 The spin box shows 3 decimals and writes back only on a TYPED edit; a line
 drag or Auto sets the stored float and updates the box under blockSignals,
@@ -87,12 +86,17 @@ def test_the_brightness_auto_is_grey_until_it_lands(widget):
     from packages.epicycle_annotator import add_preview as AP
 
     reset_add(widget)
-    widget.update_add_ui_state(brightness_auto=float("nan"))
-    assert not widget.add_otsu_btn.isEnabled()
-    assert widget._add_threshold_help.text() == AP.ADD_AUTO_PENDING
-    widget.update_add_ui_state(brightness_auto=0.4)
-    assert widget.add_otsu_btn.isEnabled()
-    assert widget._add_threshold_help.text() == AP.ADD_HELP_THRESHOLD
+    # Auto is measured for a box: with none placed the card says so
+    widget.update_add_ui_state(box_active=True, whole_patch=False)
+    try:
+        widget.update_add_ui_state(brightness_auto=float("nan"))
+        assert not widget.add_otsu_btn.isEnabled()
+        assert widget._add_threshold_help.text() == AP.ADD_AUTO_PENDING
+        widget.update_add_ui_state(brightness_auto=0.4)
+        assert widget.add_otsu_btn.isEnabled()
+        assert widget._add_threshold_help.text() == AP.ADD_HELP_THRESHOLD
+    finally:
+        widget.update_add_ui_state(box_active=False)
 
 
 def test_worker_bins_draw_and_pending_clears(widget):

@@ -277,6 +277,9 @@ def test_contour_kwargs_parity(panel, P):
         cancel_event=ev)
     fn_b, kw_b = bc.chain_step_call(step, labels, 7, ch, pr, SPACING, ev)
     assert fn_t is fn_b
+    # channel_name only feeds the [CONTOUR] console line; a chain step
+    # records no layer name, so it is not part of the parity.
+    kw_t = {k: v for k, v in kw_t.items() if k != "channel_name"}
     _same(kw_t, kw_b)
 
 
@@ -356,3 +359,19 @@ def test_room_parity(panel, roi):
     need, have = f._refine_room("sdf", {})
     assert need == bc.refine_step_margin("sdf", {}, SPACING)
     assert have == bc.refine_room(vol[roi] == 7, roi, vol.shape)
+
+
+def test_the_contour_line_prints_once_per_object(qapp, capsys):
+    vol = np.zeros((30, 50, 50), np.int32)
+    vol[8:20, 12:30, 12:30] = 7
+    vol[8:20, 12:30, 34:44] = 9
+    ch = walls(vol.shape)
+    res = run_batch_recipe(
+        vol.copy(), [7, 9], rr.Recipe(steps=(contour(axis="XY", limit=2.0),)),
+        spacing=SPACING, channel=ch, n_workers=1, spacing_source="patch")
+    assert not res.stopped
+    lines = [ln for ln in capsys.readouterr().out.splitlines()
+             if ln.startswith("[CONTOUR]")]
+    assert len(lines) == 2
+    assert all("src=patch" in ln and "spacing=(3.0, 1.0, 1.0)" in ln
+               for ln in lines)

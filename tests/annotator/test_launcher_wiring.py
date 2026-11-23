@@ -38,6 +38,19 @@ class _FakeDock:
     def raise_(self):
         self.raised = True
 
+    def features(self):
+        return 7
+
+    def setFeatures(self, value):
+        self._features = value
+
+    @property
+    def topLevelChanged(self):
+        class _Sig:
+            def connect(self, cb):
+                pass
+        return _Sig()
+
     def widget(self):
         return self._widget
 
@@ -1253,3 +1266,39 @@ class TestDockCloseHook:
         assert len(cleanup_log) == 0, (
             "Hide event should NOT trigger cleanup when main window is minimized"
         )
+
+
+class TestNavigatorReuseDuringAPatchSwitch:
+    def _run(self, keep_flag):
+        viewer = _FakeViewer()
+        nav = _FakeNavigatorWidget()
+        seen = []
+
+        def _fake_reset(**kw):
+            seen.append(kw)
+
+        nav.reset_selection_ui = _fake_reset
+        viewer.window._dock_widgets["EpiCycle Label Navigator"] = _FakeNavDock(nav)
+        annotator = _FakeAnnotatorForNav()
+        annotator._cached_flagged_items = []
+        if keep_flag:
+            annotator._keep_navigator_isolate = True
+        launch_curation_label_navigator(viewer, annotator)
+        return seen
+
+    def test_switch_keeps_the_isolate_box(self):
+        assert self._run(True) == [{"keep_isolate": True}]
+
+    def test_plain_relaunch_resets_it(self):
+        assert self._run(False) == [{}]
+
+    def test_the_controller_raises_the_flag_around_the_sync(self):
+        import inspect
+
+        from napari_epicycle.fusion_reconstruction.controller import (
+            FusionReconstructionController as K,
+        )
+
+        src = inspect.getsource(K._post_switch_annotator_sync)
+        assert "_keep_navigator_isolate = True" in src
+        assert "_keep_navigator_isolate = False" in src

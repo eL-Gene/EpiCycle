@@ -33,7 +33,7 @@ PATCHES_GUIDE = GUIDES_DIR / "step3_predict_reconstruct_patch_state.md"
 #: V2: Session's patch list and its pictures
 SESSION_GUIDE = GUIDES_DIR / "step3_session.md"
 #: every guide of the section, with the fewest quotes it must carry
-ALL_GUIDES = {GUIDE: 25, MODEL_GUIDE: 6, PATCHES_GUIDE: 12,
+ALL_GUIDES = {GUIDE: 25, MODEL_GUIDE: 6, PATCHES_GUIDE: 40,
               SESSION_GUIDE: 6}
 SHORT_FIXED = 5
 NUMERIC = {"n", "k", "m", "i", "s", "px", "um"}
@@ -98,9 +98,19 @@ def template(s: str):
     return re.compile("^" + out + "$")
 
 
+def _has_words(s: str) -> bool:
+    """A template made only of placeholders and punctuation ("{role}
+    {item}", a composed part of a line) matches any short phrase, so it
+    cannot hold a quote to its sentence; it is left out.  A fixed string
+    with no placeholder ("…") still matches only itself."""
+    if not re.search(r"\{[^{}]*\}", s):
+        return True
+    return bool(re.search(r"[^\W\d_]", "".join(re.split(r"\{[^{}]*\}", s))))
+
+
 @pytest.fixture(scope="module")
 def templates():
-    return [template(s) for s in sentences()]
+    return [template(s) for s in sentences() if _has_words(s)]
 
 
 def quotes(path: Path):
@@ -154,7 +164,8 @@ def test_the_patches_guide_quotes_the_ticks_the_lock_and_forget():
     lock families and the locked list note."""
     from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
     qs = set(quotes(PATCHES_GUIDE))
-    for const in (P.S3_LIST_HELP, P.S3_TICK_ALL_HELP, P.S3_ROW_PROTECTED,
+    for const in (P.S3_LIST_HELP, P.S3_TICK_ALL_HELP, P.S3_UNTICK_ALL_HELP,
+                  P.S3_ROW_PROTECTED,
                   P.S3_CHIP_HAS_CURATION, P.S3_PATCH_MISSING,
                   P.S3_FORGET_MENU, P.S3_FORGET_REFUSED_LOCKED,
                   P.S3_FORGET_REFUSED_UNSAVED, P.S3_LOCK_PREDICT,
@@ -162,19 +173,53 @@ def test_the_patches_guide_quotes_the_ticks_the_lock_and_forget():
         assert _norm(const) in qs, const
 
 
-def test_the_patches_guide_quotes_the_chip_and_the_info():
-    """R6: the "made by" chip in its three forms, its help line, the ⓘ's
-    help line and the details window's own words."""
+def test_the_patches_guide_quotes_the_chip_and_the_details():
+    """R6: the "made by" chip in its three forms, its help line, the menu
+    item that opens the details window and the window's own words (the ⓘ
+    gave its place to the eye, so its help line is no longer quoted)."""
     from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
     qs = set(quotes(PATCHES_GUIDE))
     for const in (P.MADE_BY_UNKNOWN, P.S3_ROW_HELP_LINES["row_made_by"],
-                  P.S3_ROW_HELP_LINES["row_info"], P.PROV_VIEW_LATERAL,
+                  P.S3_MODEL_DETAILS, P.PROV_VIEW_LATERAL,
                   P.PROV_VIEW_AXIAL, P.PROV_SAVE, P.PROV_SAVED,
                   P.PROV_NO_BLOCK, P.PROV_LOCKED):
         assert _norm(const) in qs, const
+    assert _norm(P.S3_ROW_HELP_LINES["row_info"]) not in qs
     for tmpl in (P.MADE_BY, P.S3_MADE_BY_NOT_ACTIVE, P.PROV_TITLE):
         head = _norm(tmpl.split("{")[0]) if not tmpl.startswith("{")             else _norm(tmpl.split("}")[-1])
         assert any(head in q for q in qs), tmpl
+
+
+def test_the_patches_guide_quotes_the_eye_and_the_prediction_window():
+    """The row's eye (its three tooltips), the menu's two items and the
+    prediction window's words: the dropdowns' items, the panes, the
+    captions, the reading lines, the refusals."""
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
+    qs = set(quotes(PATCHES_GUIDE))
+    for const in (P.S3_PR_EYE_PREDICTION_TIP, P.S3_PR_EYE_VIEW_TIP,
+                  P.S3_PR_EYE_NOTHING, P.S3_SHOW_PREDICTION_MENU,
+                  P.S3_MODEL_DETAILS, P.PRED_PASS_XY, P.PRED_PASS_XZ,
+                  P.PRED_PASS_YZ, P.PRED_MAP_PROB, P.PRED_MAP_FLOWS,
+                  P.PRED_LEFT, P.PRED_LEFT_GRAY_AVG, P.PRED_LEFT_ONE_CHANNEL,
+                  P.PRED_LEFT_CONTRAST, P.PRED_READING, P.PRED_READING_FLOWS,
+                  P.PRED_LINE2_ONE_CHANNEL, P.S3_PRED_SHAPE_CHANGED):
+        assert _norm(const) in qs, const
+    for tmpl in (P.PRED_TITLE, P.PRED_LINE1, P.PRED_LINE2,
+                 P.PRED_LINE_NO_RECORD, P.PRED_LEFT_CAPTION_PAIR,
+                 P.PRED_LEFT_NO_RECORD,
+                 P.S3_PRED_REFUSED_RUNNING, P.S3_PRED_GONE,
+                 P.S3_PRED_TOO_LARGE):
+        t = template(_norm(tmpl))
+        assert any(t.match(q) for q in qs), tmpl
+
+
+def test_the_session_guide_says_the_patches_rows_have_the_eye():
+    """Session's eye sentence stays true, and the guide says the Patches
+    rows carry the same eye."""
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
+    text = SESSION_GUIDE.read_text(encoding="utf-8")
+    assert _norm(P.S3_SESSION_EYE_TIP) in set(quotes(SESSION_GUIDE))
+    assert "Patches rows of Predict + Reconstruct carry the same eye" in text
 
 
 def test_the_session_guide_quotes_the_list_and_its_pictures():

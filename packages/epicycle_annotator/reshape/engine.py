@@ -43,7 +43,7 @@ from .spec import (
     ReshapeResult,
     ReshapeSpec,
 )
-from .walls import build_elevation, raise_neighbour_walls
+from .walls import build_elevation, raise_neighbour_walls, ridge_worker_count
 
 
 class ReshapeCancelled(Exception):
@@ -177,8 +177,13 @@ def _count_ids(array):
 # the wall stage
 # --------------------------------------------------------------------------- #
 def _build_wall_stage(spec, *, images, roi, region, spacing, params, sink,
-                      supplied_elevation=None):
+                      supplied_elevation=None, cancel_event=None):
     """Build the elevation the solver floods.  ``(elevation, clahe, ridge, img)``.
+
+    ``cancel_event`` is checked between the build's steps (the channel
+    crop, its clean-up, the wall picture), and inside the wall picture of
+    the two ridge kinds between their scales; a set event raises
+    ``ReshapeCancelled`` before the next step starts.
 
     Lifted OUT of :func:`reshape_region` unchanged so that
     :func:`find_seeds` can reuse it verbatim.  That is not tidiness: the
@@ -201,6 +206,7 @@ def _build_wall_stage(spec, *, images, roi, region, spacing, params, sink,
                                what="The wall source",
                                param_key="wall_channel")
         elev_img = _crop_to_roi(raw, roi, region.shape, what="The wall channel")
+        _check_cancel(cancel_event)
         chain = strip_clahe(p["wall_preproc"])
         if spec.arbiter and "zcorrect" in str(chain or "").split("+"):
             # Not forbidden -- the user may genuinely need it on attenuated
@@ -219,9 +225,11 @@ def _build_wall_stage(spec, *, images, roi, region, spacing, params, sink,
                                      denoise_size=p["wall_denoise"])
     if supplied_elevation is not None:
         return supplied_elevation, None, None, elev_img
+    _check_cancel(cancel_event)
     elevation, clahe, ridge_img = build_elevation(
         spec.walls, elev_img, region, spacing=spacing,
         clip=p["clip"], smooth=p["smooth"], ridge=p["ridge"],
+        cancel_event=cancel_event, n_workers=ridge_worker_count(),
     )
     return elevation, clahe, ridge_img, elev_img
 
@@ -334,12 +342,20 @@ class SeedReport:
 
     n_found: int = 0                   # before masking to the cell
     n_in_region: int = 0               # what the picker lists
+    #: the region's markers the tissue outline dropped (``find_region_seeds``
+    #: only; the same count as the region Preview's ``n_outside_outline``)
+    n_outside_outline: int = 0
 
     seed_source: str = ""
     #: per-marker ``id`` / ``voxels`` / ``centroid_zyx`` / ``bbox``, in
     #: VOLUME coordinates (the ROI offset is already applied).
     markers: list = field(default_factory=list)
     messages: list = field(default_factory=list)
+    #: ``{marker id: seeds.MarkerContact}`` -- filled by the caller when the
+    #: markers came from labels and the touching rule was asked for; empty
+    #: otherwise.  Kept apart from ``markers`` so each marker dict keeps
+    #: exactly its four keys.
+    contacts: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -611,6 +627,7 @@ def reshape_region(labels, images, spec, *, target_id=None, roi=None,
         elevation, clahe, ridge_img, elev_img = _build_wall_stage(
             spec, images=images, roi=roi, region=region, spacing=spacing,
             params=p, sink=sink, supplied_elevation=supplied_elevation,
+            cancel_event=cancel_event,
         )
         # One of the sandbox's two dropped summary
         # prints.  Without it "the cut went nowhere" and "there was nothing
@@ -698,6 +715,14 @@ def reshape_region(labels, images, spec, *, target_id=None, roi=None,
         partition = solve(elev_walls, seeds, region, solver=spec.solver,
                           beta=p["rw_beta"], compactness=p["compactness"],
                           spacing=spacing, sink=sink)
+        # A voxel no seed can reach by face connectivity comes back 0 and
+        # would become a background hole; give it the nearest piece's id.
+        _orphan = region & (partition == 0)
+        if _orphan.any() and partition.any():
+            from scipy.ndimage import distance_transform_edt
+            _idx = distance_transform_edt(
+                partition == 0, return_distances=False, return_indices=True)
+            partition[_orphan] = partition[tuple(i[_orphan] for i in _idx)]
         step("solve")
         _check_cancel(cancel_event)
 
@@ -785,21 +810,28 @@ def reshape_region(labels, images, spec, *, target_id=None, roi=None,
         return result_obj
 
 
+#: The wall line: the middle 90 % of the wall signal inside the object.
+WALL_CONTRAST_LINE = "Wall contrast {lo:.2f}-{hi:.2f}."
+WALL_CONTRAST_UNMEASURED = "Wall contrast could not be measured."
+
+
 def _wall_contrast_line(elevation, region) -> str:
     """"Wall contrast 0.12-0.81." -- the range the solver actually sees.
 
+    The 5th to the 95th percentile of the elevation inside the object:
+    the elevation is normalised, so its minimum and maximum are 0 and 1
+    on almost every object and said nothing; the middle of it varies.
     Two decimals, ASCII hyphen, always one sentence: it is read in a
-    Qt label and mirrored to a console that may be cp1252 (the
-    2026-09-07 hazard class).
+    Qt label and mirrored to a console that may be cp1252.
     """
     try:
         vals = np.asarray(elevation)[np.asarray(region, dtype=bool)]
         if vals.size:
-            return "Wall contrast {:.2f}-{:.2f}.".format(
-                float(vals.min()), float(vals.max()))
+            lo, hi = np.percentile(vals, [5, 95])
+            return WALL_CONTRAST_LINE.format(lo=float(lo), hi=float(hi))
     except Exception:
         pass
-    return "Wall contrast could not be measured."
+    return WALL_CONTRAST_UNMEASURED
 
 
 # --------------------------------------------------------------------------- #

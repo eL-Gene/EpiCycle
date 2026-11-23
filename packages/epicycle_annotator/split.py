@@ -144,6 +144,16 @@ def seeded_watershed_split(
     # --- Watershed ---
     labels = watershed(elevation, markers=markers, mask=mask)
 
+    # A part of the mask no marker can reach by face connectivity (e.g. a
+    # voxel joined only diagonally) is left 0 by the flood; give it the id
+    # of the nearest assigned voxel so none keeps the original label.
+    orphan = mask & (labels == 0)
+    if orphan.any() and labels.any():
+        idx = distance_transform_edt(
+            labels == 0, return_distances=False, return_indices=True
+        )
+        labels[orphan] = labels[tuple(i[orphan] for i in idx)]
+
     # Build result: non-zero only within original mask.
     result = np.zeros_like(snapshot_roi)
     result[mask] = labels[mask]

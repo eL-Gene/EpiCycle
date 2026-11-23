@@ -387,13 +387,13 @@ class _ExtractJob:
     live box-tool array.
 
     ``boxes`` + ``z_ranges`` are DEEP-COPIED off the box tool's live rectangles
-    (grill HIGH-3): the surface lock disables the box *buttons* but NOT canvas
+    The surface lock disables the box *buttons* but NOT canvas
     mouse interaction, so a drag mid-run would otherwise mutate the very ndarray
     the worker slices → a region mismatch between the validated bbox and the
     persisted pixels.  ``crop_source`` is the read-only lazy full-res handle (or
     the materialized fallback stack); it is the SOLE reader during the run —
     nothing on the main thread re-reads ``_source_lazy`` while the worker is in
-    flight (grill MED-6: `tifffile.memmap` / `da.from_zarr` are concurrent-read
+    flight (`tifffile.memmap` / `da.from_zarr` are concurrent-read
     safe; the compressed `ZarrTiffStore` path never has a live lazy handle here
     because it displays from a fully-materialized copy).  ``persist`` is the
     complete per-run persist-param set gathered from the widgets by
@@ -1481,7 +1481,7 @@ class _PreprocProcessWorker(QObject):
             # Cooperative cancel reached the compute (raised between tiles/ops).
             # `str(PreprocessingCancelled())` is EMPTY, so emit the literal
             # "cancelled" — otherwise `_on_process_error` would render
-            # "Process failed: " (grill B4).  MUST precede the generic handler.
+            # "Process failed: ".  MUST precede the generic handler.
             self.error.emit("cancelled")
         except BaseException as exc:   # noqa: BLE001
             # A worker thread must ALWAYS emit a terminal signal (even on a
@@ -1629,7 +1629,7 @@ class _PreprocProcessToStoreWorker(QObject):
         except PreprocessingCancelled:
             # Cooperative cancel reached the engine (raised between block waves).
             # `str(PreprocessingCancelled())` can be empty, so emit the literal
-            # "cancelled" (grill B4) — MUST precede the generic handler.  The
+            # "cancelled" — MUST precede the generic handler.  The
             # engine already removed its partial `.tmp` store.
             self.error.emit("cancelled")
         except BaseException as exc:   # noqa: BLE001
@@ -5348,12 +5348,13 @@ class DataPreparationController:
             )
             self._napari_ms_warn_filtered = True
 
-        # Arm large-data session logging: the progressive-3D engine's GL errors
-        # are CAUGHT by vispy's draw loop (not fatal, and their tracebacks scroll
-        # off the console), so tee stdout+stderr + faulthandler to a per-session
-        # file under ~/.epicycle/step1_largedata for post-hoc debugging.
-        # Idempotent; observe-only.  (Strip once progressive-3D is stable.)  NOT
-        # under pytest — teeing the global streams would break test capture.
+        # Arm the session log for the large-data path: the progressive-3D
+        # engine's GL errors are CAUGHT by vispy's draw loop (not fatal, and
+        # their tracebacks scroll off the console).  The logger below forwards
+        # to the one plugin-wide session log, which copies the console and
+        # holds the crash dump, so those tracebacks survive on disk.
+        # Idempotent; observe-only.  NOT under pytest -- replacing the global
+        # streams would break test capture.
         if "pytest" not in sys.modules:
             try:
                 from ._largedata_diag_logger import install as _install_diag
@@ -8480,7 +8481,7 @@ class DataPreparationController:
         # surfaces its own honest message (M3) if a ticked channel isn't in the
         # processed set / the store is unavailable.
         # Stop the debounced layout-migration prompt so it can't fire mid-extract
-        # and move files under us (R2).
+        # and move files under us.
         if getattr(self, "_migration_offer_timer", None) is not None:
             self._migration_offer_timer.stop()
 
@@ -8631,7 +8632,7 @@ class DataPreparationController:
             source_kind = "processed" if self._is_processed_view_showing() else "raw"
 
             # Deep-copy the FINAL box geometry + z_ranges into the frozen job
-            # (grill HIGH-3): the surface lock disables the box *buttons* but NOT
+            # The surface lock disables the box *buttons* but NOT
             # canvas mouse interaction, so a drag mid-run would otherwise mutate
             # the very ndarray the worker slices.  `bounding_boxes[i]` may already
             # be a numpy array or a plain list — `np.array(..., copy=True)`
@@ -14442,7 +14443,7 @@ class DataPreparationController:
         if getattr(self, "_step1_busy", False):
             return  # one Step-1 op at a time; extract already guards
         if getattr(self, "_migration_offer_timer", None) is not None:
-            self._migration_offer_timer.stop()  # no file-move mid-export (R2)
+            self._migration_offer_timer.stop()  # no file-move mid-export
         getter = getattr(self.widget, "checked_patch_names", None)
         if getter is None:
             # No Box List at all (a bare widget double) — keep the old path
@@ -14580,13 +14581,13 @@ class DataPreparationController:
     def _export_named_patches(self, names):
         """Write an explicit set of patches, with a real per-patch bar."""
         if getattr(self, "_migration_offer_timer", None) is not None:
-            self._migration_offer_timer.stop()  # no file-move mid-export (R2)
+            self._migration_offer_timer.stop()  # no file-move mid-export
         return self._run_patch_export_loop(
             names, require_conditioned=False, noun="patch(es)")
 
     def _export_current_patch(self):
         if getattr(self, "_migration_offer_timer", None) is not None:
-            self._migration_offer_timer.stop()  # no file-move mid-export (R2)
+            self._migration_offer_timer.stop()  # no file-move mid-export
         current_item = self.widget.extracted_roi_list.currentItem()
         if current_item is None:
             self._set_export_status("No patch selected.", success=False)
@@ -14622,7 +14623,7 @@ class DataPreparationController:
 
     def _on_export_all_ready_clicked(self):
         if getattr(self, "_migration_offer_timer", None) is not None:
-            self._migration_offer_timer.stop()  # no file-move mid-export (R2)
+            self._migration_offer_timer.stop()  # no file-move mid-export
         if not hasattr(self, "extracted_patches") or not self.extracted_patches:
             self._set_export_status("No extracted patches available.", success=False)
             return

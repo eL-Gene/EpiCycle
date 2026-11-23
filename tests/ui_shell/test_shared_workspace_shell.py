@@ -145,6 +145,112 @@ def _sheet(label):
 
 
 # ---------------------------------------------------------------------------
+# the amber line's width, measured with real fonts in a child process
+# ---------------------------------------------------------------------------
+#
+# The headless Qt platform finds no fonts on Windows unless QT_QPA_FONTDIR
+# points at them, and then every letter is the same wide box, so a pixel
+# sum measures nothing real.  Setting that variable in this process would
+# give real fonts to every other test collected with this file, and some of
+# those (the row pictures) are pinned to the box letters.  So the widths are
+# measured in a child process whose environment alone names the fonts.
+
+_AMBER_WIDTHS = [520, 400, 300, 220, 140]
+_FONT_DIR = "C:/Windows/Fonts"
+_NO_FONTS_REASON = ("no fonts loaded on this Qt platform; text widths "
+                    "cannot be measured")
+
+_AMBER_CHILD = """
+import importlib.util, json, os, sys
+from pathlib import Path
+test_file, root, widths = sys.argv[1], Path(sys.argv[2]), sys.argv[3:]
+spec = importlib.util.spec_from_file_location("_amber_width_child", test_file)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+from qtpy.QtWidgets import QApplication
+app = QApplication.instance() or QApplication([])
+# Keep the child away from the developer's real ~/.epicycle.
+home = root / "home"
+home.mkdir()
+mod.wf.Path.home = staticmethod(lambda: home)
+out = mod._measure_amber_widths(app, root, [int(w) for w in widths])
+print("AMBERWIDTHS" + json.dumps(out), flush=True)
+os._exit(0)
+"""
+
+
+def _measure_amber_widths(app, root, widths):
+    """Render the diverged line at each width and add up what it takes.
+
+    Runs in the child process only.  Returns ``{"no_fonts": True}`` when even
+    the child's Qt finds no font families.
+    """
+    import re
+    from qtpy.QtGui import QFont, QFontDatabase
+    try:
+        families = QFontDatabase.families()
+    except TypeError:              # Qt5: families() is not static
+        families = QFontDatabase().families()
+    if not families:
+        return {"no_fonts": True}
+    out = {}
+    for width in widths:
+        wf.clear_cache()
+        base = root / f"w{width}"
+        base.mkdir()
+        shell = _make_shell(app)
+        a = base / ("Diverged" + "Long" * 25)
+        b = base / ("Shared" + "Long" * 25)
+        a.mkdir(), b.mkdir()
+        _browse(shell, "apply_3d", a)
+        _browse(shell, "project_setup", b)
+        shell._active_step_id = "apply_3d"
+        shell._refresh_step_guidance()
+        label = shell.guidance_label
+        label.resize(width, 24)
+        label._render()
+        html_text = label.text()
+        mono_part = re.search(r"monospace\">([^<]*)</span>", html_text)
+        row = {"mono_found": bool(mono_part), "html": html_text,
+               "label_width": label.width(), "total": 0, "plain": ""}
+        if mono_part:
+            plain = re.sub(r"<[^>]+>", "", html_text)
+            rest = plain.replace(mono_part.group(1), "")
+            ui = QFontMetrics(label.font())
+            mono_font = QFont(label.font())
+            mono_font.setFamilies(
+                ["Consolas", "Cascadia Mono", "Courier New", "monospace"])
+            row["total"] = (ui.horizontalAdvance(rest)
+                            + QFontMetrics(mono_font).horizontalAdvance(
+                                mono_part.group(1)))
+            row["plain"] = plain
+        out[str(width)] = row
+    return out
+
+
+@pytest.fixture(scope="module")
+def amber_widths(tmp_path_factory):
+    import subprocess
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    root = tmp_path_factory.mktemp("amber_widths")
+    env = dict(os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    if os.path.isdir(_FONT_DIR):
+        env["QT_QPA_FONTDIR"] = _FONT_DIR
+    env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONUTF8"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-c", _AMBER_CHILD, str(Path(__file__).resolve()),
+         str(root)] + [str(w) for w in _AMBER_WIDTHS],
+        cwd=str(repo), env=env, capture_output=True, text=True, timeout=300)
+    lines = [ln for ln in proc.stdout.splitlines()
+             if ln.startswith("AMBERWIDTHS")]
+    assert lines, (proc.returncode, proc.stdout[-1500:], proc.stderr[-3000:])
+    return json.loads(lines[-1][len("AMBERWIDTHS"):])
+
+
+# ---------------------------------------------------------------------------
 # the symmetric rule
 # ---------------------------------------------------------------------------
 
@@ -427,6 +533,54 @@ class TestRealSelectStep:
         assert ctrl.adopted[-1] == (os.path.abspath(str(b)),
                                     os.path.abspath(str(a)))
 
+    def _crumbs(self, monkeypatch):
+        from napari_epicycle.utils import crash_logger
+        seen = []
+        monkeypatch.setattr(crash_logger, "breadcrumb", seen.append)
+        return seen
+
+    def test_accepted_switch_logs_one_step_line(self, app, monkeypatch):
+        shell = self._shell(app)
+        shell._active_step_id = "project_setup"
+        seen = self._crumbs(monkeypatch)
+        shell._select_step("apply_3d")
+        assert [m for m in seen if m.startswith("step ")] == [
+            "step project_setup -> apply_3d"]
+
+    def test_reselecting_the_active_step_logs_no_step_line(
+            self, app, monkeypatch):
+        shell = self._shell(app)
+        shell._select_step("apply_3d")
+        seen = self._crumbs(monkeypatch)
+        shell._select_step("apply_3d")
+        assert [m for m in seen if m.startswith("step ")] == []
+
+    def test_locked_nav_logs_no_step_line(self, app, monkeypatch):
+        shell = self._shell(app)
+        shell._active_step_id = "project_setup"
+        shell._step_nav_locked = True
+        seen = self._crumbs(monkeypatch)
+        shell._select_step("apply_3d")
+        assert [m for m in seen if m.startswith("step ")] == []
+
+    def test_vetoed_exit_logs_no_step_line(self, app, monkeypatch):
+        shell = self._shell(app)
+        shell._select_step("apply_3d")
+        shell._step_widgets["apply_3d"].controller.on_step_exit = lambda: False
+        seen = self._crumbs(monkeypatch)
+        shell._select_step("project_setup")
+        assert shell._active_step_id == "apply_3d"
+        assert [m for m in seen if m.startswith("step ")] == []
+
+    def test_set_workspace_logs_a_line(self, app, tmp_path, monkeypatch):
+        shell = self._shell(app)
+        seen = self._crumbs(monkeypatch)
+        ws = tmp_path / "Proj"
+        ws.mkdir()
+        _browse(shell, "project_setup", ws)
+        assert any(m.startswith("workspace set from project_setup")
+                   for m in seen)
+
 
 # ---------------------------------------------------------------------------
 # banner
@@ -577,40 +731,23 @@ class TestBanner:
         assert label.minimumSizeHint().width() <= 60
         assert parent.minimumSizeHint().width() <= before + 5
 
-    @pytest.mark.parametrize("width", [520, 400, 300, 220, 140])
-    def test_amber_line_fits_the_width_budget(self, app, tmp_path, width):
+    @pytest.mark.parametrize("width", _AMBER_WIDTHS)
+    def test_amber_line_fits_the_width_budget(self, amber_widths, width):
         """The diverged line must not run off the panel, at any width.
 
         The path is painted in the monospace face, so it is measured in that
         face too — measuring it in the UI font under-counts and the tail is
         clipped (seen in the live screenshots).
+
+        The widths are measured in a child process with real fonts (see
+        ``amber_widths``); this side only checks them.
         """
-        import re
-        from qtpy.QtGui import QFont
-        shell = _make_shell(app)
-        a = tmp_path / ("Diverged" + "Long" * 25)
-        b = tmp_path / ("Shared" + "Long" * 25)
-        a.mkdir(), b.mkdir()
-        _browse(shell, "apply_3d", a)
-        _browse(shell, "project_setup", b)
-        shell._active_step_id = "apply_3d"
-        shell._refresh_step_guidance()
-        label = shell.guidance_label
-        label.resize(width, 24)
-        label._render()
-        html_text = label.text()
-        mono_part = re.search(r"monospace\">([^<]*)</span>", html_text)
-        assert mono_part, html_text
-        plain = re.sub(r"<[^>]+>", "", html_text)
-        rest = plain.replace(mono_part.group(1), "")
-        ui = QFontMetrics(label.font())
-        mono_font = QFont(label.font())
-        mono_font.setFamilies(
-            ["Consolas", "Cascadia Mono", "Courier New", "monospace"])
-        total = (ui.horizontalAdvance(rest)
-                 + QFontMetrics(mono_font).horizontalAdvance(
-                     mono_part.group(1)))
-        assert total <= label.width(), (total, label.width(), plain)
+        if amber_widths.get("no_fonts"):
+            pytest.skip(_NO_FONTS_REASON)
+        got = amber_widths[str(width)]
+        assert got["mono_found"], got["html"]
+        assert got["total"] <= got["label_width"], (
+            got["total"], got["label_width"], got["plain"])
 
     def test_repaint_with_identical_content_is_a_no_op(self, app, tmp_path):
         """F3: the 3 s poll must not wipe a text selection."""
@@ -947,6 +1084,46 @@ class TestSidebarRowChips:
         boxing them is the cascade bug B1 fixed."""
         from napari_epicycle.ui_shell.workflow_shell import _StatusCard
         assert "border" not in _StatusCard._LABEL_DIM
+
+    def test_the_log_link_opens_the_session_log_folder(
+            self, app, tmp_path, monkeypatch):
+        from napari_epicycle.ui_shell import workflow_shell as ws
+        from napari_epicycle.utils import crash_logger
+        log = tmp_path / "logs" / "epicycle_session_x.log"
+        monkeypatch.setattr(crash_logger, "log_path", lambda: log)
+        opened = []
+        monkeypatch.setattr(ws, "_open_folder", opened.append)
+        card = ws._StatusCard()
+        assert card._log_link.text() == "Open log folder"
+        card._refresh_log_tooltip()
+        assert card._log_link.toolTip() == str(log)
+        card._open_log_folder()
+        assert opened == [str(log.parent)]
+
+    def test_the_log_link_with_no_log_shows_a_hint_and_opens_nothing(
+            self, app, monkeypatch):
+        from napari_epicycle.ui_shell import workflow_shell as ws
+        from napari_epicycle.utils import crash_logger
+        monkeypatch.setattr(crash_logger, "log_path", lambda: None)
+        opened = []
+        monkeypatch.setattr(ws, "_open_folder", opened.append)
+        card = ws._StatusCard()
+        card._refresh_log_tooltip()
+        assert card._log_link.toolTip() == "no session log"
+        card._open_log_folder()
+        assert opened == []
+
+    def test_a_failing_opener_does_not_raise(self, app, tmp_path, monkeypatch):
+        from napari_epicycle.ui_shell import workflow_shell as ws
+        from napari_epicycle.utils import crash_logger
+        monkeypatch.setattr(crash_logger, "log_path",
+                            lambda: tmp_path / "a.log")
+
+        def boom(_):
+            raise OSError("no such folder")
+
+        monkeypatch.setattr(ws, "_open_folder", boom)
+        ws._StatusCard()._open_log_folder()
 
 
 class TestSharedAccentIsOneConstant:

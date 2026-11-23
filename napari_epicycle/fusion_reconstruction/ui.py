@@ -106,6 +106,15 @@ PR_STATUS_BOX_PAD = 14
 #: the two cards' guides (the files keep their names)
 _PR_MODEL_GUIDE = "step3_predict_reconstruct_model_source.md"
 _PR_PATCHES_GUIDE = "step3_predict_reconstruct_patch_state.md"
+#: the tooltip of the "Downsample patches 2x on load" box: what a
+#: half-size session really does to the mask it saves
+DOWNSAMPLE_MODE_TOOLTIP = (
+    "Halves volumes in all 3 dimensions for snappier interaction on large "
+    "stacks.  Curation runs at half resolution: on load small or very thin "
+    "cells (a few voxels, or one voxel thick) can disappear, and on save "
+    "the mask is upsampled back to full size with boundaries in 2-voxel "
+    "steps.  Re-click the patch in the bucket below to apply the new mode."
+)
 #: Step 3's object names for the shared lock line and the pinned foot
 _PR_LOCK_OBJECT = "step3LockLine"
 _PR_FOOT_OBJECT = "step3PrFoot"
@@ -137,6 +146,10 @@ PR_LIST_HINT_H = 120
 PR_LOCK_PROPERTY = "step3Locked"
 #: Session's eye dims when the foot's View is grey (A2)
 SESSION_EYE_LOCK_PROPERTY = "step3SessionEyeLocked"
+#: the Patches rows' eye dims when the foot's View is grey (its own
+#: property: the list's lock property is set during Predict, when the eye
+#: still works and paints at the row's own dim)
+PR_EYE_LOCK_PROPERTY = "step3PatchesEyeLocked"
 #: the widest the Pipeline line's Resume link is drawn (it elides past it)
 SESSION_RESUME_MAX_W = 220
 #: the amber of Session's "without a voxel size" clause (PANEL_WARN's text)
@@ -640,7 +653,9 @@ class _MrRunLine(QWidget):
 class FusionReconstructionCuration(QWidget):
     """Reconstruct + Curate 3D accordion widget with two-column layouts."""
 
-    #: a Patches row's ⓘ was clicked: open its model details (R6)
+    #: open a Patches row's model details; no row draws the ⓘ any
+    #: more (the eye has its slot), the row menu and the prediction window
+    #: open the details window through the controller
     info_requested = Signal(str)
 
     def __init__(self, viewer=None):
@@ -1120,6 +1135,13 @@ class FusionReconstructionCuration(QWidget):
         the foot's View is grey."""
         lst = self.loaded_patch_list
         lst.setProperty(SESSION_EYE_LOCK_PROPERTY, bool(locked))
+        lst.viewport().update()
+
+    def set_pr_eye_locked(self, locked: bool) -> None:
+        """The Patches rows' eye dims (and the controller refuses it)
+        exactly when the foot's View is grey."""
+        lst = self._patch_state_list
+        lst.setProperty(PR_EYE_LOCK_PROPERTY, bool(locked))
         lst.viewport().update()
 
     def set_tier_counts(self, mapping: dict, *, replace: bool = False) -> None:
@@ -1607,11 +1629,11 @@ class FusionReconstructionCuration(QWidget):
             MODE_NARROW, self._patch_state_list,
             help_lines=_PRT.S3_ROW_HELP_LINES, palette=PR_ROW_PALETTE,
             accent=PR_ROW_ACCENT,
-            show_eye=False, lock_property=PR_LOCK_PROPERTY,
-            eye_lock_property=PR_LOCK_PROPERTY, dim_when_locked=True,
-            show_info=True, show_thumb=True, keep_aspect=True)
-        # R6: the row's ⓘ, forwarded signal to signal (no lambda)
-        self._pr_row_delegate.info_clicked.connect(self.info_requested)
+            show_eye=True, lock_property=PR_LOCK_PROPERTY,
+            eye_lock_property=PR_EYE_LOCK_PROPERTY, dim_when_locked=True,
+            show_info=False, show_thumb=True, keep_aspect=True)
+        # the eye sits in the slot the ⓘ had; the model details are in the
+        # row's right-click menu (the controller wires the eye)
         self._patch_state_list.setItemDelegate(self._pr_row_delegate)
         lay.addWidget(self._patch_state_list, 1)
         ticked = QVBoxLayout()
@@ -1634,7 +1656,15 @@ class FusionReconstructionCuration(QWidget):
         self.set_pr_ticked_lines(0, 0, 0)
         self.pr_tick_all_link = _ClickLabel(_PRT.S3_TICK_ALL_LINK, left)
         self.pr_tick_all_link.setStyleSheet(PR_LINK_STYLE)
-        lay.addWidget(self.pr_tick_all_link)
+        self.pr_untick_all_link = _ClickLabel(_PRT.S3_UNTICK_ALL_LINK, left)
+        self.pr_untick_all_link.setStyleSheet(PR_LINK_STYLE)
+        links = QHBoxLayout()
+        links.setContentsMargins(0, 0, 0, 0)
+        links.setSpacing(12)
+        links.addWidget(self.pr_tick_all_link)
+        links.addWidget(self.pr_untick_all_link)
+        links.addStretch(1)
+        lay.addLayout(links)
 
     def _build_pr_foot(self, right: QWidget, lay: QVBoxLayout) -> None:
         """The pinned foot: the four buttons 2 × 2, the bar and ONE
@@ -1771,7 +1801,7 @@ class FusionReconstructionCuration(QWidget):
     #: Predict / Reconstruct lock (row 21)
     _PR_SURFACE_LOCK_WIDGETS = ("run_picker_combo", "new_run_button",
                                 "manage_runs_button", "model_change_btn",
-                                "pr_tick_all_link")
+                                "pr_tick_all_link", "pr_untick_all_link")
     #: the setting inputs greyed one by one (never the ? buttons or the
     #: disclosures of the same column; Step 4's K5)
     _PR_SETTING_INPUT_TYPES = (QAbstractSpinBox, QComboBox, QCheckBox,
@@ -1787,7 +1817,7 @@ class FusionReconstructionCuration(QWidget):
 
     def set_pr_surface_locked(self, locked: bool) -> None:
         """Row 21: while Predict or Reconstruct runs, the run row, Change…,
-        "Tick all unprocessed", every setting input (each one's OWN enable
+        "Tick all unprocessed", "Untick all", every setting input (each one's OWN enable
         state, ``WA_ForceDisabled``, remembered and given back on unlock)
         and the ticks (``ItemIsUserCheckable`` off, quietly; the rows dim)
         are grey.  The ? buttons and the disclosures stay live; the rows
@@ -1818,11 +1848,20 @@ class FusionReconstructionCuration(QWidget):
             self._update_pr_size_off_note()
         for lbl in (self.pr_ticked_predict_label, self.pr_ticked_recon_label):
             lbl.setVisible(not locked)
+        self.pr_locked_list_note.setText(_PRT.S3_LOCK_LIST_NOTE)
         self.pr_locked_list_note.setVisible(locked)
-        # the link ticks rows: it gives way too (the mockup's board F)
+        # the two links change ticks: they give way too (the mockup's board F)
         self.pr_tick_all_link.setVisible(not locked)
+        self.pr_untick_all_link.setVisible(not locked)
         self._apply_pr_tick_lock()
         print(f"[STEP3-LOCK] surface locked={locked}")
+
+    def show_pr_list_note(self, text=None) -> None:
+        """The line under the list while Predict / Reconstruct runs (their
+        line owns the foot): a refusal of the click just made (*text*), or
+        its own sentence back (``None``)."""
+        self.pr_locked_list_note.setText(
+            str(text) if text else _PRT.S3_LOCK_LIST_NOTE)
 
     def _apply_pr_tick_lock(self) -> None:
         """A row's box is checkable only when its record is tickable -- or, when it is ticked, so it can be unticked -- and no
@@ -1849,7 +1888,9 @@ class FusionReconstructionCuration(QWidget):
         """Would *text* show whole in the foot's two lines at its width?"""
         lbl = self.pipeline_status_label
         lbl.setStyleSheet(_PR_STATUS_STYLES.get(kind, MONO_LABEL_STYLE))
-        return _two_lines(lbl, str(text)) == str(text)
+        # two wrapped lines come back joined by a newline: whole when only
+        # that newline differs (nothing elided)
+        return _two_lines(lbl, str(text)).replace("\n", " ") == str(text)
 
     def show_pr_status(self, text: str, kind: str = "neutral") -> None:
         """The foot's ONE status line: *kind* neutral
@@ -1926,6 +1967,9 @@ class FusionReconstructionCuration(QWidget):
         self.chan1_combo = QComboBox()
         self.chan1_combo.addItems(list(_PRT.S3_CHAN1_ITEMS))
         self.chan1_combo.setCurrentIndex(2)
+        # shown only while the box is blank (index -1: a new run on a
+        # model that records no channels); the build default stays 2
+        self.chan1_combo.setPlaceholderText(_PRT.S3_CHAN1_PLACEHOLDER)
         self.chan2_combo = QComboBox()
         self.chan2_combo.addItems(list(_PRT.S3_CHAN2_ITEMS))
         self.chan2_combo.setCurrentIndex(1)
@@ -2276,7 +2320,7 @@ class FusionReconstructionCuration(QWidget):
         reconstructing: set = None, axes_by_patch: dict = None,
         ticked=None, missing=None, info_by_patch: dict = None,
         made_by_by_patch: dict = None, shapes: dict = None,
-        spacing_by_patch: dict = None, unsized=None,
+        spacing_by_patch: dict = None, unsized=None, queued=None,
     ) -> None:
         """Rebuild the Patches list: one row per patch, painted by the
         shared row painter from the record each item carries in
@@ -2293,6 +2337,9 @@ class FusionReconstructionCuration(QWidget):
             ``{patch_name: status_str}`` from the state manager.
         predicting, reconstructing : set, optional
             Patches a job is working on (the row shows the running words).
+        queued : set, optional
+            The patches of the running Predict not yet done; with
+            *predicting* they are "busy" (the eye's tooltip says so).
         axes_by_patch : dict, optional
             ``{patch_name: axes_str}`` -- each patch's detected axis order.
         ticked : iterable, optional
@@ -2316,8 +2363,9 @@ class FusionReconstructionCuration(QWidget):
         made_by_by_patch : dict, optional
             ``{patch_name: (chip text, active)}`` (R6,
             ``_step3_rows.made_by_fields``): the "made by" chip under the
-            shape line, amber-bordered when not active, and the ⓘ; a patch
-            without one gets neither.
+            shape line, amber-bordered when not active (its model details
+            are in the row's right-click menu); a patch without one gets
+            none.
         """
         lst = self._patch_state_list
         _cur = lst.currentItem()
@@ -2325,6 +2373,7 @@ class FusionReconstructionCuration(QWidget):
             _cur is not None and _cur.isSelected()) else None
         locked = bool(getattr(self, "_pr_surface_locked", False))
         predicting = set(predicting or ())
+        busy = predicting | set(queued or ())
         reconstructing = set(reconstructing or ())
         axes_by_patch = axes_by_patch or {}
         ticked = set(ticked or ())
@@ -2369,7 +2418,7 @@ class FusionReconstructionCuration(QWidget):
                     made_by_active=made_active,
                     source_shape=shapes.get(name),
                     pixel_fallback=(unsized is None or name in unsized),
-                    **extra)
+                    busy=name in busy, **extra)
                 rec = self._with_pr_tier_counts(rec, name)
                 item = QListWidgetItem(text)
                 item.setData(Qt.UserRole, name)
@@ -2448,16 +2497,10 @@ class FusionReconstructionCuration(QWidget):
         # visible at a glance and a single click flips the mode.
         # Affects FUTURE patch loads only — existing in-memory patch
         # keeps its current resolution until the user re-clicks it
-        # in the bucket below.  Canonical mask is preserved at full
-        # resolution on disk via NN-upsample-on-save.
+        # in the bucket below.  The mask is written at full size on save
+        # (NN upsample), so its boundaries are quantized to 2 voxels.
         self.downsample_mode_cb = QCheckBox("Downsample patches 2× on load")
-        self.downsample_mode_cb.setToolTip(
-            "Halves volumes in all 3 dimensions for snappier interaction "
-            "on large stacks.  Curation runs at downsampled resolution; "
-            "the canonical mask on disk is preserved at full resolution "
-            "via NN-upsample on save.  Re-click the patch in the bucket "
-            "below to apply the new mode."
-        )
+        self.downsample_mode_cb.setToolTip(DOWNSAMPLE_MODE_TOOLTIP)
         left_lay.addWidget(self.downsample_mode_cb)
 
         # Curation bucket (replaces old curation_result_combo); brick V2:
@@ -3709,7 +3752,7 @@ class FusionReconstructionCuration(QWidget):
             ["0: none", "1: red", "2: green", "3: blue"])
         self.refine_chan2_combo.setCurrentIndex(1)  # default: red
         self.refine_chan2_combo.setToolTip(
-            "Optional auxiliary channel that helps Cellpose separate "
+            "Optional helper channel that helps Cellpose separate "
             "touching objects.\n"
             "  • Typically the nuclear channel when segmenting cells.\n"
             "  • Leave on '0: none' if not using.")
@@ -3748,8 +3791,8 @@ class FusionReconstructionCuration(QWidget):
             ("Weight decay:", self.refine_wd_sb),
             ("Momentum:", self.refine_momentum_sb),
             ("Min train masks:", self.refine_min_masks_sb),
-            ("Channel to segment:", self.refine_chan1_combo),
-            ("Auxiliary channel (optional):", self.refine_chan2_combo),
+            (_MRT.MR_CHAN1_LABEL, self.refine_chan1_combo),
+            (_MRT.MR_CHAN2_LABEL, self.refine_chan2_combo),
             ("Seed:", self.refine_seed_sb),
             ("Normalize input", self.refine_normalize_cb),
             ("Rescale to training diameter", self.refine_rescale_cb),

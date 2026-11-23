@@ -5,16 +5,16 @@
   only on the ``contour`` write; while the Add outline is on a live
   candidate layer that one message is filtered, and the filter goes with
   the layer.
-* A-M2 -- the amber default-spacing note names QC Features -> Settings...,
-  which is GREY while a box holds the Step 3 lock: with a box it says
-  Cancel first.
-* A-L1 / A-L2 -- "Accept and refine" follows every ``accept_enabled`` push,
-  and both footer buttons go grey at the top of the two Accept paths.
+* A-M2 -- the amber default-spacing note names Set spacing… on the Session
+  list, which stays live while a box holds the Step 3 lock (QC Settings,
+  which the lock greys, is not named any more).
+* A-L2 -- the footer goes grey at the top of the Accept path ("Accept and
+  refine", A-L1, is retired with its button).
 * A-L3 -- the spacing notice's box branch: nothing while busy, the
   candidates invalidated, nothing when the spacing did not change; a QC
   dialog Cancel notifies nothing.
 * A-L4 / A-L5 / A-L7 -- no patch is amber in both places; the amber is the
-  theme's gold; the help line IS the tip constant.
+  theme's gold.
 """
 
 from __future__ import annotations
@@ -138,18 +138,63 @@ def test_a_different_warning_still_gets_out(outline):
         warnings.warn("something else")
 
 
-def test_the_refill_path_filters_its_refresh():
-    import inspect
+def test_a_tick_with_the_outline_on_emits_no_warning(monkeypatch):
+    """What the refill's filtered refresh guarded: with the outline on and
+    the main view in 3D, a tick, None and All recolour the candidate
+    (a refresh each) and napari's 3D-contour warning never gets out.
+    Real layers; the teeth: without the outline's filter the same ticks do
+    warn."""
+    import contextlib
+    import io
 
-    src = inspect.getsource(_K()._render_add_candidate)
-    head = src.split("cand.refresh()")[0]
-    assert "catch_warnings" in head.split("cand.data[roi] = result")[-1]
+    from napari_epicycle.annotator import curation_3d_widget as CW
+
+    from .add_harness import install_fakes
+    from .add_layer_rig import LayerRig, blocks, result_for
+
+    install_fakes(monkeypatch)
+    shape = (12, 40, 40)
+    h = LayerRig(np.zeros(shape, np.int32), ndisplay=3)
+    h.adv.preset = "cells"
+    roi = tuple(slice(0, s) for s in shape)
+    h.place_box(roi)
+    h._add_click_markers = []
+    out = result_for(roi, blocks(shape, 4, first=100, block=8),
+                     edge=(100, 101))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            h._apply_add_result(out)
+            h._on_add_contour_toggled(True)
+        for ticks in ([100, 102, 103], [], [100, 101, 102, 103]):
+            with warnings.catch_warnings(record=True) as rec:
+                warnings.simplefilter("always")
+                CW._add_outline_filter(False)      # ours in front again
+                CW._add_outline_filter(True)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    h.adv.tick(ticks)
+            assert _contour_msgs(rec) == [], ticks
+        # the teeth: the same tick without the filter warns
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            CW._add_outline_filter(False)
+            with contextlib.redirect_stdout(io.StringIO()):
+                h.adv.tick([100])
+        assert _contour_msgs(rec), "a recolour in 3D with the outline on " \
+            "no longer refreshes -- this pin has no teeth"
+    finally:
+        with contextlib.redirect_stdout(io.StringIO()):
+            h._on_add_contour_toggled(False)
+            h._remove_add_candidate()
+        CW._add_outline_filter(False)
 
 
 # --------------------------------------------------------------------------- #
 # A-M2: the note while a box is placed
 # --------------------------------------------------------------------------- #
-def test_the_boxed_spacing_note_says_cancel_first(widget):
+def test_the_boxed_spacing_note_names_set_spacing(widget):
+    """Set spacing… stays live while a box holds the Step 3 lock, so the
+    note with a box is the note without one (it once said close the box
+    first, for QC Settings, which the lock greys)."""
     reset_add(widget)
     widget.set_add_preset("cells", silent=True)
     try:
@@ -160,37 +205,14 @@ def test_the_boxed_spacing_note_says_cancel_first(widget):
         assert not widget.add_spacing_note.isHidden()
         assert widget.add_spacing_note.text() == (
             AP.ADD_NOTE_DEFAULT_SPACING_BOXED)
-        assert "Cancel the box" in AP.ADD_NOTE_DEFAULT_SPACING_BOXED
-        assert "QC Features → Settings…" in AP.ADD_NOTE_DEFAULT_SPACING_BOXED
+        assert AP.ADD_NOTE_DEFAULT_SPACING_BOXED == AP.ADD_NOTE_DEFAULT_SPACING
+        assert "Set spacing…" in AP.ADD_NOTE_DEFAULT_SPACING_BOXED
+        assert "QC Features" not in AP.ADD_NOTE_DEFAULT_SPACING_BOXED
         widget.update_add_ui_state(box_active=False)
         assert widget.add_spacing_note.text() == AP.ADD_NOTE_DEFAULT_SPACING
     finally:
         widget.update_add_ui_state(default_spacing=False, box_active=False)
         reset_add(widget)
-
-
-# --------------------------------------------------------------------------- #
-# A-L1: the mirror
-# --------------------------------------------------------------------------- #
-def test_accept_and_refine_follows_every_accept_push(widget):
-    reset_add(widget)
-    ids = list(range(400, 404))
-    widget.update_add_ui_state(box_active=True, review_active=False)
-    widget.update_add_ui_state(candidate_ids=ids,
-                               candidate_sizes={i: 9 for i in ids},
-                               candidate_edge_ids=set())
-    try:
-        assert widget.add_accept_refine_btn.isEnabled()
-        widget.update_add_ui_state(accept_enabled=False, accept_count=0)
-        assert not widget.add_accept_btn.isEnabled()
-        assert not widget.add_accept_refine_btn.isEnabled(), (
-            "the voxels-taken refusal left it enabled")
-        widget.update_add_ui_state(accept_enabled=True)
-        assert widget.add_accept_refine_btn.isEnabled()
-    finally:
-        widget.update_add_ui_state(candidate_ids=[], candidate_sizes={},
-                                   candidate_edge_ids=set(),
-                                   box_active=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -213,14 +235,14 @@ def h(monkeypatch):
     return hh
 
 
-@pytest.mark.parametrize("door", ["_accept_add", "_accept_add_and_refine"])
+@pytest.mark.parametrize("door", ["_accept_add"])
 def test_both_footer_buttons_go_grey_first(h, door):
     getattr(h, door)()
     first = next(kw for kw in h.adv.pushes if "accept_enabled" in kw)
     assert first == {"accept_enabled": False}, first
 
 
-@pytest.mark.parametrize("door", ["_accept_add", "_accept_add_and_refine"])
+@pytest.mark.parametrize("door", ["_accept_add"])
 def test_a_batch_refusal_leaves_the_buttons_alone(h, door):
     h._batch_running = True
     getattr(h, door)()
@@ -303,6 +325,10 @@ def test_a_qc_settings_cancel_notifies_nothing(monkeypatch):
         viewer=None, _qc_features_df=None,
         _append_log=lambda *_a: None,
         _detect_available_channels=lambda: [],
+        # the pairing row of the dialog (channel roles + the run picker)
+        _qc_channel_roles=lambda *_a: {},
+        _match_picker_state=lambda *_a: ([], None, False),
+        _extract_spacing_lines=lambda: [],
         _check_qc_extraction_staleness=lambda: None,
         _maybe_show_qc_staleness_notification=lambda: None,
         _get_curation_annotator_widget=lambda: widget)
@@ -333,8 +359,3 @@ def test_the_amber_is_the_themes_gold():
     assert ADD_S1_WARN_STYLE == "color: #e6c26a; font-size: 10px;"
 
 
-def test_the_help_line_is_the_tip_constant():
-    from napari_epicycle.annotator import advanced_features_widget as AFW
-
-    assert (AFW.ADD_HELP_LINES["add_accept_refine_btn"]
-            is AP.ADD_ACCEPT_REFINE_TIP)

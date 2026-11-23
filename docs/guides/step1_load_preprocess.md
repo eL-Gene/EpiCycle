@@ -38,8 +38,7 @@ values already filled in.
 - **Remove** a step with its ✕. The ✕ on a column header clears all of that
   channel's steps at once.
 
-Some operations in the menu are shown greyed out with a **"— soon"** tag. Those
-are planned but not built yet; they are listed so you can see what is coming.
+Every operation in the menu works today.
 
 ## The shared resample step
 
@@ -73,8 +72,9 @@ A common, well-tested order for a fluorescence channel is:
 **Gaussian** (gentle denoise) → **resample** (to an isotropic grid) →
 **background** (remove uneven illumination).
 
-When a column reads this way you will see **"order = Fiji default"** in the footer
-— a nod to the order this sequence is usually run in.
+When the first channel's column starts with these three steps in this order,
+you will see **"order = Fiji default"** in the footer — a nod to the order this
+sequence is usually run in. Only the first channel's column is checked.
 
 ## Preview a region
 
@@ -111,6 +111,12 @@ there are, and on a raw count the processed curve would sit lower simply because
 there are fewer of them — nothing to do with your image. Per-million keeps the
 two curves comparable. **Log Y** (on by default) stretches the low, sparse part
 of the curve so faint bright tails stay visible next to the tall pile-up.
+
+The plot shows one channel at a time. The buttons on the left of its control
+row, one per channel, pick which one. **Raw DN** (off by default) labels the
+brightness axis in the detector's own counts instead of the 0-to-1 scale. The
+curves do not change, only the numbers under them — and those numbers are exact
+only for the before curve, because most steps change the brightness scale.
 
 The preview also uses the **same brightness window as the whole-volume run** —
 the p0.1/p99.5 levels measured over your whole image, not over the little region.
@@ -180,8 +186,9 @@ The **Processed** side stays greyed out until there is a processed version for t
 image you have loaded. Flipping is **instant** and never reloads the image, so it
 does not stall even on very large stacks.
 
-*(This switch will also decide which pixels get extracted — raw or processed — in
-an upcoming update; for now it controls what you see.)*
+This switch also decides which pixels get extracted: with **Processed** showing,
+Extract takes the processed pixels; with **Raw** showing, the original ones. The
+hint beside the Extract button says which.
 
 ## Trimming or deleting a patch that later steps already use
 

@@ -154,6 +154,9 @@ def smooth_split_fragments(
     sigma_z: float = 3.0,
     sigma_xy: float = 1.5,
     preserve_topology: bool = True,
+    keep_object: bool = False,
+    object_mask: np.ndarray | None = None,
+    marker_labels: np.ndarray | None = None,
 ) -> tuple[int, str]:
     """Smooth all split fragments within the refine layer ROI.
 
@@ -174,6 +177,22 @@ def smooth_split_fragments(
         Gaussian sigma along X and Y axes.
     preserve_topology : bool
         If True, maintain connectivity of each fragment.
+    keep_object : bool
+        If True, the pieces together keep exactly the voxels they had:
+        a piece that would smooth away is left as it is, growth outside
+        the object is dropped, and holes are filled from the pieces
+        through the object (only zeros inside the object mask are ever
+        filled).  If False (the default) each piece is smoothed on its
+        own.
+    object_mask : np.ndarray or None
+        With ``keep_object``, the voxels that make up the object (same
+        shape as the ROI).  Default None: the voxels the pieces hold
+        when this is called.
+
+    marker_labels : np.ndarray or None
+        With ``keep_object``, an array (ROI shape) holding each painted
+        marker under its piece id.  Those voxels always stay with their
+        own piece.  Default None: no voxel is protected.
 
     Returns
     -------
@@ -184,8 +203,20 @@ def smooth_split_fragments(
     """
     total_modified = 0
     roi_data = refine_data[roi]
+    ids = [int(f) for f in fragment_ids]
+    # With keep_object the object's voxel set is fixed before anything
+    # moves: smoothing reshapes the cuts between the pieces, it never
+    # adds to the object or takes from it.
+    union = None
+    before = None
+    if keep_object:
+        union = (
+            np.asarray(object_mask, dtype=bool)
+            if object_mask is not None else np.isin(roi_data, ids)
+        )
+        before = roi_data.copy()
 
-    for fid in fragment_ids:
+    for fid in ids:
         if not np.any(roi_data == fid):
             continue
 
@@ -195,6 +226,10 @@ def smooth_split_fragments(
             preserve_topology=preserve_topology,
         )
         if n_mod == 0:
+            continue
+        if keep_object and not np.any((smooth_result == fid) & union):
+            # Smoothing would erase this piece (a thin slab), or move it
+            # wholly outside the object: leave it as it is.
             continue
 
         # Apply in-place: clear old, write new (safe-write within ROI).
@@ -206,4 +241,33 @@ def smooth_split_fragments(
 
     if total_modified == 0:
         return 0, "Fragments already smooth."
-    return total_modified, f"Smoothed {len(fragment_ids)} fragments: {total_modified} voxels changed."
+
+    if keep_object:
+        from skimage.segmentation import watershed
+
+        # Growth outside the object goes; every hole inside it is
+        # filled from the neighbouring pieces, flooding THROUGH the
+        # object so a piece never reaches across empty space.
+        roi_data[~union & np.isin(roi_data, ids)] = 0
+        if marker_labels is not None:
+            # A painted marker always belongs to its own piece.
+            mk = np.isin(marker_labels, ids) & union
+            roi_data[mk] = marker_labels[mk]
+        owned = np.isin(roi_data, ids) & union
+        if np.any(union & (roi_data == 0)) and np.any(owned):
+            filled = watershed(
+                np.zeros(roi_data.shape, dtype=np.uint8),
+                markers=np.where(owned, roi_data, 0),
+                mask=union & ((roi_data == 0) | owned),
+            )
+            fill = union & (roi_data == 0) & (filled > 0)
+            roi_data[fill] = filled[fill]
+        total_modified = int(np.count_nonzero(before != roi_data))
+        if total_modified == 0:
+            return 0, "Fragments already smooth."
+        return (
+            total_modified,
+            f"Smoothed {len(ids)} fragments: {total_modified} voxels moved "
+            f"between pieces (the object keeps all its voxels).",
+        )
+    return total_modified, f"Smoothed {len(ids)} fragments: {total_modified} voxels changed."

@@ -186,7 +186,7 @@ def test_render_applies_it_after_the_subviewer_copies(monkeypatch):
     order = []
 
     class _Cand:
-        def __init__(self, data, name=None, opacity=None):
+        def __init__(self, data, name=None, opacity=None, **_kw):
             object.__setattr__(self, "data", data)
             object.__setattr__(self, "name", name)
             object.__setattr__(self, "contour", 0)
@@ -235,10 +235,14 @@ def test_render_applies_it_after_the_subviewer_copies(monkeypatch):
     f._restore_side_active_layers = lambda: None
     K = _K()
     for n in ("_render_add_candidate", "_add_set_contour",
-              "_remove_add_candidate"):
+              "_remove_add_candidate", "_add_put_side_colours",
+              "_add_watch_candidate_props", "_add_candidate_side_copies",
+              "_add_quiet_props"):
         setattr(f, n, getattr(K, n).__get__(f, _Fake))
+    f._ADD_CANDIDATE_PROP_EVENTS = K._ADD_CANDIDATE_PROP_EVENTS
     roi = (slice(0, 2), slice(0, 3), slice(0, 3))
-    f._render_add_candidate(np.ones((2, 3, 3), np.int32), roi)
+    f._render_add_candidate(np.ones((2, 3, 3), np.int32), roi,
+                            CW._add_candidate_colormaps(f, [1], [1]))
     assert "subviewers" in order and "contour=1" in order, order
     assert order.index("subviewers") < order.index("contour=1"), order
 

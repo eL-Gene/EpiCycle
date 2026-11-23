@@ -415,3 +415,52 @@ def test_namespace_guard_never_raises_on_bad_state_manager():
     FusionReconstructionController._warn_patch_run_slug_collisions(
         fake, ["patch.tif"]
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. The annotator-session reasons say where the edit is finished
+# ---------------------------------------------------------------------------
+
+def test_the_add_reason_names_the_add_tab_in_plain_words():
+    from napari_epicycle.fusion_reconstruction._switch_run_guard import (
+        _FLAG_REASONS,
+    )
+
+    assert _FLAG_REASONS["_add_mode_running"] == (
+        "An Add box is open in the annotator. Finish it first: press "
+        "Accept, or Discard a result and close the box, on the Add tab.")
+
+
+def test_the_annotator_session_reasons_name_their_tab():
+    from napari_epicycle.fusion_reconstruction._switch_run_guard import (
+        _FLAG_REASONS,
+    )
+
+    assert "on the Refine tab" in _FLAG_REASONS["_refine_running"]
+    # a split held out of the volume: its second button reads Discard
+    assert "Accept or Discard it on the Reshape tab" in _FLAG_REASONS[
+        "_reshape_running"]
+    assert "on the Add tab" in _FLAG_REASONS["_add_mode_running"]
+    # its second button reads Discard while a result is showing
+    assert "Discard" in _FLAG_REASONS["_add_mode_running"]
+    for text in _FLAG_REASONS.values():
+        assert "de-novo" not in text
+
+
+def test_the_step3_lock_line_for_reshape_says_discard():
+    from napari_epicycle.fusion_reconstruction._step3_pr_text import (
+        S3_LOCK_RESHAPE,
+    )
+
+    assert S3_LOCK_RESHAPE == (
+        "A split is open in the annotator — Accept or Discard it there.")
+
+
+def test_the_step3_lock_line_for_add_names_the_add_tab():
+    from napari_epicycle.fusion_reconstruction._step3_pr_text import (
+        S3_LOCK_ADD,
+    )
+
+    assert S3_LOCK_ADD == (
+        "An Add box is open in the annotator — finish it first: press "
+        "Accept, or Discard a result and close the box, on the Add tab.")

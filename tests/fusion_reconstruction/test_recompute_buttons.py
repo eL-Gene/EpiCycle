@@ -356,3 +356,48 @@ class TestRecomputeTSNE:
         _bind_recompute_methods(ctrl)
         ctrl._recompute_tsne()
         ctrl._mock_plot_widget.set_features.assert_not_called()
+
+
+class TestSecondComputeRefused:
+    """A compute already in flight must refuse a second one before it can
+    overwrite the running thread reference."""
+
+    @pytest.mark.parametrize(
+        "method", ["_recompute_pca", "_recompute_umap", "_recompute_tsne"]
+    )
+    def test_recompute_refused_while_compute_running(self, tmp_path, method):
+        ctrl = _make_bare_controller(df=_make_df(), working_dir=tmp_path)
+        _bind_recompute_methods(ctrl)
+        launched = []
+        ctrl.__dict__["_launch_async_compute"] = (
+            lambda *a, **k: launched.append(a)
+        )
+        ctrl._compute_thread = object()
+        said = []
+        ctrl._set_plot_status = lambda text, kind="info": said.append(text)
+        getattr(ctrl, method)()
+        assert launched == []
+        from napari_epicycle.fusion_reconstruction import _step3_pr_text as pr
+        assert said == [pr.S3_LOCK_CURATION_BUSY]
+
+    def test_cluster_refused_while_compute_running(self, tmp_path):
+        from napari_epicycle.fusion_reconstruction.controller import (
+            FusionReconstructionController,
+        )
+        ctrl = _make_bare_controller(df=_make_df(), working_dir=tmp_path)
+        launched = []
+        ctrl._launch_async_compute = lambda *a, **k: launched.append(a)
+        ctrl._compute_thread = object()
+        FusionReconstructionController._run_clustering(ctrl)
+        assert launched == []
+
+    def test_recompute_refused_while_curation_busy(self, tmp_path):
+        ctrl = _make_bare_controller(df=_make_df(), working_dir=tmp_path)
+        _bind_recompute_methods(ctrl)
+        launched = []
+        ctrl.__dict__["_launch_async_compute"] = (
+            lambda *a, **k: launched.append(a)
+        )
+        ctrl._curation_busy = True
+        ctrl._recompute_tsne()
+        assert launched == []

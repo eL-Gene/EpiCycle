@@ -1,8 +1,8 @@
 # EpiCycle QC Features: A Practical Guide for Biologists
 
 **Module:** `napari_epicycle/fusion_reconstruction/qc_features.py`
-**Last updated:** 2026-10-14
-**Companion files:** `QC_FEATURE_REFERENCE.md` (equations and definitions for every feature), `FEATURE_CATALOG.csv` (one row per feature: definition, rationale, units, optional inputs).
+**Last updated:** 2026-10-31
+**Companion files:** `QC_FEATURE_REFERENCE.md` (equations and definitions for every feature), `FEATURE_CATALOG.csv` (one row per feature: definition, rationale, units, optional inputs). The one exception: the five match columns of section 20 compare two runs of the same patch, so they have no row in the catalogue.
 
 This document explains every quality-control (QC) feature that EpiCycle extracts
 from 3D segmentation masks. It is written for biologists and microscopists — no
@@ -57,6 +57,7 @@ For example, if your voxels are 0.3 x 0.1 x 0.1 um, one voxel along Z covers
 | 76 | is_border_cell | Border Cell Detection | [16](#16-border-cell-detection) |
 | 77-79 | centroid-0, centroid-1, centroid-2 | Position | [17](#17-position-centroid-coordinates) |
 | 80-89 | {channel}_intensity_mean/median/std/min/max/sum/cv/boundary/interior/ratio | Per-Channel Intensity | [18](#18-per-channel-intensity-features) |
+| (none) | match_count, match_id, match_overlap, match_shared, match_minor_ratio (not in the catalogue; need two runs of the same patch) | Comparing with another run | [20](#20-comparing-with-another-run) |
 
 ---
 
@@ -1583,3 +1584,65 @@ category still works:
 | Skeleton | Unaffected | EDT operates within each label independently |
 | Probability | Independent of gaps | Probability field reflects multi-view agreement, not mask geometry |
 | Composite score | Self-adjusting | Population-relative normalization cancels systematic biases |
+
+---
+
+## 20. Comparing with another run
+
+**Source:** `qc_pairing.py` (the rule) and `qc_pairing_group.py` (the feature group) in `napari_epicycle/fusion_reconstruction/`
+**Requires:** a second run of the same patch that has labels, picked in the Extract Features settings ("Compare with:")
+
+**Not part of the feature catalogue.** These five columns need two runs of the same patch, so they have no row in `FEATURE_CATALOG.csv`, are not in the composite score or the standard PCA features, and are not measured in Step 4 or by the whole-tissue engine. Every other section of this guide describes one segmentation on its own; this one compares two.
+
+A patch can carry several runs: say cells segmented from the membrane channel and nuclei segmented from DAPI. Each run is a separate 3D mask of the same volume. For every object of the run you are curating, the check asks which objects of the other run share its voxels. A healthy epithelial cell holds one nucleus; a cell with two is a likely merge, a nucleus lying across two cells points to a split, and a cell with none is either a fragment or a cell whose nucleus lies outside the patch.
+
+### How two objects are linked
+
+Take an object A of the run you are curating and an object P of the other run. Count the voxels they share, and divide by the size of the smaller of the two:
+
+$$O = \frac{|A \cap P|}{\min(|A|,\ |P|)}$$
+
+A nucleus wholly inside its cell gives O = 1, whichever run you look from: the number is the same from either side. A and P are **linked** when O is at least 0.20. A thin sliver of overlap, for example a nucleus whose top plane spills into the cell above, stays under that and is not counted.
+
+**Size floor.** Very small objects say little. Each run has its own floor: a tenth of the median size of its interior objects (objects whose bounding box touches no face of the volume), counted in voxels; with fewer than 20 interior objects the floor is 20 voxels. An object under its run's floor is never linked, on either side, and reads *too small to judge*.
+
+The two masks do not need to touch or fit: the check reads only shared voxels, so the background gap between neighbouring cells (section 19) does not matter.
+
+### The five columns
+
+Each column means the same thing whichever run is active: curate cells and the matches are nuclei; curate nuclei and the matches are cells.
+
+| Column | What it measures | Healthy value |
+|--------|------------------|---------------|
+| `match_count` | How many objects of the other run are linked to this one | 1 |
+| `match_id` | The label of the linked object it shares the most voxels with; 0 = none, too small, or not measured. A label number, not a measurement: never plotted, never in PCA | (any) |
+| `match_overlap` | O with that best match, from 0 to 1 | close to 1 |
+| `match_shared` | The most objects of this run that any one of its matches is linked to | 1 |
+| `match_minor_ratio` | The voxels shared with its second match over those shared with its first, from 0 to 1; empty with fewer than two matches | empty |
+
+**Reading `match_minor_ratio`.** It tells a real second match from a crumb. A small nuclear fragment beside the real nucleus gives about 0.2; a cell split almost evenly over two nuclei (or a nucleus split 60/40 over two cells) gives about 0.7. It reads the same from either run.
+
+**Why the best match is the one with the most shared voxels.** Not the one with the highest O: a small fragment lying wholly inside a cell has O = 1 and would otherwise be named over the real nucleus at O = 0.95.
+
+### Colouring by the other run in the QC plot
+
+The QC plot can colour every object by one word drawn from these columns (the Colour by entry named after the run you compared with, for example **Overlap with Nuclei**; **Overlap with other run** when the name is not known). The words, in the legend's order:
+
+| Word | When | What it suggests |
+|------|------|------------------|
+| no match | no link | a fragment, or a border cell whose match lies outside the patch (colour by Border cell to tell them apart) |
+| one match | one link, and that match links nothing else | the two runs agree |
+| several matches | two links or more | a merge (one cell holding two nuclei); such an object may also share one of them |
+| shared match | one link, and that match is linked to another object too | a split (one nucleus lying across two cells) |
+| too small to judge | under its run's size floor | (dark grey) |
+| not measured | the values were blanked after an edit, or the label was deleted | (light grey); extract again |
+
+The word is worked out from the saved columns each time it is shown; it is never saved itself. Click a legend word to select its objects. The triage histogram offers the same entry under Colour bars by and stacks its bars by these six words, in the same colours.
+
+### What it cannot tell you
+
+One match means the two runs agree, not that the cell is right, and not that they are the same size: an object nested inside a much larger one still counts as one match. A merge where both runs merged, or where the second nucleus mostly lies in the neighbour, is invisible to this check. Interior membrane brightness (`boundary_interior_ratio`, section 6) is the signal that still catches it.
+
+### When the values are out of date
+
+The values describe the two runs as they were at the last Extract. The plot says so under its legend, and in the match columns' tooltips, when the other run's labels were saved again since, or when you edited the run you are curating (painted, split, merged, smoothed, refined or deleted). Every object you edit reads *not measured* at once; the values of its neighbours may have moved too. Extract again for fresh numbers.

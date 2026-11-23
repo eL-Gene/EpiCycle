@@ -23,6 +23,12 @@ from ..ui_shell._recon_settings_text import (  # noqa: F401
     SEG_INFERENCE_TITLE,
     SEG_MEMBRANE_LABEL,
     SEG_NUCLEI_LABEL,
+    SEG_ROLE_SEGMENT,
+    SEG_ROLE_HELPER,
+    SEG_TRAINED_CHANNEL,
+    SEG_TRAINED_GRAY_ITEM,
+    SEG_CODE_ITEMS_SEGMENT,
+    SEG_CODE_ITEMS_HELPER,
     SEG_CELL_WIDTH_LABEL,
     SEG_CELL_WIDTH_AUTO,
     SEG_CELL_WIDTH_SUFFIX,
@@ -149,17 +155,26 @@ SEG_MODEL_TITLE = "Model"
 SEG_MODEL_DESC = "The model that finds the cells."
 SEG_ACTIVE_LABEL = "Active:"
 MODEL_CHANGE_BTN = "Change…"
-SEG_MODEL_TRAINED_ON = "Trained on {n} channels: {names}."
+#: no count: the named channels say how many there are (Step 3's words)
+SEG_MODEL_TRAINED_ON = "Trained on {names}."
+#: the first code 0: every channel averaged into one image, the helper
+#: ignored, so no channel is named
+SEG_MODEL_TRAINED_GRAY = (
+    "Trained on one grayscale image (all channels averaged).")
 SEG_MODEL_TRAINED_UNKNOWN = (
     "The channels this model was trained on are not recorded.")
 MODEL_MISSING = (
     "The active model’s files are missing. Pick it again with Change…"
 )
-#: One trained channel on the model card: "{name} ({index})".
-SEG_MODEL_CHANNEL = "{name} ({index})"
-SEG_MODEL_ROLE_MEMBRANE = "membrane"
-SEG_MODEL_ROLE_NUCLEI = "nuclei"
-SEG_PICK_CHANNEL = "Pick the membrane channel."
+#: One trained channel on the model card: its role, then the item the
+#: channel box shows for that channel's code, "segment 2: green" /
+#: "helper 1: DAPI".
+SEG_MODEL_CHANNEL = SEG_TRAINED_CHANNEL
+#: the roles by what the model does with the channel (the names are
+#: historical: a nuclei model segments the nuclear stain)
+SEG_MODEL_ROLE_MEMBRANE = SEG_ROLE_SEGMENT
+SEG_MODEL_ROLE_NUCLEI = SEG_ROLE_HELPER
+SEG_PICK_CHANNEL = "Pick the channel to segment."
 SEG_NONE_RUNNABLE = "No ticked stack can run with this model."
 #: F1: nothing ticked at all -- said before "cannot run"
 SEG_NOTHING_TICKED = "Tick a stack to run."
@@ -193,13 +208,24 @@ STACKS_RUNNING_HINT = "You can still click rows and use View on finished stacks.
 SEG_SETTINGS_DESC = (
     "Start from the settings your Step 3 run used, or from a standard set.")
 SEG_PRESET_STEP3 = "Step 3 run “{run}”"
-SEG_CHANNEL_ITEM = "{i}: {name}"
-#: a channel item whose role the model records (owner 2026-09-29): the
-#: channel's name and what the model uses it for, e.g. "1: DAPI (nuclei)"
+#: An item of the two channel boxes: the Cellpose code, then the shown
+#: stack's layer name for that channel (code k = the stack's channel k - 1),
+#: else Step 3's word for the code ("1: red"), else "ch{k - 1}".  The
+#: boxes count as Cellpose and Steps 2 and 3 do: the item's index IS the
+#: code, "0: gray" (every channel averaged) heads the first box, "0: none"
+#: the second.
+SEG_CHANNEL_ITEM = "{code}: {name}"
+SEG_CHANNEL_GRAY = SEG_CODE_ITEMS_SEGMENT[0]
+#: Kept defined, no longer used: an item once carried the model's role in
+#: its text, "1: DAPI (nuclei)" / "1: membrane (model)".  The role in the
+#: item was cut off in the narrow channel field, so the item is always
+#: ``SEG_CHANNEL_ITEM`` and the role is the item's tooltip (below).
 SEG_CHANNEL_ITEM_ROLE = "{i}: {name} ({role})"
-#: no stack's layers name the channel -- the model's role only
 SEG_CHANNEL_ITEM_ROLE_ONLY = "{i}: {role} (model)"
-SEG_CHANNEL_NONE = "none"
+#: the tooltip of the item of a channel the model records a role for
+SEG_ROLE_TIP_SEGMENT = "This model was trained to segment this channel."
+SEG_ROLE_TIP_HELPER = "This model was trained with this channel as its helper."
+SEG_CHANNEL_NONE = SEG_CODE_ITEMS_HELPER[0]
 SEG_CHANNEL_NAME = "ch{i}"
 PREDICT_BTN = "Predict Selected"
 RECONSTRUCT_BTN = "Reconstruct Selected"
@@ -617,11 +643,15 @@ STEP4_HELP_LINES = {
         "Fill the settings below from your Step 3 run or from a standard "
         "set; you can still change any of them."),
     "chan1_combo": (
-        "The channel the model reads as the cell membrane. A loaded or "
-        "previewed stack shows its layer names here."),
+        "The channel that shows what this model finds: the cell outlines "
+        "for a cell model, the nuclei for a nuclei model. A loaded or "
+        "previewed stack shows its layer names here; hover an item to see "
+        "whether this model was trained on it. Counted as Cellpose does: 0 "
+        "gray (all channels averaged), then 1 for the first channel."),
     "chan2_combo": (
-        "The channel the model reads as the nuclei, or none. A loaded or "
-        "previewed stack shows its layer names here."),
+        "An optional second channel that helps a cell model tell touching "
+        "cells apart, usually the nuclei, or none. A loaded or previewed "
+        "stack shows its layer names here."),
     # the settings both steps share (ui_shell/_recon_settings_text)
     **RECON_HELP_LINES,
     # ② foot

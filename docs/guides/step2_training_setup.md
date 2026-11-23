@@ -49,7 +49,7 @@ A closed block with a grey one-line summary of its values. Each setting has a pl
 * Channel to segment and "Helper channel": which of your stains the model looks at (for example membrane and nuclei).
 * Normalize and Rescale: how the image brightness and cell size are adjusted before training.
 * "Recompute flows": "Recompute flows: work the flow targets out during training rather than once before it."
-* **Save config…** writes the current settings to a `training_config.json` file (the picker opens in the active run's folder); **Load config…** applies a saved one. Step 2 does not write a config file by itself; your real settings live with the run and come back when you open the workspace or switch runs.
+* **Save Config** writes the current settings to a `training_config.json` file (the picker opens in the active run's folder); **Load Config** applies a saved one. Step 2 does not write a config file by itself; your real settings live with the run and come back when you open the workspace or switch runs.
 
 ## Use the newest round model after each Train
 

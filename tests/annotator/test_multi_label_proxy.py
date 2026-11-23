@@ -83,9 +83,12 @@ class TestNProxiesPattern:
     def test_subproxy_uses_axis_reduced_bbox_scan(self):
         """Same bbox pattern as _update_isolation_proxy single-label —
         axis-reduced np.any avoids materializing dense coordinate arrays."""
-        src = inspect.getsource(_annotator()._build_single_label_subproxy)
+        # The scan lives in the crop helper the sub-proxy builder calls.
+        assert "_label_crop(" in inspect.getsource(
+            _annotator()._build_single_label_subproxy)
+        src = inspect.getsource(_annotator()._label_crop)
         assert "np.any" in src
-        assert "data == label_id" in src
+        assert "== label_id" in src
 
     def test_subproxy_stored_in_dict_keyed_by_label_id(self):
         src = inspect.getsource(_annotator()._build_single_label_subproxy)

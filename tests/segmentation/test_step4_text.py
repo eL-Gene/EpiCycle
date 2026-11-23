@@ -39,9 +39,16 @@ SPEC_PLACEHOLDERS = {
 #: sentence is part of the agreed wording).
 EXTRA_PLACEHOLDERS = {"msg", "shape", "slices", "index", "axes", "spacing", "why",
                       "preset",
-                      # SEG_CHANNEL_ITEM_ROLE (owner 2026-09-29): the
-                      # model's role for a channel, "membrane" / "nuclei"
+                      # SEG_CHANNEL_ITEM_ROLE (owner 2026-09-29) and
+                      # SEG_MODEL_CHANNEL: the model's role for a channel,
+                      # "segment" / "helper"
                       "role", "col", "stacks",
+                      # SEG_MODEL_CHANNEL: the item the channel box shows
+                      # for that channel, "2: green"
+                      "item",
+                      # SEG_CHANNEL_ITEM: the channel's Cellpose code, the
+                      # item's index in both boxes, "1: DAPI"
+                      "code",
                       # LOG_MESH_SKIPPED (log only): the skipped cell ids
                       "ids",
                       # EXPORT_DEFAULT_NAME: today's date

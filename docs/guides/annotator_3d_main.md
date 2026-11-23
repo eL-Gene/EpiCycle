@@ -2,7 +2,7 @@
 
 The 3D annotator opens as a floating dock with three image views (XY / XZ / YZ) and a control panel on the right. This guide covers the panel's top section + the keyboard shortcuts. **Refinement** workflow (interpolation Preview/Accept/Reject) has its own `?` button next to that section header.
 
-The Label Navigator and Advanced Features dock launched from this panel have their own UI; help for those will live with them in a follow-up.
+The Label Navigator and Advanced Features dock launched from this panel have their own UI. Each tab of the Advanced Features dock (Reshape, Refine, Add) has its own `?` guide; the Label Navigator has no guide of its own yet.
 
 ---
 
@@ -44,7 +44,7 @@ A configurable brush will return once the sync layer is redesigned. Until then, 
 | Control | What it does |
 |---|---|
 | **Patch** dropdown | Lists every patch in the current workspace |
-| **Switch** | Loads the selected patch into the annotator |
+| **Switch** | Loads the selected patch into the annotator. With an edit open (Reshape, Refine, an interpolation preview, Add, Batch Refine or a merge) it does nothing and says *"Accept or reject the open edit first."* — the edit is never thrown away silently. |
 | **Scroll Step** | How many slices the Left/Right arrows skip per press (1–100). Default 1. Useful for big patches — set to 5 or 10 to navigate large Z-ranges quickly. |
 
 Switching patches closes the dock briefly and reopens it on the new patch. Any unsaved drawing changes are flushed first.
@@ -60,7 +60,7 @@ Two buttons at the bottom of the panel — each opens a separate floating dock o
 | **Label Navigator...** | The triage table — every label in this patch with thumbnails, QC tier, color, status filters. The main hub for "show me what to fix next." |
 | **Advanced Features...** | Floating dock with three curation tools, each on the same layout: **Reshape** (cut one over-merged cell into several), **Refine** (reshape one cell — smooth, grow, fill holes, follow a membrane) and **Add** (build a cell the reconstruction missed). Each tab has its own `?`. |
 
-Each of these has its own UI surface; help for them will be added in a follow-up branch.
+Each of these has its own UI surface. The Advanced Features tabs each have a `?` guide; help for the Label Navigator is still to come.
 
 ---
 
@@ -68,7 +68,9 @@ Each of these has its own UI surface; help for them will be added in a follow-up
 
 - **Drawing on the main viewer does nothing.** The main 3D viewer is locked to pan/zoom; all painting happens on the three subviewers. This is deliberate — prevents accidental edits at the wrong scale.
 - **Up/Down arrows navigate the Label Navigator even if its dock is closed** — as long as the navigator has been opened at least once this session. If you press Up/Down on a fresh launch and nothing happens, open Label Navigator… first.
-- **Right-click sometimes doesn't fire.** It's blocked while an interpolation / split / smooth operation is actively running (the Preview button is in flight), while a merge dialog is open, or when the navigator's right-click toggle has been turned off. Once Preview is staged (Accept / Reject visible), right-click works again.
+- **Right-click sometimes doesn't fire.** It is refused while any edit is open: an interpolation (running or held for Accept / Reject), a Reshape, a Refine, an Add, a staged Batch Refine or a merge dialog. It is also off when the navigator's right-click toggle has been turned off. Accept or reject the open edit and right-click works again.
+- **A row click or Isolate does nothing during an edit.** While a Reshape, a Refine or an interpolation preview is open, clicking another row in the Label Navigator, ticking Isolate or ticking Isolate while painting leaves everything where it is and the navigator header says *"Accept or reject the open edit first."* The highlighted row returns to the object being edited. (In the fragment-refine stage of a Reshape, with no Refine preview, you can still pick different fragments.)
+- **Deleting the isolated object brings the whole patch back.** The Isolate box stays ticked. With auto-advance off, the next row you click is isolated; with auto-advance on, the next row is isolated at once.
 - **Scroll Step > 1 changes arrow-key behavior.** When Scroll Step is 2+, Left/Right arrows jump by that many slices. For one-slice-at-a-time, use the scroll wheel instead.
 
 ---
