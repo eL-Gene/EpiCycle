@@ -214,7 +214,8 @@ def step_reads_prob(method, params) -> bool:
     return False
 
 
-def chain_step_call(step, inp, lid, ch, pr, spacing, cancel_event=None):
+def chain_step_call(step, inp, lid, ch, pr, spacing, cancel_event=None,
+                    spacing_source=None):
     """``(fn, kwargs)`` for one step -- exactly the dict the Refine tab
     builds (``_refine_contour_call`` / ``_launch_refine_settle`` and the
     synchronous branches of ``_preview_smooth``), arrays aside."""
@@ -268,6 +269,7 @@ def chain_step_call(step, inp, lid, ch, pr, spacing, cancel_event=None):
             prep_chain=str(p.get("prep_chain", "none")),
             blur_um=float(p.get("contour_blur_um", 2.0)),
             spacing=spacing,
+            spacing_source=spacing_source,
             limit_um=float(p.get("contour_limit_um", 3.0)),
             iterations=int(p.get("contour_iterations", 100)),
             balloon=float(p.get("contour_balloon", 0.0)),
@@ -396,7 +398,7 @@ def _log(msg):
 
 def run_chain_on_label(snapshot, label_id, steps, *, bbox, spacing,
                        channel=None, prob=None, cancel_event=None,
-                       log=_log) -> ChainOutcome:
+                       log=_log, spacing_source=None) -> ChainOutcome:
     """Run ``steps`` (``RecipeStep``s) on one object as the Refine tab would.
 
     ``snapshot`` is read, never written.  ``channel`` / ``prob`` are
@@ -471,7 +473,8 @@ def run_chain_on_label(snapshot, label_id, steps, *, bbox, spacing,
         try:
             fn, kw = chain_step_call(
                 step, inp, lid, ch[rl] if ch is not None else None,
-                pr[rl] if pr is not None else None, spacing, cancel_event)
+                pr[rl] if pr is not None else None, spacing, cancel_event,
+                spacing_source)
             out = fn(**kw)
         except Exception as exc:  # noqa: BLE001 - one object, never the batch
             log("object {} step {} ({}) failed: {}: {}".format(
@@ -533,7 +536,7 @@ def run_chain_on_label(snapshot, label_id, steps, *, bbox, spacing,
 
 def run_chain_batch(snapshot, ids, boxes, steps, *, spacing, channel=None,
                     prob=None, n_workers=None, cancel_event=None,
-                    tick=None, orphans=None):
+                    tick=None, orphans=None, spacing_source=None):
     """Run every present id's chain on a pool; ``(outcomes, cancelled)``.
 
     ``outcomes`` is ``[(id, ChainOutcome)]`` for the ids in ``boxes``.
@@ -556,7 +559,8 @@ def run_chain_batch(snapshot, ids, boxes, steps, *, spacing, channel=None,
         futs = {
             pool.submit(run_chain_on_label, snapshot, lid, steps,
                         bbox=boxes[lid], spacing=spacing, channel=channel,
-                        prob=prob, cancel_event=cancel_event): lid
+                        prob=prob, cancel_event=cancel_event,
+                        spacing_source=spacing_source): lid
             for lid in present
         }
         pending = set(futs)

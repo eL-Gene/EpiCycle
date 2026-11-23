@@ -9,10 +9,12 @@
   manifest's copy first), amber-bordered "— not the active model" when it
   is not the active model, the unknown sentence for an old patch; the
   prediction manifest read once and kept until its mtime moves.
-* The ⓘ: a click opens ONE details window per patch (a second raises it);
-  Save writes the notes atomically into both manifests, every other key
-  kept, or backfills an old patch; Save follows the lock; the windows go on
-  a folder change, a run switch / workspace load, a step exit and shutdown.
+* The details window: "Model details…" in the row's right-click menu and
+  in the prediction window's foot (the ⓘ gave its slot to the row's eye)
+  open ONE details window per patch (a second raises it); Save writes the
+  notes atomically into both manifests, every other key kept, or backfills
+  an old patch; Save follows the lock; the windows go on a folder change, a
+  run switch / workspace load, a step exit and shutdown.
 * Step 4's painter is unchanged (``show_info`` off, no ``chips_top``).
 
 Run one file at a time with ``-o addopts=""``.
@@ -414,7 +416,7 @@ def _layout(w, name):
     raise KeyError(name)
 
 
-def test_the_chip_sits_under_the_shape_line_and_the_info_in_the_eye_slot(
+def test_the_chip_sits_under_the_shape_line_and_the_eye_in_the_info_slot(
         full):
     w, c, _f = full
     d, _i, g = _layout(w, "e.tif")
@@ -423,19 +425,81 @@ def test_the_chip_sits_under_the_shape_line_and_the_info_in_the_eye_slot(
     # A3: the voxel-size line, when the row has one, sits between them
     above = g["lines"].get("l3n", l3)
     assert chip.top() >= above.bottom() and chip.top() - above.bottom() <= 3
-    assert "info" in g and "eye" not in g
-    assert g["axis"].right() < g["info"].left()
+    # the eye takes the slot the ⓘ had; no row draws the ⓘ
+    assert "eye" in g and "info" not in g
+    assert g["axis"].right() < g["eye"].left()
+    for name in ("b.tif", "c.tif", "d.tif"):
+        assert "info" not in _layout(w, name)[2], name
     # a chip costs the row a line -- or fits under the 80 px picture (A3)
     _d, _i, g_a = _layout(w, "a.tif")
     assert g["height"] >= g_a["height"]
     assert chip.bottom() < g["height"]
 
 
-def test_a_click_on_the_info_glyph_emits_its_name(full):
+class _Menu:
+    """The row menu (``controller.QMenu``), choosing *pick*."""
+    shown = []
+    pick = None
+
+    def __init__(self, *a):
+        self.acts = []
+
+    def addAction(self, text):
+        from types import SimpleNamespace
+        act = SimpleNamespace(text=text, enabled=True)
+        act.setEnabled = lambda v: setattr(act, "enabled", v)
+        self.acts.append(act)
+        return act
+
+    def exec_(self, pos):
+        _Menu.shown.append([a.text for a in self.acts])
+        return next((a for a in self.acts if a.text == _Menu.pick), None)
+
+    def deleteLater(self):
+        pass
+
+
+def _menu_details(c, monkeypatch, name):
+    """Right-click *name* and choose "Model details…"."""
+    from qtpy.QtCore import QPoint
+
+    import napari_epicycle.fusion_reconstruction.controller as C
+    monkeypatch.setattr(C, "QMenu", _Menu)
+    _Menu.shown, _Menu.pick = [], T.S3_MODEL_DETAILS
+    c._pr_row_menu(name, QPoint(0, 0))
+    return _Menu.shown
+
+
+def test_model_details_is_in_the_row_menu_and_the_prediction_window(
+        full, app, monkeypatch):
+    """The two doors the ⓘ's window has now: the row's right-click menu and
+    the prediction window's foot; the eye's click emits the row's name."""
     from qtpy.QtCore import QEvent, QPointF, QRect, Qt
     from qtpy.QtGui import QMouseEvent
     from qtpy.QtWidgets import QStyleOptionViewItem
     w, c, _f = full
+    shown = _menu_details(c, monkeypatch, "b.tif")
+    assert shown == [[T.S3_MODEL_DETAILS]]          # no cache: no Show
+    assert "b.tif" in c._prov_windows
+    # a row with no record offers nothing, so no menu shows
+    _Menu.shown = []
+    from qtpy.QtCore import QPoint
+    c._pr_row_menu("a.tif", QPoint(0, 0))
+    assert _Menu.shown == []
+    # the prediction window's own "Model details…"
+    from napari_epicycle.fusion_reconstruction._prediction_preview_dialog \
+        import PredictionPreviewDialog
+    from napari_epicycle.fusion_reconstruction.controller import (
+        _PredictionLink,
+    )
+    link = _PredictionLink(c, "c.tif")
+    dlg = PredictionPreviewDialog(
+        w, title="t", texts=T.PRED_TEXTS, on_choice=link.choice,
+        on_details=link.details)
+    dlg.details_btn.click()
+    assert "c.tif" in c._prov_windows
+    dlg.close()
+    # the eye in the old slot: a click emits the row's name
     got = []
 
     class Sink:
@@ -444,19 +508,20 @@ def test_a_click_on_the_info_glyph_emits_its_name(full):
 
     sink = Sink()
     d, idx, _g = _layout(w, "b.tif")
-    d.info_clicked.connect(sink.take)
+    d.eye_clicked.connect(sink.take)
     opt = QStyleOptionViewItem()
     opt.rect = QRect(0, 0, 260, _g["height"])
     opt.font = w._patch_state_list.font()
-    pos = QPointF(_g["info"].center())
+    pos = QPointF(_g["eye"].center())
     ev = QMouseEvent(QEvent.MouseButtonRelease, pos, pos, Qt.LeftButton,
                      Qt.LeftButton, Qt.NoModifier)
     assert d.editorEvent(ev, idx.model(), opt, idx)
     assert got == ["b.tif"]
-    assert d.help_key_at(opt, idx, _g["info"].center()) == "row_info"
+    assert d.help_key_at(opt, idx, _g["eye"].center()) == "row_eye"
     assert d.help_key_at(opt, idx,
                          _g["chips_top"][0][0].center()) == "row_made_by"
-    assert d._help_lines["row_info"] == T.S3_ROW_HELP_LINES["row_info"]
+    assert d._help_lines["row_made_by"] == T.S3_ROW_HELP_LINES["row_made_by"]
+    _pump(app)
 
 
 def test_step4s_painter_keeps_no_info_and_no_top_chip(app):
@@ -484,12 +549,40 @@ def _item(w, name):
 
 
 def _open(w, c, app, name):
-    w.info_requested.emit(name)
+    """The details window, through the method both doors call."""
+    c._on_pr_info_requested(name)
     _pump(app)
     return c._prov_windows[name][0]
 
 
-def test_the_info_opens_one_window_and_a_second_click_raises_it(full, app):
+def test_the_menu_then_the_window_open_one_details_window(
+        full, app, monkeypatch):
+    """From the row menu, then from the prediction window's foot: ONE
+    details window per patch (the second door raises it)."""
+    from napari_epicycle.fusion_reconstruction._model_provenance_dialog \
+        import ModelProvenanceDialog
+    from napari_epicycle.fusion_reconstruction._prediction_preview_dialog \
+        import PredictionPreviewDialog
+    from napari_epicycle.fusion_reconstruction.controller import (
+        _PredictionLink,
+    )
+    w, c, _f = full
+    _menu_details(c, monkeypatch, "b.tif")
+    _pump(app)
+    dlg = c._prov_windows["b.tif"][0]
+    assert isinstance(dlg, ModelProvenanceDialog)
+    link = _PredictionLink(c, "b.tif")
+    pred = PredictionPreviewDialog(
+        w, title="t", texts=T.PRED_TEXTS, on_choice=link.choice,
+        on_details=link.details)
+    pred.details_btn.click()
+    _pump(app)
+    assert c._prov_windows["b.tif"][0] is dlg and len(c._prov_windows) == 1
+    pred.close()
+    _pump(app)
+
+
+def test_one_details_window_per_patch_a_second_open_raises_it(full, app):
     from napari_epicycle.fusion_reconstruction._model_provenance_dialog \
         import ModelProvenanceDialog
     w, c, _f = full

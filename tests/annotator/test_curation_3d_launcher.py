@@ -33,6 +33,19 @@ class _FakeDock:
     def raise_(self):
         self.raised = True
 
+    def features(self):
+        return 7
+
+    def setFeatures(self, value):
+        self._features = value
+
+    @property
+    def topLevelChanged(self):
+        class _Sig:
+            def connect(self, cb):
+                pass
+        return _Sig()
+
     def isVisible(self):
         return True
 
@@ -153,3 +166,33 @@ class TestLaunch3DCuration:
         )
         assert hasattr(dock, "_last_flagged")
         assert dock._last_flagged[0] == [1, 5]
+
+
+class TestDockFloatingGate:
+    """Both annotator launchers configure floating on the dock they reuse."""
+
+    def _spy(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "napari_epicycle.annotator.launcher._configure_dock_floating",
+            lambda dock, inner: calls.append((dock, inner)),
+        )
+        return calls
+
+    def test_3d_launcher_configures_floating(self, monkeypatch):
+        calls = self._spy(monkeypatch)
+        viewer = _FakeViewer()
+        dock = _FakeDock()
+        viewer.window._dock_widgets["EpiCycle 3D Curation Annotator"] = dock
+        launch_3d_curation_annotator(viewer, labels_layer_name="lbl")
+        assert calls and calls[0][0] is dock
+
+    def test_2d_launcher_configures_floating(self, monkeypatch):
+        from napari_epicycle.annotator.launcher import launch_hitl_2d_annotator
+
+        calls = self._spy(monkeypatch)
+        viewer = _FakeViewer()
+        dock = _FakeDock()
+        viewer.window._dock_widgets["EpiCycle 2D Training Annotator"] = dock
+        launch_hitl_2d_annotator(viewer, labels_layer_name="lbl")
+        assert calls and calls[0][0] is dock

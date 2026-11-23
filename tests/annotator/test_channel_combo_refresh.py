@@ -112,12 +112,18 @@ class TestARestoreMissClearsTheSelection:
         assert combo.currentText() == "dapi"
 
     @pytest.mark.parametrize("refresher,combo_attr", REFRESHERS)
-    def test_the_first_fill_still_selects_something(
+    def test_the_first_fill_is_blank(
             self, widget, refresher, combo_attr):
-        """There is nothing to restore on the first fill, so index 0 is the
-        right answer there -- the miss rule must not break that."""
+        """There is nothing to restore on the first fill, so the Refine,
+        wall and marker combos stay blank; only Add's main combo keeps 0.
+
+        Changed: the Refine and marker combos (like the wall combo and the
+        Add nuclei / wall combos) now start BLANK on a first fill, so a run
+        with nothing chosen is refused instead of silently using stack
+        channel 0.  Only the Add main-channel combo keeps index 0."""
         _refresh(widget, refresher, ["membrane", "dapi"])
-        assert getattr(widget, combo_attr).currentIndex() == 0
+        expected = 0 if combo_attr == "add_channel_combo" else -1
+        assert getattr(widget, combo_attr).currentIndex() == expected
 
     def test_the_wall_channel_combo_follows_the_same_rule(self, widget):
         widget.set_wall_channels(["membrane", "dapi"])
@@ -328,6 +334,9 @@ class TestWhenTheRefreshHappens:
             def _get_advanced_features_widget(self):
                 return _Adv()
 
+            def _channel_memory(self, adv, combo_attr, mem_attr):
+                return ""
+
         _ann()._refresh_seed_channels(_F())
 
         assert "stack4d" in seen["names"], (
@@ -367,15 +376,21 @@ class TestWhenTheRefreshHappens:
 
     def test_a_layer_removal_is_wired_too(self):
         wire = inspect.getsource(_ann()._wire_signals)
-        assert "layers.events.removed.connect" in wire
-        assert "layers.events.inserted.connect" in wire
+        assert "register_layer_hook" in wire
+        assert "layers.events.removed" in wire
+        assert "layers.events.inserted" in wire
+        assert "self._on_layer_removed" in wire
+        assert "self._on_layer_inserted" in wire
 
     def test_the_removed_handler_is_disconnected_with_the_inserted_one(self):
         """An unpaired connect accumulates one handler per relaunch --
         exactly the class the event-handler pairing rule exists for."""
         src = inspect.getsource(_ann()._close_cleanup)
-        assert "layers.events.inserted.disconnect" in src
-        assert "layers.events.removed.disconnect" in src
+        assert "unregister_layer_hook" in src
+        assert "layers.events.inserted" in src
+        assert "layers.events.removed" in src
+        assert "self._on_layer_inserted" in src
+        assert "self._on_layer_removed" in src
 
     def test_the_tab_change_handler_is_disconnected_too(self):
         """Same rule: _open_advanced_features connects it on every click."""

@@ -394,6 +394,15 @@ GOLDEN = {
     "BATCH_BUSY":
         "Step 3 is busy with another job — try again when it finishes.",
     "BATCH_NOT_CLEAN": "Accept or Discard the change on screen first.",
+    "BATCH_ADD_OPEN":
+        "An Add box is open in the annotator — finish it first: press "
+        "Accept, or Discard a result and close the box, on the Add tab.",
+    "BATCH_RESHAPE_OPEN":
+        "A split is open in the annotator — Accept or Discard it on the "
+        "Reshape tab.",
+    "BATCH_REFINE_OPEN":
+        "A refine step is staged in the annotator — Accept or Discard it on "
+        "the Refine tab.",
     "NAV_BATCH_REFINE_TIP":
         "Run steps, or a saved Refine recipe, on all, selected, "
         "plot-selected or tier-filtered objects at once.",

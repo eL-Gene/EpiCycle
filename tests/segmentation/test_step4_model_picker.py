@@ -143,9 +143,9 @@ def test_use_makes_it_the_active_model(qapp, ws_with_models):
         assert snap["kind"] == "refined" and snap["bundle"] == "wound-v2"
         assert w.model_active_indicator_label.text() == "wound-v2 · default"
         assert w.model_trained_label.text() == T.SEG_MODEL_TRAINED_ON.format(
-            n=2, names="membrane (1), nuclei (0)")
+            names="segment 2: green, helper 1: red")
         # the trained channels set the combos
-        assert w.chosen_channels() == (1, 0)
+        assert w.chosen_channels() == (2, 1)
         # a built-in model: the chips of a stack made by wound-v2 go amber
         c.state_manager.set_stack_status(
             "P1.tif", "reconstructed", made_with=snap, labels_path="x")

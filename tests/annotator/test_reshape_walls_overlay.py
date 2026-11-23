@@ -1167,7 +1167,8 @@ class TestTheFlagBeatsTheInsertListeners:
         and the picture must not be in either list.
         """
         f, adv = _fake()
-        bind(f, "_refresh_wall_channels", "_refresh_seed_channels")
+        bind(f, "_refresh_wall_channels", "_refresh_seed_channels",
+             "_channel_memory")
         adv.channels = adv.seed_channels = None
 
         def _inserted(_lyr):
@@ -1186,7 +1187,7 @@ class TestTheFlagBeatsTheInsertListeners:
         from napari.layers import Image as _Image
 
         f, adv = _fake()
-        bind(f, "_refresh_wall_channels")
+        bind(f, "_refresh_wall_channels", "_channel_memory")
         f.viewer.layers.append(_Image(np.zeros((3, 4, 4), np.float32),
                                       name="membrane"))
         adv.channels = None

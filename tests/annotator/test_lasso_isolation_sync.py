@@ -28,6 +28,8 @@ import types
 from unittest.mock import MagicMock
 
 import numpy as np
+
+from napari_epicycle.annotator.refinement_state import StagedOp
 import pytest
 
 
@@ -361,7 +363,7 @@ class TestRoutingGuards:
 
     def test_raising_op_predicate_refuses(self):
         ctrl, ann = self._owned()
-        ann._refinement_op_active.side_effect = RuntimeError("boom")
+        ann.staged_kinds.side_effect = RuntimeError("boom")
         ctrl._apply_viewer_isolation_adapter(_sel([1, 2]))
         ann._on_isolation_changed.assert_not_called()
         ctrl._set_plot_status.assert_called()
@@ -369,7 +371,7 @@ class TestRoutingGuards:
     def test_refused_clear_still_resets_controller_isolation_state(self):
         ctrl, ann = self._owned()
         ctrl._isolated_label_ids = {5, 6}          # left over from before the handover
-        ann._refinement_op_active.return_value = True
+        ann.staged_kinds.return_value = frozenset({StagedOp.REFINE})
         ctrl._apply_viewer_isolation_adapter(_sel([], mode="focus"))
         assert ctrl._isolated_label_ids == set()
         ann._on_isolation_changed.assert_not_called()
@@ -392,7 +394,8 @@ class TestRoutingGuards:
 
 def _fake_ann(*, op_active=False):
     ann = MagicMock()
-    ann._refinement_op_active.return_value = op_active
+    ann.staged_kinds.return_value = (
+        frozenset({StagedOp.REFINE}) if op_active else frozenset())
     return ann
 
 
@@ -427,18 +430,36 @@ class TestPlotLassoWhileAnnotatorOwns:
         assert set(ids) == set()
         ctrl._clear_label_isolation.assert_not_called()
 
-    def test_controller_path_unchanged_when_it_owns(self):
+    def test_annotator_takes_the_lasso_even_when_the_controller_owns(self):
+        """With the annotator open its engine isolates, whoever owns the
+        colour map: a controller-side isolation leaves a cell created later
+        (a Reshape piece) transparent."""
         from napari_epicycle.fusion_reconstruction.colormap_authority import (
             ColormapOwner,
         )
         ctrl = _make_controller(owner=ColormapOwner.CONTROLLER_QC)
         ann = _fake_ann()
         ctrl._get_curation_annotator_widget.return_value = ann
+        ctrl._isolated_label_ids = {9}
+
+        ctrl._apply_viewer_isolation_adapter(_sel([1, 2, 3]))
+
+        ann._on_isolation_changed.assert_called_once()
+        (ids,), _ = ann._on_isolation_changed.call_args
+        assert set(ids) == {1, 2, 3}
+        ctrl._isolate_labels_in_viewer.assert_not_called()
+        assert ctrl._isolated_label_ids == set()
+
+    def test_controller_path_when_no_annotator_is_open(self):
+        from napari_epicycle.fusion_reconstruction.colormap_authority import (
+            ColormapOwner,
+        )
+        ctrl = _make_controller(owner=ColormapOwner.CONTROLLER_QC)
+        ctrl._get_curation_annotator_widget.return_value = None
 
         ctrl._apply_viewer_isolation_adapter(_sel([1, 2, 3]))
 
         ctrl._isolate_labels_in_viewer.assert_called_once()
-        ann._on_isolation_changed.assert_not_called()
 
     def test_focus_mode_never_routes(self):
         from napari_epicycle.fusion_reconstruction.colormap_authority import (

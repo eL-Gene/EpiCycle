@@ -45,7 +45,7 @@ class _FakeCellpose:
 def _ready(w, qapp):
     c = w.controller
     c._on_model_use({"_kind": "pretrained", "name": "cyto3"})
-    w.set_channel_choice(w.chan1_combo, 0)
+    w.set_channel_choice(w.chan1_combo, 1)    # code 1: the first channel
     w.set_channel_choice(w.chan2_combo, None)
     pump(qapp)
     return c
@@ -219,7 +219,7 @@ def test_the_step3_preset_fills_the_channels_not_the_model(qapp, ws):
                            "channels": [2, 1]}
         c._apply_start_from("step3", save=False)
         pump(qapp)
-        assert w.chosen_channels() == (1, 0)
+        assert w.chosen_channels() == (2, 1)      # the codes as they are
         assert w.model_active_indicator_label.text() == card
         assert c._model_snapshot() == snap
     finally:
@@ -238,7 +238,7 @@ def _file_models(w, qapp, root):
         c._on_model_use({"_kind": "step2_run", "bucket": bucket,
                          "weights_path": str(root / "m" / bucket),
                          "human_label": f"run · round 1 ({bucket})"})
-    w.set_channel_choice(w.chan1_combo, 0)
+    w.set_channel_choice(w.chan1_combo, 1)    # code 1: the first channel
     w.set_channel_choice(w.chan2_combo, None)
     pump(qapp)
     return c
@@ -341,7 +341,7 @@ def test_the_idle_line_counts_only_stacks_that_will_run(qapp, tmp_path):
     w = panel(qapp, ws)
     try:
         c = _ready(w, qapp)
-        w.set_channel_choice(w.chan2_combo, 1)    # two channels needed
+        w.set_channel_choice(w.chan2_combo, 2)    # code 2: two channels needed
         c._on_channels_changed()
         c.state_manager.set_ticked(["P1.tif", "P2.tif", "gone.tif"])
         c._refresh_stacks()

@@ -20,6 +20,9 @@ Protocol (parent ⇄ child over stdout / exit code):
     ``<config_path>.adjacency.json`` on success so the parent can
     re-attach it to the re-read df (the features CSV does NOT carry
     ``df.attrs``).
+  * What the pairing check returned (the floors and links, or the refusal
+    sentence; ``null`` without another run) is written to
+    ``<config_path>.pairing.json`` on success.
   * On success: print ``QC-EXTRACT-DONE csv=<csv_path> rows=<n>`` then
     ``sys.exit(0)``.
   * On exception: print ``QC-EXTRACT-ERROR <message>`` + the full traceback
@@ -70,6 +73,12 @@ def _spacing_path(config_path: str) -> Path:
     """R7: the voxel size the run read from the patch file, for the
     parent to store (``null`` when none was read)."""
     return Path(str(config_path) + ".spacing.json")
+
+
+def _pairing_path(config_path: str) -> Path:
+    """What the pairing check returned, for the parent to record
+    (``null`` without another run)."""
+    return Path(str(config_path) + ".pairing.json")
 
 
 def _parent_alive(ppid: int) -> bool:
@@ -235,6 +244,13 @@ def main(argv=None) -> int:
             json.dumps(summary.get("spacing_found")), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001 — non-fatal; the size is re-read
         print(f"[QC-EXTRACT] WARN failed to write spacing sidecar: {exc}",
+              flush=True)
+    # The pairing check's floors and links, or its refusal (or null)
+    try:
+        _pairing_path(config_path).write_text(
+            json.dumps(summary.get("pairing")), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 — non-fatal; provenance only
+        print(f"[QC-EXTRACT] WARN failed to write pairing sidecar: {exc}",
               flush=True)
 
     print(

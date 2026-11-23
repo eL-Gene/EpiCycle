@@ -267,6 +267,10 @@ def test_the_patches_card(ui):
         QListWidget.SingleSelection
     assert ui.pr_tick_all_link.text() == P.S3_TICK_ALL_LINK
     assert "underline" in ui.pr_tick_all_link.styleSheet()
+    assert ui.pr_untick_all_link.text() == P.S3_UNTICK_ALL_LINK
+    assert ui.pr_untick_all_link.styleSheet() == ui.pr_tick_all_link.styleSheet()
+    assert ui.pr_untick_all_link.toolTip() == P.S3_UNTICK_ALL_HELP
+    assert ui.pr_left.isAncestorOf(ui.pr_untick_all_link)
     ui.set_pr_ticked_lines(4, 1, 3)
     assert ui.pr_ticked_predict_label.text() == "Predict: 4 ticked · 1 protected"
     assert ui.pr_ticked_recon_label.text() == "Reconstruct: 3 ready of 4 ticked"
@@ -320,7 +324,8 @@ def test_every_section_widget_has_a_parent(ui):
                  "model_change_btn", "pr_model_lat_label",
                  "pr_model_ax_label", "_patch_state_list",
                  "pr_ticked_predict_label", "pr_ticked_recon_label",
-                 "pr_tick_all_link", "predict_selected_btn",
+                 "pr_tick_all_link", "pr_untick_all_link",
+                 "predict_selected_btn",
                  "reconstruct_selected_btn", "pipeline_cancel_btn",
                  "view_reconstructed_button", "pipeline_progress",
                  "pipeline_status_label", "processing_mode_combo"):

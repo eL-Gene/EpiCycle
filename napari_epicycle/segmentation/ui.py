@@ -1935,68 +1935,79 @@ class SegmentStack(QWidget):
     def update_channel_combos(self, n_channels: int, axes: str = "",
                               channel_names: list = None,
                               roles: dict = None) -> None:
-        """Items ``"{i}: {name}"`` for ``i`` in ``0..n-1`` (``chan2`` keeps
-        "none" first).  A combo restores the last name actually CHOSEN (a
-        Qt property), never ``currentText()``, so a blank membrane channel
-        stays blank through any number of refreshes."""
+        """Cellpose's codes, as Steps 2 and 3 count: ``chan1`` offers
+        "0: gray" then one item per channel, ``chan2`` "0: none" then the
+        same items, so in both boxes an item's INDEX is its code (code k =
+        the stack's channel k - 1).  An item names its channel by the shown
+        stack's layer name (*channel_names*, by array position), else by
+        Step 3's word for the code (``_step4_models.channel_item``).
+        *roles* maps a CODE to the model's role, shown as that item's
+        tooltip.  A combo restores the last code actually CHOSEN (a Qt
+        property), never ``currentText()``, so a blank first box stays
+        blank through any number of refreshes."""
+        from . import _step4_models as S4M
         n_channels = max(int(n_channels or 0), 0)
         names = list(channel_names or [])
-        names += [None] * (n_channels - len(names))
         roles = dict(roles or {})
 
-        def item(i):
-            # a stack's layer name when one names the channel,
-            # else the model's role, else "ch{i}"
-            name, role = names[i], roles.get(i)
-            if name and role:
-                return T.SEG_CHANNEL_ITEM_ROLE.format(i=i, name=name,
-                                                      role=role)
-            if name:
-                return T.SEG_CHANNEL_ITEM.format(i=i, name=name)
-            if role:
-                return T.SEG_CHANNEL_ITEM_ROLE_ONLY.format(i=i, role=role)
-            return T.SEG_CHANNEL_ITEM.format(
-                i=i, name=T.SEG_CHANNEL_NAME.format(i=i))
+        role_tips = {T.SEG_MODEL_ROLE_MEMBRANE: T.SEG_ROLE_TIP_SEGMENT,
+                     T.SEG_MODEL_ROLE_NUCLEI: T.SEG_ROLE_TIP_HELPER}
 
-        items = [item(i) for i in range(n_channels)]
-        for combo, head in ((self.chan1_combo, []),
-                            (self.chan2_combo, [T.SEG_CHANNEL_NONE])):
+        def tip(code):
+            # the model's role goes in the item's tooltip: in the item
+            # itself it would be cut off by the narrow field
+            role = roles.get(code)
+            return role_tips.get(role, role) if role else None
+
+        codes = range(n_channels + 1)
+        tips = [tip(k) if k > 0 else None for k in codes]
+        for combo, helper in ((self.chan1_combo, False),
+                              (self.chan2_combo, True)):
             choice = combo.property(self._CHOICE)
             combo.blockSignals(True)
             try:
                 combo.clear()
-                combo.addItems(head + items)
+                combo.addItems([S4M.channel_item(k, names, helper=helper)
+                                for k in codes])
+                for k, text in enumerate(tips):
+                    if text:
+                        combo.setItemData(k, text, Qt.ToolTipRole)
                 idx = -1
                 if choice is not None:
-                    idx = self._index_of_choice(combo, choice, bool(head))
-                if idx < 0 and head:
-                    idx = 0            # chan2: "none"
+                    idx = self._index_of_choice(combo, choice)
+                if idx < 0 and helper:
+                    idx = 0            # chan2: "0: none"
                 combo.setCurrentIndex(idx)
             finally:
                 combo.blockSignals(False)
 
     @staticmethod
-    def _index_of_choice(combo, choice, has_none: bool) -> int:
-        """The item of a remembered choice: an int channel index (-1 =
-        "none" for chan2)."""
+    def _index_of_choice(combo, choice) -> int:
+        """The item of a remembered choice: its Cellpose code, which is
+        the item's index in both boxes; -1 when the box does not offer
+        it."""
         try:
-            choice = int(choice)
+            idx = int(choice)
         except (TypeError, ValueError):
             return -1
-        if has_none:
-            idx = choice + 1
-        else:
-            idx = choice
         return idx if 0 <= idx < combo.count() else -1
 
-    def set_channel_choice(self, combo, channel) -> None:
-        """Choose *channel* (an array index; ``None`` = "none" for chan2)
-        and remember it."""
-        has_none = combo is self.chan2_combo
-        value = -1 if channel is None else int(channel)
+    def set_channel_choice(self, combo, code) -> None:
+        """Choose Cellpose *code* (0 = "0: gray" / "0: none"; ``None`` =
+        blank in the first box, "0: none" in the second) and remember it.
+        A code the box does not offer (a stack with fewer channels) leaves
+        the first box blank and the second at "0: none".  When that moves
+        the box, the move is remembered as the pick (``_remember_chan1`` /
+        ``_remember_chan2`` run on the index change), so a later refresh
+        does not bring the code back."""
+        helper = combo is self.chan2_combo
+        if code is None:
+            value = 0 if helper else None
+        else:
+            value = int(code)
         combo.setProperty(self._CHOICE, value)
-        idx = self._index_of_choice(combo, value, has_none)
-        if idx < 0 and has_none:
+        idx = -1 if value is None else self._index_of_choice(combo, value)
+        if idx < 0 and helper:
             idx = 0
         combo.setCurrentIndex(idx)
 
@@ -2004,14 +2015,14 @@ class SegmentStack(QWidget):
         self.chan1_combo.setProperty(self._CHOICE, idx if idx >= 0 else None)
 
     def _remember_chan2(self, idx: int) -> None:
-        self.chan2_combo.setProperty(self._CHOICE,
-                                     idx - 1 if idx >= 0 else None)
+        self.chan2_combo.setProperty(self._CHOICE, idx if idx >= 0 else None)
 
     def chosen_channels(self):
-        """``(membrane_index or -1, nuclei_index or None)``."""
+        """``(segment code or -1 while blank, helper code)``: the Cellpose
+        codes Predict passes (0 = gray / none)."""
         c1 = self.chan1_combo.currentIndex()
         c2 = self.chan2_combo.currentIndex()
-        return c1, (c2 - 1 if c2 > 0 else None)
+        return c1, max(c2, 0)
 
     # ------------------------------------------------------------------
     # Channel row helpers (QC section)

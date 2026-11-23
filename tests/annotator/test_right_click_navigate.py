@@ -162,6 +162,8 @@ def _make_ann(**overrides):
         raise ValueError(f"unknown overrides: {sorted(overrides)}")
     # Bind the gate method so the handler closure can call it as
     # ``self._right_click_navigate_allowed(layer)``.
+    # the open-edit set, read from the state this fake carries
+    ann.staged_kinds = lambda: ann._refine_state.staged_kinds()
     ann._right_click_navigate_allowed = _gate.__get__(ann)
     ann._rclick_select_alive = _alive.__get__(ann)
     return ann
@@ -671,3 +673,17 @@ class TestDeferredFireRechecksClickTimeGate:
         ann2._navigator_widget._rebuild_pending = True
         _flush_deferred()
         assert any("skipped-rebuild-pending" in c for c in crumbs)
+
+
+class TestGateSyncsBeforeReading:
+    """The gate asks the open-edit set itself: a state mirror that was not
+    refreshed must not let a click through while an edit is open."""
+
+    def test_a_staged_refine_blocks_even_with_a_stale_mirror(self):
+        ann = _make_ann()
+        ann._smooth_running = True        # the live flag; the mirror is stale
+        ann._sync_refine_state = lambda: Curation3DAnnotator._sync_refine_state(ann)
+        ann.staged_kinds = lambda: (
+            Curation3DAnnotator.staged_kinds(ann))
+        assert ann._refine_state.any_op_active is False
+        assert _gate(ann, _FakeLayer([0])) is False

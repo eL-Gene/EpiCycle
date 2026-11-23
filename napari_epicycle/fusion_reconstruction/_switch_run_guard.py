@@ -74,13 +74,17 @@ _FLAG_REASONS = {
     "_commit_triage_in_flight": "A Commit-Triage save is writing to disk.",
     "_refine_running": (
         "A refine step is open. The object you are refining has an "
-        "unaccepted shape in the volume. Accept or Discard it first."
+        "unaccepted shape in the volume. Accept or Discard it on the "
+        "Refine tab."
     ),
     "_reshape_running": (
         "A guided split is open. The cell you are splitting is not in the "
-        "volume until you accept or cancel it."
+        "volume until you Accept or Discard it on the Reshape tab."
     ),
-    "_add_mode_running": "A de-novo Add session is open.",
+    "_add_mode_running": (
+        "An Add box is open in the annotator. Finish it first: press "
+        "Accept, or Discard a result and close the box, on the Add tab."
+    ),
     "_save_in_flight": "A curation save is writing to disk.",
     "_batch_refine_running": "A Batch Refine operation is in progress.",
     "_extract_all_running": "An 'Extract All' QC batch run is in progress.",

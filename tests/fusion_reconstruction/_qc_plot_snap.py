@@ -67,7 +67,11 @@ def describe(widget) -> dict:
         "tooltip": widget.toolTip(),
         "style": portable(widget.styleSheet()),
     }
-    text = getattr(widget, "text", None)
+    # A label that shortens its sentence with "..." to fit its width is read
+    # through full_text(): the drawn text depends on which fonts the test
+    # process has loaded (icon fonts registered by an earlier test change the
+    # default font and the fit), and this snapshot must not.
+    text = getattr(widget, "full_text", None) or getattr(widget, "text", None)
     if callable(text):
         try:
             value = text()

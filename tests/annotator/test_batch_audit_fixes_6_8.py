@@ -520,6 +520,8 @@ def test_an_undo_all_that_undid_nothing_keeps_review(monkeypatch, widgets):
     ann._push_add_ui = lambda **k: said.append(k)
     ann._batch_running = False
     ann._batch_staged = False
+    # a REVIEW alone is not an open edit: nothing else is staged
+    ann.staged_kinds = lambda: frozenset()
     # the session entries are {"ids": ...} dicts since the Undo-all confirm
     # (f1f730ed; this fake had object() and failed at every commit since),
     # and the confirm is a seam -- answered "Take them back"

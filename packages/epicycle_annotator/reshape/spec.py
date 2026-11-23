@@ -96,6 +96,21 @@ ADD_BOX_BUDGET = 4_000_000
 #: What the region target's hidden outside marker is made of.
 OUTSIDE_VALUES = ("faces+dark", "faces")
 
+#: How the region target grows new cells from their markers: the seeded
+#: flood over the box (the default, as before), the competition with a
+#: growth limit (``reshape/compete.py``), or one seeded watershed over the
+#: growth space with a background marker far from every marker
+#: (``"fill_with_background"``, what fills a whole patch on Cells).
+#: Item order is a wire format: new values are appended.
+GROWTH_VALUES = ("flood", "compete", "fill_with_background")
+
+#: Where new cells may grow: no outline (as before), a shrink-wrap around
+#: the stain (``outline.tissue_outline``) or the outline of the objects the
+#: user cleared.  The MODE lives here; the outline itself (a volume) is a
+#: run argument, ``outline=`` of the region target's entry points, so a
+#: spec stays serialisable and comparable.
+OUTLINE_VALUES = ("none", "shrink", "cleared")
+
 #: The marker sources the Add region target reads (Add rebuild):
 #: another run's objects, the bright-object pieces, the user's clicks.
 #: ``reshape/region.py`` imports THIS tuple; there is no second copy.
@@ -162,6 +177,26 @@ DEFAULT_PARAMS: dict = {
     "core_erode_um": 1.0,
     "click_radius_um": 2.0,
     "box_budget": ADD_BOX_BUDGET,
+    # the region target's growth rule and tissue outline (Derive inside
+    # Add); the label path never reads these.  ``wall_cost`` /
+    # ``growth_limit`` are read by the competition only, and
+    # ``include_membrane`` by the competition and the fill with a
+    # background; ``outline`` is the outline's MODE (the outline volume
+    # itself is the run argument ``outline=``, never a param);
+    # ``whole_patch`` lifts the box budget (the competition, or the fill
+    # with a background under its own ceiling)
+    "growth": "flood",
+    "wall_cost": 40.0,
+    "growth_limit": 28.0,
+    "include_membrane": True,
+    "outline": "none",
+    "bridge_um": 10.0,
+    "whole_patch": False,
+    # the flood's outside marker holds the six box faces (a box is a cut
+    # through the tissue); False on a whole patch filled the way a box is
+    # (its faces are the edge of the data, not a cut: cells may run to
+    # them, and the dark at a face is not eroded back from it)
+    "faces_outside": True,
 }
 
 #: The inclusive ranges of the region target's numeric knobs.
@@ -170,6 +205,9 @@ _REGION_RANGES = {
     "dark_clearance_um": (0.0, 10.0),
     "core_erode_um": (0.0, 5.0),
     "click_radius_um": (0.5, 5.0),
+    "wall_cost": (0.0, 100.0),
+    "growth_limit": (2.0, 40.0),
+    "bridge_um": (0.0, 30.0),
 }
 
 _VALID_PARAM_KEYS = frozenset(DEFAULT_PARAMS)
@@ -177,6 +215,46 @@ _VALID_PARAM_KEYS = frozenset(DEFAULT_PARAMS)
 _SPEC_FIELDS = frozenset(
     {"target", "seeds", "walls", "solver", "refine", "params", "arbiter"}
 )
+
+
+def _check_growth_params(merged: dict) -> None:
+    """The growth rule, the outline mode and their two ticks, in plain
+    words.
+
+    A knob the engine would silently ignore is refused: the whole patch
+    with the flood (the flood over a whole patch is not built; a whole
+    patch grows by the competition or by the fill with a background, and
+    the fill is legal on a box too).  The outline
+    VOLUME is not a param; whether it is there when the mode needs it is
+    checked by the entry points that take it (``outline=``)."""
+    if merged["growth"] not in GROWTH_VALUES:
+        raise _fail("params['growth']", merged["growth"], GROWTH_VALUES)
+    if merged["outline"] not in OUTLINE_VALUES:
+        raise _fail("params['outline']", merged["outline"], OUTLINE_VALUES)
+    for key in ("include_membrane", "whole_patch", "faces_outside"):
+        if not _is_bool(merged[key]):
+            raise ValueError(
+                "ReshapeSpec.params[{!r}]={!r} must be True or False.".format(
+                    key, merged[key]))
+        merged[key] = bool(merged[key])
+    if merged["whole_patch"] and merged["growth"] not in _WHOLE_PATCH_GROWTH:
+        raise ValueError(
+            "ReshapeSpec.params['whole_patch']=True needs growth='compete' "
+            "or growth='fill_with_background': the flood over the box "
+            "('flood') never runs on a whole patch.")
+
+
+#: The growth rules a whole patch may use.
+_WHOLE_PATCH_GROWTH = ("compete", "fill_with_background")
+
+
+def _is_bool(value: Any) -> bool:
+    """True / False, or a numpy boolean scalar (no numpy import here)."""
+    if value is True or value is False:
+        return True
+    dtype = getattr(value, "dtype", None)
+    return (dtype is not None and getattr(dtype, "kind", "") == "b"
+            and getattr(value, "ndim", 1) == 0)
 
 
 def _fail(field_name: str, value: Any, allowed: Sequence[str]) -> ValueError:
@@ -315,6 +393,7 @@ class ReshapeSpec:
                 "ReshapeSpec.params['box_budget']={!r} must be at least "
                 "1.".format(merged["box_budget"])
             )
+        _check_growth_params(merged)
 
         object.__setattr__(self, "params", merged)
 
@@ -487,6 +566,16 @@ class ReshapeResult:
     faint_pairs: list = field(default_factory=list)
     #: the patch dark threshold used (``{"t", "lo", "hi"}``)
     dark_threshold: dict | None = None
+    #: automatic markers dropped because >= 70 % of them lay outside the
+    #: tissue outline (counted apart from ``n_dropped_dark``; a marker both
+    #: dark and outside is counted once, as dark -- that drop runs first)
+    n_outside_outline: int = 0
+    #: run markers dropped under the competition because less than half of
+    #: their core lay on empty space (a sliver of a kept cell's own nucleus);
+    #: a core wholly over kept objects stays in ``n_markers_over_kept``
+    n_slivers: int = 0
+    #: the tiles the competition ran in (0 = the flood, never tiled)
+    n_tiles: int = 0
 
     @property
     def ok(self) -> bool:

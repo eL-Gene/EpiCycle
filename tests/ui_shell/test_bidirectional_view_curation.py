@@ -112,17 +112,119 @@ class TestCurationToViewCleanup:
         assert "recon_qc" not in viewer.layers
         assert "reconstruction_new" in viewer.layers
 
-    def test_view_reconstruction_source_closes_annotator(self):
-        """_view_reconstruction should close the annotator dock."""
-        import inspect
+    def test_view_reconstruction_source_closes_annotator(
+        self, monkeypatch, tmp_path
+    ):
+        """Viewing a reconstruction closes the 3D curation annotator dock,
+        and does so before the curation layers are cleared.
+
+        Drives the real View door (``_view_patch``, which the foot's View
+        button reaches through ``_view_reconstruction``) on a bare
+        controller with a fake dock lookup, so the test checks what
+        happens rather than how the code is spelled.
+        """
+        import numpy as np
+        import tifffile
+        import napari_epicycle.annotator.launcher as launcher_mod
         from napari_epicycle.fusion_reconstruction.controller import (
             FusionReconstructionController,
         )
-        source = inspect.getsource(
-            FusionReconstructionController._view_reconstruction
+
+        events = []
+        looked_up = []
+
+        class _FakeDock:
+            closed = False
+
+            def close(self):
+                self.closed = True
+                events.append("dock_close")
+
+        dock = _FakeDock()
+
+        def _fake_find(viewer, title):
+            looked_up.append(title)
+            return dock
+
+        monkeypatch.setattr(launcher_mod, "_find_dock_by_title", _fake_find)
+
+        class _RecordingLLM:
+            def clear_context(self, context):
+                events.append(f"clear_context:{context}")
+
+            def register_existing(self, name, context):
+                events.append(f"register:{name}:{context}")
+
+            def clear_step(self, step):
+                events.append(f"clear_step:{step}")
+
+        labels_path = tmp_path / "patch_A_labels.tif"
+        tifffile.imwrite(str(labels_path), np.zeros((2, 4, 4), np.uint16))
+
+        c = FusionReconstructionController.__new__(
+            FusionReconstructionController
         )
-        assert "EpiCycle 3D Curation Annotator" in source
-        assert "dock.close()" in source
+        c.viewer = FakeViewer()
+        c.layer_lifecycle_manager = _RecordingLLM()
+        c._guard_unsaved_changes = lambda: True
+        c._resolve_patch_payload = lambda name: {
+            "labels_path": str(labels_path),
+            "source_stack_path": "",
+        }
+        c._clear_curation_layers = lambda: events.append("clear_curation")
+        c._clear_qc_view_layers = lambda: events.append("clear_qc")
+        c._append_log = lambda msg: None
+
+        c._view_patch("patch_A.tif")
+
+        assert looked_up == ["EpiCycle 3D Curation Annotator"]
+        assert dock.closed, "View must close the 3D curation annotator dock"
+        # The close comes first; the View path then does its own clears.
+        assert events[0] == "dock_close", events
+        assert "clear_context:step3/curation" in events
+        # Close-only: the View path clears its own contexts, never the whole
+        # of Step 3, and the new View layer is in the viewer at the end.
+        assert "clear_step:step3" not in events, events
+        assert "register:reconstruction_patch_A:step3/view" in events
+        assert "reconstruction_patch_A" in c.viewer.layers
+
+    def test_view_cancelled_at_unsaved_question_keeps_annotator(
+        self, monkeypatch
+    ):
+        """When the user cancels the unsaved-edits question, View does
+        nothing: the annotator dock is not even looked up, let alone closed,
+        and no layers are cleared."""
+        import napari_epicycle.annotator.launcher as launcher_mod
+        from napari_epicycle.fusion_reconstruction.controller import (
+            FusionReconstructionController,
+        )
+
+        looked_up = []
+        events = []
+        monkeypatch.setattr(
+            launcher_mod, "_find_dock_by_title",
+            lambda viewer, title: looked_up.append(title),
+        )
+
+        c = FusionReconstructionController.__new__(
+            FusionReconstructionController
+        )
+        c.viewer = FakeViewer()
+        c.layer_lifecycle_manager = MagicMock()
+        c._guard_unsaved_changes = lambda: False
+        c._resolve_patch_payload = lambda name: events.append("payload")
+        c._close_3d_curation_annotator = (
+            lambda **kw: events.append("close"))
+        c._clear_curation_layers = lambda: events.append("clear_curation")
+        c._clear_qc_view_layers = lambda: events.append("clear_qc")
+        c._append_log = lambda msg: None
+
+        c._view_patch("patch_A.tif")
+
+        assert looked_up == [], "a cancelled View must not touch the dock"
+        assert events == [], events
+        assert c.layer_lifecycle_manager.mock_calls == []
+        assert len(c.viewer.layers) == 0
 
     def test_view_reconstruction_source_clears_curation(self):
         """_view_reconstruction should clear step3/curation context (A2:

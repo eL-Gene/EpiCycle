@@ -1,7 +1,7 @@
 # EpiCycle QC Feature Reference
 
 **Module:** `napari_epicycle/fusion_reconstruction/qc_features.py`
-**Last updated:** 2026-10-14
+**Last updated:** 2026-10-31
 **Companion files:** `FEATURE_CATALOG.csv` (one row per feature: definition, rationale, units, optional inputs), `QC_FEATURES_BIOLOGIST_GUIDE.md` (plain-language guide with interpretation).
 
 This document provides a complete reference for all QC features extracted from
@@ -19,6 +19,8 @@ assessment.
 - `in_named_composite`: the named signal(s) the feature feeds, for example `shape_abnormality` or `merge_signal`; the sign says whether a high value pushes the signal up (+) or down (-).
 
 A feature with the flags empty or 0 is still measured and shown in the plugin; it is just not part of the QC score or the morphospace.
+
+The five match columns of section 2.17 have no row: they compare two runs of the same patch, so they are not part of the catalogue.
 
 ---
 
@@ -555,6 +557,60 @@ These columns are descriptive and are not part of the composite score.
 - `centroid-0`, `centroid-1`, `centroid-2`: center of mass in voxel coordinates (Z, Y, X), not scaled by spacing.
 - `major_axis_{z,y,x}`, `mid_axis_{z,y,x}`, `minor_axis_{z,y,x}`: unit direction vectors (ZYX components) of the three principal axes of the inertia tensor. The "major" axis is the eigenvector of the smallest inertia eigenvalue, that is the most elongated direction; `major_axis_z_angle` (section 2.3) is derived from it.
 - `inertia_eigval_major`, `inertia_eigval_mid`, `inertia_eigval_minor`: the three inertia-tensor eigenvalues as returned by regionprops (descending order), kept for downstream ratios.
+
+### 2.17 Comparing with another run (`match_*`; not in the catalogue)
+
+**Source:** `napari_epicycle/fusion_reconstruction/qc_pairing.py` (`pair_runs`, `run_floor`, `status_from_columns`); the feature group `cross_run_pairing` in `qc_pairing_group.py`.
+
+These five columns are written only when Extract compares the active run of a patch with another run of the same patch (picked in the Extract Features settings, "Compare with:"). They need two runs of the same patch, so they are not part of the feature catalogue, the composite score (2.10), the standard PCA features or the whole-tissue engine, and Step 4 does not measure them. The other run's file is its reconstruction labels, read at full resolution from disk.
+
+**Overlap coefficient.** For an object $A$ of the active run and an object $P$ of the other run, as voxel sets on the same grid:
+
+$$O(A, P) = \frac{|A \cap P|}{\min(|A|,\ |P|)} \in [0, 1]$$
+
+$O$ is symmetric: the same number from either run. Sizes are voxel counts, never the physical `area`.
+
+**Size floor (per run).** $f = \lceil 0.1 \cdot \tilde{V} \rceil$ voxels, where $\tilde{V}$ is the median voxel count of that run's interior objects (bounding box off every face of the volume), taken over at least 20 interior objects; with fewer, $f = 20$. An object with $|X| < f$ of its run never links, on either side.
+
+**Link rule.** $A$ and $P$ are linked when both are at or above their run's floor and
+
+$$O(A, P) \ge 0.20$$
+
+(tested in exact integer arithmetic, so an overlap of exactly the floor links). Links do not exclude each other: there is no majority or one-to-one assignment.
+
+**Columns**, for an active object $A$ with linked set $L(A)$ (and $L(P)$ the active objects linked to $P$):
+
+| Column | Definition | Type |
+|---|---|---|
+| `match_count` | $\lvert L(A) \rvert$ | int |
+| `match_id` | $P_1$ = the $P \in L(A)$ with the largest $\lvert A \cap P \rvert$ (ties: higher $O$, then lower id); 0 when $L(A)$ is empty, $A$ is under its floor, or the row was blanked after an edit. Metadata, not a feature: excluded from plot axes, histogram axes and PCA | int |
+| `match_overlap` | $O(A, P_1)$ | float, [0, 1] |
+| `match_shared` | $\max_{P \in L(A)} \lvert L(P) \rvert$ (0 with no link) | int |
+| `match_minor_ratio` | $\lvert A \cap P_2 \rvert \,/\, \lvert A \cap P_1 \rvert$, $P_2$ the match with the second-largest shared voxel count; empty with fewer than two matches | float, [0, 1] |
+
+`match_overlap` and `match_minor_ratio` are bounded (never log-transformed). The best match is chosen by shared voxels, not by $O$: a fragment lying wholly inside a cell has $O = 1$ and would otherwise beat the real nucleus at $O = 0.95$. `match_minor_ratio` uses shared voxels rather than the matched objects' volumes so that it reads the same from either run: a fragment beside the real nucleus gives about 0.18, a 60/40 straddle about 0.67.
+
+**Encoding** of the special cases:
+
+| Case | count | id | overlap | shared | minor |
+|---|---|---|---|---|---|
+| measured, linked | $\lvert L(A) \rvert$ | $P_1$ | $O(A, P_1)$ | as above | as above |
+| measured, no link | 0 | 0 | 0.0 | 0 | empty |
+| too small to judge | 0 | 0 | empty | 0 | empty |
+| blanked after an edit | empty | 0 | empty | empty | empty |
+
+**Status** (the QC plot's Colour by "Overlap with ..." entry and the triage histogram's Colour bars by entry of the same name; derived from the columns each time it is shown, never saved), the first rule that holds wins:
+
+1. *too small to judge*: count 0 and overlap empty
+2. *not measured*: count or shared empty (blanked after an edit); a deleted or superseded label also reads this
+3. *no match*: count 0
+4. *several matches*: count $\ge 2$ (such an object may also share a match)
+5. *shared match*: count 1 and shared $\ge 2$
+6. *one match*
+
+**Limits.** One match means the two runs agree, not that the object is right, and not that the two have the same size: an object nested inside a much larger one still counts as one match. A merge present in both runs, or one where the second nucleus mostly lies in the neighbouring cell, is invisible to this check; interior membrane brightness ($R_\text{b/i}$, section 2.7) still catches it.
+
+**Staleness.** The extraction records the other run's file, its size and modification time, the link floor and both size floors. The plot compares the file with that record when it shows the match values and says when it changed; it also says when the active run was edited after the Extract. Every label an edit touches (paint, split, merge, smooth, interpolation, Refine, delete), every new label and every label measured again with Recalculate QC has its match values blanked until the next Extract; superseded and deleted rows keep the values they had. After a restart the plot still says the values predate an edit when the table holds a blanked row, when the labels file is newer than the Extract, or when the table was saved after an edit.
 
 ---
 

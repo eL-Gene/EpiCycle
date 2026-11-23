@@ -693,17 +693,29 @@ def extract_from_workspace(
 
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"[REFINE-EXTRACT] skip {run_dir.name}: unreadable manifest ({exc})")
             continue
 
-        labels_path = manifest.get("labels_path", "")
+        # The labels file inside this run folder is the one that travels with
+        # a copied workspace; the manifest's stored path is an absolute path
+        # from wherever the run was made, so it is only the fallback.
+        own_labels = run_dir / "labels_3d.tif"
+        if own_labels.exists():
+            labels_path = str(own_labels)
+        else:
+            labels_path = manifest.get("labels_path", "")
         source_path = manifest.get("source_stack_path", "")
-
-        if not labels_path or not Path(labels_path).exists():
-            continue
 
         patch_stem = Path(source_path).stem if source_path else run_dir.name
         if patch_names is not None and patch_stem not in patch_names:
+            continue
+
+        if not labels_path or not Path(labels_path).exists():
+            print(
+                f"[REFINE-EXTRACT] skip {patch_stem}: labels not found "
+                f"({labels_path or 'no path in manifest'})"
+            )
             continue
 
         img_path = source_path
@@ -714,6 +726,10 @@ def extract_from_workspace(
                 img_path = str(candidates[0])
 
         if not img_path or not Path(img_path).exists():
+            print(
+                f"[REFINE-EXTRACT] skip {patch_stem}: source image not found "
+                f"({img_path or 'no path in manifest'})"
+            )
             continue
 
         patch_jobs.append((patch_stem, labels_path, img_path))

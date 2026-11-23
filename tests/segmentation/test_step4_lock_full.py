@@ -89,7 +89,7 @@ def w(qapp, tmp_path):
     # R1-1: a model, a membrane channel and a ticked stack, so Predict is
     # LIVE when idle and a job must grey it (not a vacuous pass)
     c._on_model_use({"_kind": "pretrained", "name": "cyto3"})
-    w.set_channel_choice(w.chan1_combo, 0)
+    w.set_channel_choice(w.chan1_combo, 1)
     c._on_channels_changed()
     pump(qapp)
     tick(w, qapp, "P1.tif", "P2.tif")

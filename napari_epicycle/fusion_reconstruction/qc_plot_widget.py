@@ -15,6 +15,7 @@ are emitted via ``labels_selected``.
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
@@ -53,6 +54,10 @@ from qtpy.QtWidgets import (
     QWidgetItem,
 )
 
+from . import _qc_pairing_text as _PT
+from . import qc_pairing as _pairing
+from . import qc_pairing_group as _pairing_group
+
 # --- Palette ---------------------------------------------------------------
 _BG_COLOR = "#1a1a2e"
 _GRID_ALPHA = 20
@@ -74,6 +79,45 @@ _TIER_COLORS = {
     "bad": (255, 120, 40),       # warm orange
     "garbage": (240, 60, 60),    # red
 }
+
+# --- The match colour-by (the pairing check) ------------------------------
+#: The match columns the check writes; Colour by offers "Overlap with ..."
+#: (naming the other run) only when the table has all five.
+_MATCH_COLUMNS = _pairing.COLUMNS
+#: The column the match words are written to while they are shown.  The
+#: features CSV never keeps it (it is derived from the five columns).
+_MATCH_STATUS_COLUMN = "match_status"
+#: The match words in the legend's fixed order, with their colours (the
+#: triage histogram stacks its bars in the same ones).
+_MATCH_COLORS = _pairing.MATCH_COLOURS
+#: The words the legend lists even at a count of 0 (the greys only when a
+#: row reads them).
+_MATCH_ALWAYS = _pairing.MATCH_ALWAYS
+#: Whether a table carries all five match columns.
+_has_match_columns = _pairing_group.has_all_match_columns
+#: The match word of every row of a table with the five columns.
+_match_words = _pairing_group.match_words
+
+
+class _ColourByWords(frozenset):
+    """The categorical Colour by words.  The pairing check's item names the
+    other run ("Overlap with Nuclei"), so every form of it is a member.
+
+    Only ``in`` knows that rule.  A set operation (``s | {...}``,
+    ``s - {...}``) or a copy (``frozenset(s)``) returns a plain frozenset
+    that has lost it, so test membership on this object itself and never
+    build a new set from it."""
+
+    def __contains__(self, item) -> bool:
+        return (_PT.is_match_colour_by(item)
+                or frozenset.__contains__(self, item))
+
+
+def _unbreakable(word: str) -> str:
+    """A legend word whose spaces never break (``&nbsp;``), so a narrow
+    legend wraps between its entries, never inside one."""
+    return word.replace(" ", "&nbsp;")
+
 
 # --- Colormaps (5-stop, normalized 0-1 RGB) --------------------------------
 _COLORMAPS = {
@@ -814,6 +858,14 @@ class QCPlotWidget(QWidget):
         #: reads MAP_BUSY_EMPTY), and the input each map was made from.
         self._wb_map_busy: Optional[str] = None
         self._wb_map_inputs: Dict[str, str] = {}
+        #: The pairing check: the host's callback that says what the plot
+        #: cannot know (the other run's name, whether its file changed,
+        #: whether the match values predate an edit), and the note line
+        #: under the legend -- built the first time a note is shown.
+        self._match_notes_provider: Optional[Callable[[], Mapping]] = None
+        self._match_note_label: Optional[QLabel] = None
+        #: the other run's name as the provider last said it
+        self._match_other_seen = ""
 
         # State
         self._df = None                          # pandas DataFrame
@@ -1204,6 +1256,8 @@ class QCPlotWidget(QWidget):
                                     H["Colours"])
         self._wb_axes_note = QLabel("", self)
         self._wb_axes_note.setStyleSheet(_WB_LABEL_STYLE)
+        # plain text: the Violin note can carry a run's typed name
+        self._wb_axes_note.setTextFormat(Qt.TextFormat.PlainText)
         # The range moves to the gradient legend under the plot (mockup);
         # the classic range label stays alive, written, and never shown.
         self._colorbar_label.hide()
@@ -1448,6 +1502,163 @@ class QCPlotWidget(QWidget):
         except Exception as exc:  # noqa: BLE001 -- the switch must finish
             print(f"[QC-PLOT] kept-selection callback failed: {exc!r}")
 
+    # --- The pairing check: the match notes and tooltips ----------------
+
+    def set_match_notes_provider(
+            self, cb: Optional[Callable[[], Mapping]]):
+        """``cb()`` tells the plot what it cannot read itself while the
+        table has match columns: ``{"other": the other run's name,
+        "stale": the stale sentence or None, "predate_edits": bool,
+        "descriptions": {match column: its description}}``.  The
+        plot calls it when it redraws a table with match columns (never
+        reads a file itself) and shows the two notes under the legend while
+        colouring by "Overlap with ...", and in the match columns' tooltips.
+        ``None`` removes it."""
+        if cb is not None and not callable(cb):
+            raise TypeError("the match notes provider must be callable")
+        self._match_notes_provider = cb
+        self._update_match_notes()
+
+    def _match_facts(self) -> dict:
+        """What the provider says now (``{}`` with none, or when it
+        fails -- a failing provider is reported, never raised into a
+        redraw)."""
+        cb = self._match_notes_provider
+        if cb is None:
+            return {}
+        try:
+            facts = cb()
+        except Exception as exc:  # noqa: BLE001 -- the redraw must finish
+            print(f"[QC-PLOT] match notes provider failed: {exc!r}")
+            return {}
+        return dict(facts) if isinstance(facts, Mapping) else {}
+
+    @staticmethod
+    def _match_note_lines(facts: Mapping) -> List[str]:
+        """The notes, in order: the stale line, then the predate-edits
+        line."""
+        lines = []
+        if facts.get("stale"):
+            lines.append(str(facts["stale"]))
+        if facts.get("predate_edits"):
+            lines.append(_PT.PREDATE_EDITS)
+        return lines
+
+    def _make_match_note_label(self) -> QLabel:
+        """The note line under the legend, in the legend's own style,
+        inserted right after it."""
+        label = QLabel("", self)
+        label.setObjectName("qcPlotMatchNote")
+        label.setStyleSheet(self._legend_label.styleSheet())
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.PlainText)
+        lay = self.layout()
+        at = lay.indexOf(self._legend_label) if lay is not None else -1
+        if at >= 0:
+            lay.insertWidget(at + 1, label)
+        elif lay is not None:
+            lay.addWidget(label)
+        self._match_note_label = label
+        return label
+
+    def match_notes_shown(self) -> List[str]:
+        """The note lines under the legend now (``[]`` when hidden)."""
+        label = self._match_note_label
+        if label is None or label.isHidden() or not label.text():
+            return []
+        return label.text().split("\n")
+
+    def _update_match_notes(self):
+        """The match notes under the legend (only while colouring by
+        "Overlap with ..."), the item's words and the match tooltips, from
+        what the provider says."""
+        has = _has_match_columns(self._df)
+        facts = self._match_facts() if has else {}
+        if has:
+            self._refresh_match_tips(facts)
+        colour = (self._color_combo.currentText()
+                  if self._color_combo.count() > 0 else "")
+        lines = (self._match_note_lines(facts)
+                 if has and _PT.is_match_colour_by(colour) else [])
+        label = self._match_note_label
+        if not lines:
+            if label is not None:
+                label.setText("")
+                label.hide()
+            return
+        if label is None:
+            label = self._make_match_note_label()
+        label.setText("\n".join(lines))
+        label.show()
+
+    def _refresh_match_tips(self, facts: Mapping):
+        """The tooltips of the "Overlap with ..." item and of the match
+        columns in the X, Y and Colour by lists: each column's description
+        with the other run named, then the notes.  The item itself is
+        renamed when the other run's name has changed since the list was
+        filled (signals blocked: the choice stays the same)."""
+        descriptions = facts.get("descriptions")
+        if not isinstance(descriptions, Mapping):
+            descriptions = {}
+        other = str(facts.get("other") or "")
+        self._match_other_seen = other
+        notes = self._match_note_lines(facts)
+        role = Qt.ItemDataRole.ToolTipRole
+        for combo in (self._feature_x_combo, self._feature_y_combo,
+                      self._color_combo):
+            for col in _MATCH_COLUMNS:
+                i = combo.findText(col)
+                # no description (the provider failed or said nothing):
+                # the item keeps the tooltip it has
+                if i >= 0 and descriptions.get(col):
+                    combo.setItemData(i, _PT.column_tooltip(
+                        col, descriptions.get(col, ""), other, notes), role)
+        i = self._match_colour_index()
+        if i >= 0:
+            words = _PT.colour_by_match(other)
+            renamed_current = False
+            if self._color_combo.itemText(i) != words:
+                renamed_current = i == self._color_combo.currentIndex()
+                blocked = self._color_combo.blockSignals(True)
+                try:
+                    self._color_combo.setItemText(i, words)
+                finally:
+                    self._color_combo.blockSignals(blocked)
+            self._color_combo.setItemData(
+                i, _PT.COLOUR_BY_MATCH_TOOLTIP, role)
+            if renamed_current:
+                # the signals were blocked: the legend header and the
+                # Violin note name the run again in this same redraw
+                self._wb_sync_axes()
+                self._update_legend()
+                if self._layout_mode == "workbench":
+                    self._wb_update_legend()
+
+    def _match_colour_index(self) -> int:
+        """The row of the "Overlap with ..." item in Colour by, -1 when it
+        is not offered."""
+        combo = self._color_combo
+        for i in range(combo.count()):
+            if _PT.is_match_colour_by(combo.itemText(i)):
+                return i
+        return -1
+
+    def _match_other_name(self) -> str:
+        """The other run's name as the provider last said it (empty when
+        it is not known).  Filling the lists does not ask the provider
+        again: the redraw that follows does, and renames the item."""
+        return getattr(self, "_match_other_seen", "")
+
+    def _write_match_status(self) -> bool:
+        """Write the match word of every row into the table's
+        ``match_status`` column (the column the legend picks and the
+        viewer's hover read).  False when the table has no match
+        columns."""
+        if not _has_match_columns(self._df):
+            return False
+        self._df[_MATCH_STATUS_COLUMN] = _match_words(self._df)
+        return True
+
     def set_map_busy(self, kind: Optional[str]):
         """Workbench (B3b): the map now computing, or ``None``.  Its empty
         plot then reads MAP_BUSY_EMPTY instead of UMAP_EMPTY / TSNE_EMPTY."""
@@ -1529,12 +1740,19 @@ class QCPlotWidget(QWidget):
                 "colour_by_column_values needs layout='workbench'")
         if self._df is None or self._df.empty:
             return None, np.zeros(0, dtype=np.int64), np.zeros(0)
+        name = (self._color_combo.currentText()
+                if self._color_combo.count() > 0 else "")
+        if _PT.is_match_colour_by(name):
+            # "Overlap with ..." reads the match words, whatever run it names
+            col = _MATCH_STATUS_COLUMN
+        else:
+            col = self._WB_COLOUR_BY_COLUMN.get(name, name)
+        if col == _MATCH_STATUS_COLUMN:
+            # the words follow the match columns as they are now
+            self._write_match_status()
         ghost = self._get_ghost_mask()
         active = self._df if ghost is None else self._df[~ghost]
         ids = active["label"].to_numpy(dtype=np.int64)
-        name = (self._color_combo.currentText()
-                if self._color_combo.count() > 0 else "")
-        col = self._WB_COLOUR_BY_COLUMN.get(name, name)
         if col not in active.columns:
             return None, ids, np.zeros(0)
         return col, ids, active[col].to_numpy()
@@ -1555,6 +1773,9 @@ class QCPlotWidget(QWidget):
         if self._layout_mode != "workbench":
             raise RuntimeError("set_colour_by needs layout='workbench'")
         idx = self._color_combo.findText(name)
+        if idx < 0 and _PT.is_match_colour_by(name):
+            # any "Overlap with ..." picks the one item, whatever run it names
+            idx = self._match_colour_index()
         if idx < 0:
             return False
         extra = []
@@ -1865,6 +2086,7 @@ class QCPlotWidget(QWidget):
         self._stats_label.setText("")
         self._legend_label.setText("")
         self._colorbar_label.setText("")
+        self._update_match_notes()   # no table: no match note
         if self._layout_mode == "workbench":
             # no stale gradient legend, a greyed
             # Clear, and the empty sentence (if the host set one).
@@ -2064,8 +2286,11 @@ class QCPlotWidget(QWidget):
                 out.add(int(labels[i]))
         return sorted(out)
 
-    def _clear_selection(self):
-        """Clear lasso/category selection, restore normal view, and notify controller."""
+    def _clear_selection(self, *, emit: bool = True):
+        """Clear lasso/category selection, restore normal view, and notify controller.
+
+        ``emit=False`` skips the notification, for a clear that starts in the
+        annotator and must not come back to it."""
         self._selected_indices.clear()
         self._clicked_df_index = None
         self._selected_categories.clear()
@@ -2079,8 +2304,9 @@ class QCPlotWidget(QWidget):
         # below triggers the coordinator which handles colormap restore.
         self._redraw(_lightweight=True)
         # Defer expensive viewer isolation clearing to after plot repaint
-        from qtpy.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self.labels_selected.emit([]))
+        if emit:
+            from qtpy.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.labels_selected.emit([]))
 
     def highlight_labels(self, label_ids: list):
         """Programmatically highlight specific labels in the plot.
@@ -2322,7 +2548,9 @@ class QCPlotWidget(QWidget):
             known_set = set(known)
             # Exclude non-feature columns
             _EXCLUDE = {"label", "patch_name", "stack_name", "label_status",
-                        "feature_state", "qc_tier"}
+                        "feature_state", "qc_tier",
+                        # a label number of the other run, not a feature
+                        "match_id"}
             extra = [
                 c for c in self._df.select_dtypes(include="number").columns
                 if c not in known_set
@@ -2333,8 +2561,15 @@ class QCPlotWidget(QWidget):
             cols = known + sorted(extra)
             self._feature_x_combo.addItems(cols)
             self._feature_y_combo.addItems(cols)
-            # Color-by options: categorical first, then continuous features
-            color_options = ["QC status"]
+            # Color-by options: categorical first, then continuous features.
+            # A host whose panel no longer writes ``qc_status`` (Step 3's
+            # threshold filter is gone) offers "QC status" only on a table
+            # that has the column: on any other it would paint every label
+            # grey.
+            color_options = []
+            if ("qc_status" in self._df.columns
+                    or not self._wb_texts.get("QC_STATUS_NEEDS_COLUMN")):
+                color_options.append("QC status")
             if ("qc_tier" in self._df.columns
                     or self._layout_mode == "workbench"):
                 # The Workbench offers "QC tier" before the first mark:
@@ -2348,7 +2583,16 @@ class QCPlotWidget(QWidget):
                 color_options.append("Border cell")
             if "euler_number" in self._df.columns:
                 color_options.append("Topology")
-            color_options.extend(cols)
+            if _has_match_columns(self._df):
+                # the pairing check ran on this table: the item names the
+                # run it was compared with
+                color_options.append(
+                    _PT.colour_by_match(self._match_other_name()))
+            # the match numbers are plotted as X / Y only: their colour
+            # path is the match words (a blanked row is "not measured",
+            # never the low end of a colour scale)
+            color_options.extend(c for c in cols
+                                 if c not in _MATCH_COLUMNS)
             self._color_combo.addItems(color_options)
 
             # Restore previous selections (fall back to defaults if missing)
@@ -2363,11 +2607,43 @@ class QCPlotWidget(QWidget):
                 self._feature_y_combo.setCurrentIndex(1)
 
             color_idx = self._color_combo.findText(prev_color)
+            if color_idx < 0 and _PT.is_match_colour_by(prev_color):
+                # the same choice when the other run's name has changed
+                color_idx = self._match_colour_index()
             if color_idx >= 0:
                 self._color_combo.setCurrentIndex(color_idx)
+            self._set_item_tips()
 
         for combo in (self._feature_x_combo, self._feature_y_combo, self._color_combo):
             combo.blockSignals(False)
+
+    def _set_item_tips(self):
+        """Every item of the X, Y and Colour by lists with a sentence gets
+        it as its tooltip, from the host's ``texts``: a Colour by entry
+        its ``COLOUR_BY_TIPS`` sentence, a measured feature
+        ``FEATURE_TOOLTIP`` with what ``texts["describe"](column)``
+        returns.  An item with no sentence gets no tooltip."""
+        texts = self._wb_texts or {}
+        tips = texts.get("COLOUR_BY_TIPS") or {}
+        describe = texts.get("describe")
+        template = texts.get("FEATURE_TOOLTIP", "{column}: {description}")
+        role = Qt.ItemDataRole.ToolTipRole
+        for combo in (self._feature_x_combo, self._feature_y_combo,
+                      self._color_combo):
+            for i in range(combo.count()):
+                name = combo.itemText(i)
+                tip = (tips.get(name) if combo is self._color_combo
+                       else None)
+                if not tip and callable(describe):
+                    try:
+                        desc = describe(name)
+                        if desc:
+                            tip = template.format(column=name,
+                                                  description=desc)
+                    except Exception:  # noqa: BLE001 -- a tip never breaks a load
+                        tip = None
+                if tip:
+                    combo.setItemData(i, tip, role)
 
     def _on_plot_type_changed(self, _index):
         """Update visibility of axis selectors based on plot type."""
@@ -2432,6 +2708,7 @@ class QCPlotWidget(QWidget):
 
         if self._df is None or self._df.empty:
             self._stats_label.setText("")
+            self._update_match_notes()
             if (self._layout_mode == "workbench"
                     and self._wb_empty_sentence):
                 self._wb_draw_sentence(self._wb_empty_sentence)
@@ -2454,6 +2731,7 @@ class QCPlotWidget(QWidget):
         self._update_legend()
         if self._layout_mode == "workbench":
             self._wb_update_legend()
+        self._update_match_notes()
 
         if not _lightweight:
             # Auto-fit view to new data (reset any previous zoom/pan)
@@ -2585,6 +2863,16 @@ class QCPlotWidget(QWidget):
             colors[euler >= 2] = [180/255, 130/255, 255/255, 0.85]  # Cavity
             colors[euler == 0] = [255/255, 180/255, 50/255, 0.85]   # Tunnel
             colors[euler < 0] = [255/255, 80/255, 80/255, 0.85]     # Complex
+            return colors
+
+        # The pairing check: the match word of each row
+        if (_PT.is_match_colour_by(color_by)
+                and _has_match_columns(df)):
+            colors = np.zeros((n, 4), dtype=np.float32)
+            colors[:] = default_rgba
+            words = _match_words(df)
+            for word, (r, g, b) in _MATCH_COLORS.items():
+                colors[words == word] = [r / 255, g / 255, b / 255, 0.85]
             return colors
 
         # Use border cell categorical coloring
@@ -2833,7 +3121,9 @@ class QCPlotWidget(QWidget):
         return self._point_pens(n)
 
     # Categorical color-by modes that trigger stacked histogram
-    _CATEGORICAL_COLOR_BY = {"QC status", "QC tier", "Cluster", "Patch", "Border cell", "Topology"}
+    _CATEGORICAL_COLOR_BY = _ColourByWords(
+        {"QC status", "QC tier", "Cluster", "Patch", "Border cell",
+         "Topology"})
 
     # Ghost point color: visible gray with sufficient alpha
     _GHOST_COLOR = (140, 140, 160, 130)
@@ -2856,9 +3146,15 @@ class QCPlotWidget(QWidget):
 
     def _add_ghost_scatter(self, x: np.ndarray, y: np.ndarray,
                            ghost_mask: np.ndarray) -> None:
-        """Add a separate non-interactive scatter for ghost points."""
-        gx = x[ghost_mask]
-        gy = y[ghost_mask]
+        """Add a separate non-interactive scatter for ghost points.
+
+        A ghost with no position (a NaN coordinate: a map its row was never
+        placed on) is not drawn."""
+        gx = np.asarray(x[ghost_mask], dtype=float)
+        gy = np.asarray(y[ghost_mask], dtype=float)
+        placed = np.isfinite(gx) & np.isfinite(gy)
+        if not placed.all():
+            gx, gy = gx[placed], gy[placed]
         if len(gx) == 0:
             return
         # getattr: test fakes built from SimpleNamespace call this method
@@ -2948,6 +3244,17 @@ class QCPlotWidget(QWidget):
             for cat in self._df["euler_category"].unique():
                 categories[cat] = _topo_colors.get(cat, (150, 150, 150))
             return "euler_category", categories
+        if (_PT.is_match_colour_by(color_by)
+                and self._write_match_status()):
+            # The words are written into the table (as Topology writes
+            # its own) so a legend pick finds its rows; the features CSV
+            # leaves the column out.  Fixed order: the four measured words
+            # always, the two greys only when a row reads them.
+            words = self._df[_MATCH_STATUS_COLUMN].to_numpy()
+            present = set(words[self._wb_active_mask()])
+            return _MATCH_STATUS_COLUMN, {
+                word: rgb for word, rgb in _MATCH_COLORS.items()
+                if word in _MATCH_ALWAYS or word in present}
         return None, {}
 
     def _get_selected_category_mask(self) -> Optional[np.ndarray]:
@@ -3511,8 +3818,9 @@ class QCPlotWidget(QWidget):
         active = self._wb_active_mask()
         if len(values) == len(active):
             values = values[active]        # removed cells count nowhere
+        # escaped: the "Overlap with ..." item carries a run's typed name
         items = ['<span style="color:#888888;">{}:</span>'.format(
-            color_by or "QC status")]
+            html.escape(color_by or "QC status", quote=False))]
         for cat_value, (r, g, b) in cat_colors.items():
             if cat_col == "cluster_id":
                 display = (self._wb_word("NOISE_WORD", "noise")
@@ -3527,6 +3835,8 @@ class QCPlotWidget(QWidget):
                                                            str(cat_value))
             else:
                 display = str(cat_value)
+            if cat_col == _MATCH_STATUS_COLUMN:
+                display = _unbreakable(display)
             try:
                 count = int((values == cat_value).sum())
             except Exception:  # noqa: BLE001 -- a count, never a crash
@@ -3806,6 +4116,8 @@ class QCPlotWidget(QWidget):
                     display = _DISPLAY_NAMES[cat_col].get(cat_value, str(cat_value))
                 else:
                     display = str(cat_value)
+                if cat_col == _MATCH_STATUS_COLUMN:
+                    display = _unbreakable(display)
 
                 # Bold + underline for all selected categories
                 is_sel = (cat_col, str(cat_value)) in self._selected_categories

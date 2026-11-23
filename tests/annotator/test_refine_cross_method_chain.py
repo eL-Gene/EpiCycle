@@ -46,6 +46,9 @@ _BOUND = (
     "_refine_room", "_refine_step_margin", "_grow_refine_region",
     "_finish_settle_result",
     "_refine_staged_status", "_refine_s1_text",
+    # the open-edit set that Preview reads before it starts
+    "staged_kinds", "staged_op_kind", "_sync_refine_state",
+    "_refuse_for_open_edit",
 )
 _CLASS_TABLES = ("_REFINE_NOTHING_MOVED", "_REFINE_STEP_WORD",
                  "_REFINE_METHOD_WORD")
@@ -119,12 +122,18 @@ class Fake:
         self.ui_calls = []
         self.lock_calls = []
 
+        from napari_epicycle.annotator.refinement_state import RefinementOpState
+
+        self._refine_state = RefinementOpState()
         self._split_running = False
         self._split_fragment_refine = False
         self._batch_staged = False
         self._batch_running = False
         self._smooth_running = False
         self._smooth_snapshot = None
+        # Discard hands the Clear Edits button back to the draw snapshot
+        self._draw_snapshot = None
+        self._clear_edits_btn = _Btn()
         self._smooth_roi = None
         self._smooth_label_id = None
         self._smooth_chain_count = 0

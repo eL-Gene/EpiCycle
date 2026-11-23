@@ -34,14 +34,24 @@ CONTROLS = (
     "add_wall_channel_combo", "add_prep_zcorrect_cb", "add_prep_bgsub_cb",
     "add_prep_lift_cb", "add_prep_denoise_cb", "add_wall_kind_combo",
     "add_channel_combo", "add_clahe_cb", "add_threshold_sb", "add_otsu_btn",
-    "add_preview_btn", "add_stop_btn", "add_all_btn", "add_none_btn",
+    "add_preview_btn", "add_stop_btn", "add_clear_btn", "add_all_btn",
+    "add_none_btn",
     "add_show_walls_cb", "add_contour_cb", "add_click_radius_sb", "add_core_erode_sb",
     "add_dark_outside_cb", "add_dark_clearance_sb", "add_dark_factor_sb",
-    "add_separate_cb", "add_min_distance_sb", "add_clahe_clip_sb",
-    "add_clear_border_cb", "add_edge_margin_sb", "add_min_size_sb",
-    "add_auto_smooth_cb", "add_smooth_sigma_sb", "add_batch_refine_btn",
-    "add_refine_piece_btn", "add_again_btn", "add_undo_all_btn",
-    "add_accept_refine_btn",
+    "add_separate_cb", "add_min_distance_sb", "add_marker_spacing_sb",
+    "add_clahe_clip_sb", "add_clear_border_cb", "add_edge_margin_sb", "add_min_size_sb",
+    "add_auto_smooth_cb", "add_smooth_sigma_sb", "add_live_cb",
+    "add_batch_refine_btn",
+    "add_refine_piece_btn", "add_again_btn",
+    # Inside each cell and the whole patch
+    "add_look_for_combo", "add_whole_btn", "add_size_whole_btn",
+    "add_nuc_radius_sb", "add_nuc_edge_sb", "add_two_gap_sb",
+    # Cells: the tissue outline and how cells grow
+    "add_outline_combo", "add_show_outline_cb", "add_grow_combo",
+    "add_wall_cost_sb", "add_growth_limit_sb", "add_include_membrane_cb",
+    "add_bridge_sb",
+    # Nuclei: the Tissue outline card's own combo and Show tick
+    "add_nuc_outline_combo", "add_nuc_show_outline_cb",
 )
 
 
@@ -168,20 +178,69 @@ AP_SLIVER = R.NUCLEI_SLIVER_UM
 
 
 def test_the_voxel_sentences_name_a_button_that_exists():
-    """Live-shot fix F1 (now ADD_NOTE_DEFAULT_SPACING) sends the user to
-    "QC Features -> Settings..." in Step 3 -- that section, that button and
-    its "Spacing" row must really be there."""
+    """The spacing sentences send the user to "Set spacing…" on Step 3's
+    Session list -- that button must really be there, with that word."""
     import pathlib
+
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as PRT
 
     root = pathlib.Path(__file__).resolve().parents[2]
     ui = (root / "napari_epicycle" / "fusion_reconstruction"
           / "ui.py").read_text(encoding="utf-8")
-    assert '"QC Features"' in ui
-    assert 'self.qc_settings_btn = QPushButton("Settings...")' in ui
-    assert 'self.extract_features_btn = QPushButton("Extract")' in ui
-    dlg = (root / "napari_epicycle" / "fusion_reconstruction"
-           / "qc_extraction_dialog.py").read_text(encoding="utf-8")
-    assert 'addRow("Spacing:"' in dlg
-    for const in (AP.ADD_NOTE_DEFAULT_SPACING,):
-        assert "QC Features → Settings…" in const
-        assert "Spacing" in const
+    assert "self.session_set_spacing_btn = QPushButton(" in ui
+    assert "_PRT.S3_SET_SPACING_BTN" in ui
+    assert PRT.S3_SET_SPACING_BTN == "Set spacing…"
+    for const in (AP.ADD_NOTE_DEFAULT_SPACING, AP.ADD_S1_NEEDS_SPACING,
+                  AP.ADD_S1_NEEDS_SPACING_BOXED):
+        assert PRT.S3_SET_SPACING_BTN + " in the Session list" in const
+    # half size is not a QC setting: it is the tick box under Curate, read
+    # when a patch is opened -- the sentence quotes its label exactly
+    assert ('self.downsample_mode_cb = QCheckBox("Downsample patches 2× on '
+            'load")') in ui
+    assert '"Curate"' in ui
+    half = AP.ADD_NOTE_HALFSIZE_BOXED
+    assert "untick Downsample patches 2× on load under Curate" in half
+    assert "open the patch again" in half
+    assert "QC Features" not in half
+
+
+# --------------------------------------------------------------------------- #
+# Inside each cell: the numbers behind "Nucleus radius"
+# --------------------------------------------------------------------------- #
+def test_a_radius_of_two_and_a_half_microns_looks_for_spots_of_1_25_and_1_75():
+    """The help says the radius sets the size of the bright spots the finder
+    starts from: at 2.5 um the spot filter works at 1.25 and 1.75 um, and a
+    ball of that radius answers it most at its centre, at any voxel size."""
+    from packages.epicycle_annotator import add_derive as AD
+
+    assert tuple(round(f * AD.NUC_RADIUS_UM, 6) for f in AD._LOG_SCALES) == (
+        1.25, 1.75)
+    assert "bright spots" in AP.ADD_HELP_NUC_RADIUS
+
+    class _Run:
+        def poll(self):
+            pass
+
+    for sp in ((0.5, 0.5, 0.5), (1.0, 0.5, 0.5)):
+        n = [int(round(16.0 / s)) for s in sp]
+        c = [(np.arange(k) + 0.5) * s for k, s in zip(n, sp)]
+        z, y, x = np.meshgrid(*c, indexing="ij")
+        ball = (((z - 8) ** 2 + (y - 8) ** 2 + (x - 8) ** 2) <= 2.5 ** 2)
+        img = ball.astype(np.float32) * 100.0
+        resp = AD._log_max(img, AD.NUC_RADIUS_UM, sp, _Run())
+        peak = np.unravel_index(int(np.argmax(resp)), resp.shape)
+        where = [(p + 0.5) * s for p, s in zip(peak, sp)]
+        assert all(abs(w - 8.0) <= s for w, s in zip(where, sp)), (sp, where)
+
+
+def test_the_inside_knobs_start_at_the_recipe_s_values(widget):
+    from packages.epicycle_annotator import add_derive as AD
+
+    for attr, val, rng in (("add_nuc_radius_sb", AD.NUC_RADIUS_UM,
+                            AD.NUC_RADIUS_RANGE),
+                           ("add_nuc_edge_sb", AD.NUC_EDGE, AD.NUC_EDGE_RANGE),
+                           ("add_two_gap_sb", AD.TWO_GAP, AD.TWO_GAP_RANGE)):
+        sb = getattr(widget, attr)
+        assert sb.value() == pytest.approx(val), attr
+        assert (sb.minimum(), sb.maximum()) == pytest.approx(rng), attr
+    assert widget.add_nuc_radius_sb.suffix() == " µm"

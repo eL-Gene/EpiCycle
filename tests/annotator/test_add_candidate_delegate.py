@@ -154,7 +154,8 @@ def test_marker_rows_read_id_and_position_and_carry_the_id(widget):
     assert [lst.item(i).data(Qt.UserRole) for i in range(3)] == [8, 9, 10]
     assert [lst.item(i).checkState() == Qt.Checked for i in range(3)] == [
         True, False, True]
-    assert widget.add_click_count_label.text() == "3 placed · 2 ticked"
+    # the count is off the card body; the Markers title carries it
+    assert widget.add_click_count_label.isHidden()
     assert widget.add_markers_btn.property("_epicycle_chevron_title") == (
         "Markers: clicks · 3 placed · 2 ticked")
     widget.update_add_ui_state(click_count=0, click_markers=[])

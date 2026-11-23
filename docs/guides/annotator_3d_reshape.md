@@ -109,6 +109,10 @@ buttons at the bottom never move:
 Everything else the engine can do is behind **Advanced**, at the bottom of
 the page, one click deep.
 
+Closing this window with its **X** only hides it: a split you have open stays
+open, held out of the volume, until you Accept or Discard it, and **Advanced
+Features...** in the annotator brings the same page back.
+
 ### Shape or image, in one place
 
 The cut can follow the object's own **shape** or something it can see in an
@@ -172,12 +176,24 @@ tool reported no markers at all.
 **Markers from another run of this patch** — if you already have a nuclei
 segmentation of this same patch in another run, each nucleus inside the merged
 object becomes one marker. Two nuclei, two markers, two objects. You do not paint
-anything.
+anything. It works the other way round too: the cells of one run can carve a
+merged nucleus of another.
+
+A label that only touches the object is not a marker. A label is kept when it
+covers at least a tenth of the object, or when more than half of the label lies
+inside it (a label of fewer than 20 voxels needs the tenth); every other one is
+listed **unticked**, with the word *touching* on its row, and the line beside
+**Find markers** says so — "2 markers kept, 3 touching ones left unticked".
+Hover over a touching row to see how little of the object it covers — "It
+touches the object by 240 voxels, 3.3 % of this object." — and tick it if it
+is a real object after all.
 
 The picker lists every run of this patch that has labels, showing the run's
 name, what it holds, how far it got on this patch, and **which file is being
 read** — the curated labels if that run curated this patch, otherwise the raw
-reconstruction. It also says, plainly, *you are trusting these labels.* That is
+reconstruction. A run whose files were moved into the unified layout is listed
+too; the run you are working in never is, because a run cannot guide itself.
+It also says, plainly, *you are trusting these labels.* That is
 the whole risk of this mode: if the nuclei mask is wrong, the split will be
 wrong in the same way.
 
@@ -197,7 +213,7 @@ Two rows appear under the picker.
 **Channel** — which image channel to look in. Usually the nuclei stain. If the
 layer you chose is renamed or removed the box goes **blank and stays blank**,
 and the tool then says "pick a channel" rather than quietly looking at some
-other channel.
+other channel. This box starts blank the first time you open the dock on a patch; pick one. After that it remembers your choice by name, and if that layer is renamed or removed it goes blank again and the tool says so.
 
 **Find by** — how to look. Six ways, commonest first:
 
@@ -249,17 +265,27 @@ listed with its size or its position, and its colour:
 >   [x] Marker 1 · 1,204
 >   [x] Marker 2 · 980
 >   [ ] ~~Marker 3 · 61~~
-> Unticked markers are lifted off the object - tick again to put them back.
+
+(Hover the list for a reminder: unticked markers are lifted off the object;
+tick one again to put it back.)
 
 Untick anything that is not an object — a speck of noise, a nucleus that
 belongs to the neighbour. It comes off the object as you untick it, so the
 object shows you exactly what the cut is about to use. **Preview then cuts
 with the ticked markers only.**
-Nothing is unticked for you: the tool found them, so it treats them all as
-objects until you say otherwise. **All** and **None** tick and untick the lot.
+When the markers come from another run or a mask file, the labels that only
+touch the object start unticked, marked *touching* (see above), and they are
+already off the object. Every other source starts with every marker ticked.
+**Find markers** again starts the ticks over by the same rule. **All** and
+**None** tick and untick the lot.
 
-You do not have to press **Find markers** at all. **Preview** finds them itself
-and keeps them all. Finding first is how you get to *look* before you cut.
+You do not have to press **Find markers** at all. **Preview** finds them itself;
+for markers from another run or a mask file it leaves the touching ones out,
+and says so in grey beside the cut — "2 touching markers left out - press Find
+markers to see them and tick any you want." If every label only touches the
+object, nothing is cut and the reason says so — "Every marker only touches this
+object - press Find markers and tick the ones you want, or paint one." Finding
+first is how you get to *look* before you cut.
 
 Change any marker setting — the channel, the way of finding, a preparation
 tick, *Prominence*, *Min marker gap* — and the list empties with a note saying
@@ -287,13 +313,30 @@ shape alone can tell you. Every other source has **Find markers** instead: one
 finder per card, so there is never a second button offering to do the same job
 in a different way.
 
+Press **Find from shape** and a few rows open under it:
+
+- **Min dist** (5 to start) — how far apart, in voxels, two of the thickest points
+  must be to count as two markers. Lower gives more markers, higher gives
+  fewer. Go lower if the cut misses an object.
+- **Bins** (15 to start) — how finely the little chart below is split.
+  More bins give finer control of its line.
+- **The little chart** shows how thick each point found is. Points below
+  its line are dropped. Drag the line until the marker count under the
+  chart matches the objects you see.
+
+**Show distance heatmap** (a tick beside the marker count, live once you
+press **Start**) colours the object by how deep inside it each voxel is.
+Bright means far from every edge, so put one marker in each separate
+bright lobe. It is about the shape, so it is turned off when the markers
+come from an image.
+
 ### If the mask is refused
 
 The mask has to line up with the volume you are looking at. If it does not, you
 get a plain sentence saying why. The usual cause is **downsampling**: if this
 session is showing the patch at half size, a full-size mask does not match.
 When that happens the tool matches the mask to the session for you and shows a
-note. Be aware that shrinking a mask can merge two small nuclei into one — so
+note. Be aware that shrinking a mask can merge two small labels into one — so
 after **Preview**, check the number of pieces is what you expected. If a marker
 has gone missing, turn downsampling off in **QC Settings** and reload the
 patch.
@@ -325,7 +368,7 @@ default; the rest are the engine's, in the order the picker lists them.
 Whichever you pick, the grey line under the row says what it does.
 
 Choosing any of the six **image** kinds reveals a **channel** row: the
-image channel the walls are read from. It does not have to be a membrane
+image channel the walls are read from. This box starts blank the first time you open the dock on a patch; pick one. After that it remembers your choice by name, and if that layer is renamed or removed it goes blank again and the tool says so. It does not have to be a membrane
 stain — any channel whose bright parts sit where objects meet will do, which
 is why the panel calls it the **wall channel** and every action on this page
 says "wall". The word *membrane* survives in exactly two places, and both
@@ -355,7 +398,8 @@ rather than tuning it: **Solve with** (below), and three rows under it.
 
 - **Snap to the wall signal** — after the cut, each piece's edge slides onto
   the nearest edge in the wall channel. Shown only for the image wall kinds,
-  because a shape wall has no edge in the image to snap to. Its **Snap
+  because a shape wall has no edge in the image to snap to. It needs the
+  u-Segment3D add-on to be installed. Its **Snap
   radius** (how far an edge may slide) and **Snap strength** (lower snaps
   harder) are under Advanced. A snap that would erase a piece is skipped with
   a note.
@@ -444,14 +488,18 @@ part of the original object. Very small pieces start unticked as a suggestion,
 not a decision — tick one if you actually want it.
 
 Unticking does not re-run anything. It only changes what **Accept** commits.
+The button shows how many pieces it will commit — **Accept (2)** with two
+ticked — and goes back to plain **Accept** when none are ticked.
 
 Under the list, in grey, the tool reports what it saw. The one worth reading
-is **"Wall contrast 0.12-0.81."** — the range of the wall signal inside this
-object, on the scale the cut actually floods. A healthy range is most of
-0–1. A narrow one near zero means there was almost nothing in the channel to
-cut on, and that a disappointing cut is a data problem rather than a settings
-problem. It only appears for the six **image** wall kinds; a shape wall has
-no channel, so there is nothing to report.
+is **"Wall contrast 0.12-0.81."** — the range of the wall signal over most of
+this object (from the 5th to the 95th percentile of it, so a few extreme voxels
+do not set the numbers), on the scale the cut actually floods. A wide range
+means the walls stand out from the inside of the cells. A narrow one means
+there was almost nothing in the channel to cut on, and that a disappointing
+cut is a data problem rather than a settings problem. It only appears for the
+six **image** wall kinds; a shape wall has no channel, so there is nothing to
+report.
 
 ### The amber block above the list
 
@@ -635,6 +683,17 @@ this tool has always behaved; it is not new in the guided modes.
 
 **Undo** once puts everything back — the volume, the list, and the marks.
 
+What the 3D view shows afterwards follows what it showed before you pressed
+Start. If you had one object isolated, you see its new pieces on their own;
+if you had several isolated, the pieces join them and the object that was cut
+leaves the group. If nothing was isolated, nothing is. When the cut makes more
+pieces than **Pieces kept in view after Accept** (under Advanced, 10 unless
+you change it), only the largest piece stays isolated (an empty piece never counts); the
+other cells you had isolated stay, only the new pieces are capped. **Cancel** puts the view
+back exactly as it was. With **Auto-advance after accept** on, the view moves
+on to the next object in the triage list instead; if there is no next object,
+the view is put back exactly as it was before you pressed Start.
+
 While a split is open the rest of Step 3 is locked: you cannot save, commit
 triage, switch patch or leave the step. That is stricter than the old manual
 split was, and it is on purpose — halfway through a split the object is
@@ -702,12 +761,25 @@ it.
   voxels**, which is what the original prototype always did. Pieces smaller
   than that are folded into their biggest neighbour; a piece backed by its
   own marker is never absorbed.
-- **Auto-smooth results** — rounds off the staircase edges a cut leaves
-  behind. Two things to know, because neither is obvious: it runs at
+- **Smoothing** — rounds off the staircase edges a cut leaves behind. Pick
+  one of three: **Off**; **Smooth pieces** (the default), which smooths
+  each piece on its own, so a thin piece can shrink or vanish and the
+  object can lose voxels; or **Keep the object**, which lets the cuts
+  between pieces move (never across a painted marker) while the object
+  keeps every voxel it had. Unless it is Off, two boxes on the row under it set how
+  strong it is: **σ_z** (up and down between slices, 3.0 to start) and
+  **σ_xy** (across each slice, 1.5 to start); higher is smoother.
+  Two things to know, because neither is obvious: it runs at
   **Preview**, not at Accept, so what you see is what you get; and it only
   applies to a **hand-painted** cut. Any cut that came from *Markers from*
   or a wall other than *Pinch points* ignores it.
 - **Auto-advance after accept** — unchanged.
+- **Pieces kept in view after Accept** — how many of the new pieces stay
+  isolated in the 3D view once you accept a cut. Each piece costs a small
+  3D layer, so a cut into many pieces keeps only the largest one; this number
+  is the limit (1 to 50, 10 to start). It only caps the new pieces: the other
+  cells of a group you had isolated stay. It is read when you press Accept
+  and goes back to 10 each time the 3D annotator opens.
 
 The three promoted rows that used to live here — snap, the expected count and
 the arbiter — are in **How to cut** now.
@@ -788,6 +860,20 @@ every Preview, however the markers were found. It is only missing when there is
 nothing to refine: you have unticked every piece, or the tool kept the object
 whole (the amber block will say *possibly dividing*). Tick a piece and it comes
 back.
+
+**The run picker says "No other run of this patch has labels to trust".** No
+other run of this patch has a labels file for it — the run you are working in
+is never offered. Choose *Markers from a mask file* instead and press
+**Browse…** to pick the file on disk (every run's reconstructed labels are under
+`artifacts/step3/runs/` in the workspace). **Load mask** stays grey
+until there is something to load.
+
+**Some markers came up unticked, marked touching.** Those labels only touch
+the object: each one covers less than a tenth of it, and either has no more
+than half of itself inside it or is a speck under 20 voxels. Left in, each
+would become its own small piece. Tick one if it really is part of the object.
+If every marker came up touching, **Preview** asks you to tick at least one of
+them, or to paint one.
 
 **Markers from the last object are not carried to the next one.** Accept
 clears the marker list, and only a real commit does: if Accept refuses because

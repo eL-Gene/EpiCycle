@@ -13,6 +13,7 @@ licences. Licences were read from installed package metadata on 2026-10-13; this
 | Component | Licence | Notes |
 |---|---|---|
 | `packages/epicycle_largedata/_vendor_progressive/` | BSD-3-Clause | Copied from napari PR #9067 (head `kephale/napari@07e4f3fcfb602878a864aa0de4d9b08bf5a9a2f7`, fetched 2026-08-02). Copyright (c) 2018, Napari. Full text in that folder's `NOTICE`. A temporary copy, to be removed when napari ships the feature. |
+| `packages/epicycle_annotator/reshape/walls.py` (`ridge_filter` and its helpers) | BSD-3-Clause | Adapted from scikit-image 0.25.2: `skimage.filters.frangi` / `meijering`, the Hessian and eigenvalue helpers of `skimage/feature/corner.py` and the float-type rule of `skimage/_shared/utils.py`, same arithmetic, rescheduled (a Stop between scales, the passes on threads). Copyright: 2009-2022 the scikit-image team. Full text in `packages/epicycle_annotator/reshape/NOTICE-scikit-image.txt`. |
 
 ## Called, not included: GPL and LGPL
 
@@ -37,9 +38,10 @@ file is the GPL version 3 text with no "or later" grant), so a combined installa
 | [PyTorch](https://github.com/pytorch/pytorch) 2.7.1 | BSD-3-Clause | |
 | [segment-anything](https://github.com/facebookresearch/segment-anything) 1.0 | Apache-2.0 | Meta Platforms. Checkpoints are downloaded separately and carry their own terms; see the segment-anything repository. |
 | [napari](https://github.com/napari/napari) 0.8.0 | BSD-3-Clause | Copyright (c) 2018, Napari |
+| [scikit-image](https://github.com/scikit-image/scikit-image) 0.25.2 | BSD-3-Clause | Copyright: 2009-2022 the scikit-image team. Called throughout; the ridge wall code in `walls.py` is also adapted from it and so included (see "Code that EpiCycle includes"). |
 | [qtawesome](https://github.com/spyder-ide/qtawesome) 1.4.1 | MIT | Copyright (c) 2015 The Spyder development team. EpiCycle uses its Material Design Icons (Apache-2.0), Remix Icon (Apache-2.0), Phosphor (MIT per upstream) and Font Awesome Free (SIL OFL for the fonts, CC-BY-4.0 for the icons per upstream) sets at run time. No fonts are bundled in this repository. |
 
-MIT or BSD-style: qtpy, magicgui, superqt, pyqtgraph, vispy, numpy, scipy, scikit-image, scikit-learn, pandas,
+MIT or BSD-style: qtpy, magicgui, superqt, pyqtgraph, vispy, numpy, scipy, scikit-learn, pandas,
 matplotlib, tifffile, zarr, psutil, umap-learn, dask, trimesh. The whole-tissue engine also uses pyarrow (Apache-2.0) and tqdm (MPL-2.0 and MIT).
 
 ## Please cite

@@ -95,18 +95,12 @@ class TestButton:
     def test_same_row_as_refine(self, panel):
         a = panel.add_refine_piece_btn
         b = panel.add_batch_refine_btn
-        assert a.parentWidget() is b.parentWidget()
-        lay = a.parentWidget().layout()
-
-        def row_of(w):
-            for i in range(lay.count()):
-                item = lay.itemAt(i)
-                sub = item.layout()
-                if sub is not None and sub.indexOf(w) >= 0:
-                    return sub
-            return None
-
-        assert row_of(a) is not None and row_of(a) is row_of(b)
+        # one row widget holds Refine all ▸ · Refine ▸ · + Add another
+        assert a.parentWidget() is b.parentWidget() is (
+            panel._add_review_btn_row)
+        lay = panel._add_review_btn_row.layout()
+        assert lay.indexOf(a) >= 0 and lay.indexOf(b) >= 0
+        assert lay.indexOf(panel.add_again_btn) >= 0
 
     def test_click_calls_on_batch_refine(self, panel):
         calls = []
@@ -131,7 +125,8 @@ class TestLayout:
         row = panel.add_refine_piece_btn.parentWidget().layout()
         spacing = max(0, row.spacing())
         need = (panel.add_refine_piece_btn.sizeHint().width()
-                + panel.add_batch_refine_btn.sizeHint().width() + spacing)
+                + panel.add_batch_refine_btn.sizeHint().width()
+                + panel.add_again_btn.sizeHint().width() + 2 * spacing)
         assert need <= viewport, (need, viewport)
         assert slots["content"].minimumSizeHint().width() <= viewport
 
@@ -198,6 +193,8 @@ class TestHandOff:
             self, monkeypatch, widgets, setup, sentence):
         ann = add_ann(monkeypatch, widgets)
         if setup == "lock":
+            # the real open-edit mirror: nothing open, so the lock is a job's
+            _real_state(ann)
             ann._load_locked = True
         elif setup == "worker":
             ann._batch_worker = object()
@@ -208,6 +205,71 @@ class TestHandOff:
         assert ann._batch_refine_add_pieces() == sentence
         assert last_status(ann) == sentence
         assert "Can't refine right now" not in str(ann.pushed)
+
+
+def _real_state(ann):
+    """The annotator's own open-edit mirror (``_sync_refine_state`` over a
+    real ``RefinementOpState``) in place of the fixture's stubs."""
+    from napari_epicycle.annotator.refinement_state import RefinementOpState
+
+    ann._refine_state = RefinementOpState()
+    del ann._sync_refine_state          # the class's own method answers now
+    return ann
+
+
+class TestAnOpenAddUnderTheLock:
+    """An open Add, guided split or staged Refine holds the Step 3 lock.  A
+    Batch Refine door then names that edit and the tab it is finished on,
+    not "Step 3 is busy with another job".  An edit that does not hold the
+    lock (an interpolation, a merge) under a real job's lock still hears
+    "busy": resolving it would not free the lock."""
+
+    @pytest.mark.parametrize("flag,sentence", [
+        ("_add_running", br.BATCH_ADD_OPEN),
+        ("_split_running", br.BATCH_RESHAPE_OPEN),
+        ("_smooth_running", br.BATCH_REFINE_OPEN),
+    ])
+    def test_the_edit_that_holds_the_lock_names_itself(
+            self, monkeypatch, widgets, flag, sentence):
+        ann = _real_state(add_ann(monkeypatch, widgets))
+        setattr(ann, flag, True)
+        ann._load_locked = True
+        assert ann._open_batch_refine_dialog() == sentence
+        assert getattr(ann, "_batch_refine_dialog", None) is None
+
+    @pytest.mark.parametrize("flag", ["_interp_snapshot", "_merge_dialog"])
+    def test_an_edit_that_does_not_hold_the_lock_still_says_busy(
+            self, monkeypatch, widgets, flag):
+        ann = _real_state(add_ann(monkeypatch, widgets))
+        setattr(ann, flag, object())
+        ann._load_locked = True
+        assert ann._open_batch_refine_dialog() == br.BATCH_BUSY
+
+    def test_the_add_sentence_is_the_step3_lock_line(self):
+        from napari_epicycle.fusion_reconstruction._step3_pr_text import (
+            S3_LOCK_ADD,
+        )
+
+        assert br.BATCH_ADD_OPEN == S3_LOCK_ADD
+        assert br.BATCH_RESHAPE_OPEN.endswith(
+            "Accept or Discard it on the Reshape tab.")
+        assert br.BATCH_REFINE_OPEN.endswith(
+            "Accept or Discard it on the Refine tab.")
+
+    def test_the_lock_alone_still_says_busy(self, monkeypatch, widgets):
+        ann = _real_state(add_ann(monkeypatch, widgets))
+        ann._add_running = False
+        ann._load_locked = True
+        assert ann._open_batch_refine_dialog() == br.BATCH_BUSY
+
+    def test_a_stopping_worker_still_names_itself_first(self, monkeypatch,
+                                                        widgets):
+        ann = _real_state(add_ann(monkeypatch, widgets))
+        ann._add_running = True
+        ann._load_locked = True
+        ann._batch_worker = object()
+        assert ann._open_batch_refine_dialog() == br.BATCH_STILL_STOPPING
+        ann._batch_worker = None
 
 
 class TestAddBatchBusy:
@@ -261,6 +323,11 @@ class TestAddBatchBusy:
             Curation3DAnnotator as C,
         )
 
+        # the door asks the shared refusal first (which asks Batch Refine
+        # before any other open edit) and only then clears the review
         src = inspect.getsource(C._add_another)
-        assert src.index("_add_refused_while_batch") < src.index(
+        assert src.index("_add_refused_while_staged") < src.index(
             "self._add_review = False")
+        helper = inspect.getsource(C._add_refused_while_staged)
+        assert helper.index("_add_refused_while_batch") < helper.index(
+            "staged_kinds")

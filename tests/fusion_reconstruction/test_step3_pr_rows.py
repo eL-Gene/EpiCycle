@@ -133,7 +133,10 @@ def test_the_list_is_painted_by_the_shared_painter(ui):
     d = lst.itemDelegate()
     assert isinstance(d, StackRowDelegate)
     assert d.mode == MODE_NARROW
-    assert d._show_eye is False                   # View is the foot's
+    # the eye sits in the slot the ⓘ had (its own lock property: the
+    # list's is set during Predict, when the eye still works)
+    assert d._show_eye is True and d._show_info is False
+    assert d._eye_lock_property == "step3PatchesEyeLocked"
     assert d._lock_property == "step3Locked"
     # gold ticks, amber selection tint, PANEL_WARN text
     assert d._palette["accent"].name() == "#d4a843"
@@ -391,6 +394,36 @@ def test_the_link_ticks_every_unprocessed_patch(full):
     w.pr_tick_all_link.clicked.emit()
     assert _ticked(w) == {"a.tif", "e.tif"}
     assert c.state_manager.get_ticked() == ["a.tif", "e.tif"]
+
+
+def test_the_untick_link_clears_every_tick(full):
+    w, c, _f = full
+    _tick(w, "a.tif", "b.tif", "e.tif")
+    assert _ticked(w) == {"a.tif", "b.tif", "e.tif"}
+    w.pr_untick_all_link.clicked.emit()
+    assert _ticked(w) == set()
+    assert c.state_manager.get_ticked() == []
+    assert not w.predict_selected_btn.isEnabled()      # nothing ticked
+    assert w.pr_ticked_predict_label.text() == "Predict: 0 ticked"
+
+
+def test_the_untick_link_clears_a_ticked_protected_row(full):
+    w, c, _f = full
+    c.state_manager._state["ticked"] = ["d.tif", "a.tif"]
+    c._refresh_patch_state_list()
+    assert _ticked(w) == {"d.tif", "a.tif"}
+    w.pr_untick_all_link.clicked.emit()
+    assert _ticked(w) == set()
+    assert c.state_manager.get_ticked() == []
+
+
+def test_the_untick_link_is_refused_under_the_lock(full):
+    w, c, _f = full
+    _tick(w, "a.tif")
+    c._prediction_running = True
+    c._refresh_pr_lock()
+    w.pr_untick_all_link.clicked.emit()
+    assert _ticked(w) == {"a.tif"}
 
 
 def test_ctrl_a_ticks_every_tickable_row(app, full):

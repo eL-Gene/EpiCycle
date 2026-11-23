@@ -64,6 +64,25 @@ STEP4_PRESET_EPICYCLE = {
     "sf_do_stats_cb": True,
 }
 
+#: Cellpose built-in model name -> widget -> value put over the EpiCycle
+#: defaults for that model only.  A separate table: the EpiCycle table above
+#: stays ``ReconstructionConfig()``.  "Remove specks smaller than" acts on
+#: the joined 3D mask before cells are cut; separate nuclei are each their
+#: own piece, often under 1,000 voxels, so the cell value (10,000) would
+#: delete most of them.
+MODEL_PRESET_OVERLAYS = {
+    "nuclei": {"post_small_obj_sb": 100},
+}
+
+
+def model_overlay(lateral_model: Optional[str]) -> Dict[str, Any]:
+    """The overlay for the model named *lateral_model* (the lateral model
+    box's text): a Cellpose built-in name matched exactly, after trimming
+    spaces; ``{}`` for any other model or a file path.  A copy."""
+    name = str(lateral_model or "").strip()
+    return dict(MODEL_PRESET_OVERLAYS.get(name, {}))
+
+
 #: widget -> (u-Segment3D group, key) for the ``parameters.py`` defaults
 #: and the Step 3 manifest's ``recon_config`` (same group names).
 USEG3D_WIDGET_KEYS = {

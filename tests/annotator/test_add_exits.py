@@ -54,7 +54,7 @@ def test_discard_keeps_the_box_balls_and_the_lock(hx):
 def test_cancel_removes_everything(hx):
     _prime(hx)
     w = hx._add_info_worker
-    hx._add_preview_result = None             # Cancel: no candidates
+    hx._add_preview_result = None             # Close box: no candidates
     hx._add_secondary()
     assert hx._add_candidate_layer is None
     assert hx._add_marker_layer is None and hx._add_click_markers == []
@@ -109,7 +109,7 @@ def test_review_done_removes_the_box(hx):
     _prime(hx)
     hx._add_running = False
     hx._add_review = True
-    hx._add_secondary()                       # Done
+    hx._add_primary()                         # Done
     assert hx._add_box_overlay is None
     assert hx._add_run_guide is None
 
@@ -233,7 +233,7 @@ def test_a_patch_switch_in_review_goes_through_the_s1_table(hx):
     from napari_epicycle.annotator import curation_3d_widget as CW
 
     cleared = []
-    hx.adv.clear_add_touched = lambda: cleared.append(True)
+    hx.adv.clear_add_touched = lambda **_k: cleared.append(True)
     _prime(hx)
     hx._add_running = False
     hx._add_review = True
@@ -241,7 +241,11 @@ def test_a_patch_switch_in_review_goes_through_the_s1_table(hx):
     assert cleared, "a full exit forgets the touched keys"
     from packages.epicycle_annotator import add_preview as AP
 
-    assert hx.adv.last("status_text") == AP.ADD_S1_IDLE
+    # the idle line (both presets name Whole patch: it is never grey)
+    want = AP.preview_block(dict(has_box=False, preset=hx.adv.preset,
+                                 source=hx.adv.source[0]))
+    assert hx.adv.last("status_text") == want
+    assert want == AP.ADD_S1_IDLE
     src = inspect.getsource(CW.Curation3DAnnotator._load_selected_layers)
     assert "Pick a channel, then Place Box." not in src
 
@@ -302,7 +306,7 @@ def test_every_full_exit_puts_the_outline_down(hx, exit_):
     else:                                     # REVIEW -> Done
         hx._add_running = False
         hx._add_review = True
-        hx._add_secondary()
+        hx._add_primary()                     # Done
     assert hx._add_contour_on is False, exit_
     assert hx.adv.last("contour_on") is False, exit_
 
@@ -380,3 +384,64 @@ def test_every_full_exit_clears_the_markers(hx, exit_):
     assert hx._add_markers_epoch > e0, exit_
     assert hx.adv.last("click_markers") == [], exit_
     assert hx._add_marker_layer is None, exit_
+
+
+# --------------------------------------------------------------------------- #
+# Inside each cell and the whole patch: the other run, the patch levels and
+# the whole-patch flag go at every full exit; the bar is idle again
+# --------------------------------------------------------------------------- #
+def _inside_whole(h):
+    _prime(h)
+    h._add_whole_patch = True
+    h._add_levels_cache = {("P", 1, "nuc", "cells", None, 1): object()}
+    h._add_run_guide = np.zeros((1,))
+    h._add_run_state = None
+
+
+@pytest.mark.parametrize("exit_", ["cancel", "switch", "review", "close",
+                                   "accept"])
+def test_every_full_exit_drops_the_inside_run_and_the_whole_patch(hx, exit_):
+    _inside_whole(hx)
+    if exit_ in ("cancel", "close"):
+        hx._add_preview_result = None
+        if exit_ == "cancel":
+            hx._add_secondary()
+        else:
+            hx._reject_add()
+    elif exit_ == "switch":
+        hx._teardown_add_for_switch()
+    elif exit_ == "accept":
+        res = np.zeros((16, 26, 26), np.int32)
+        res[8:12, 15:19, 15:19] = 40
+        hx._add_preview_result = res
+        hx._add_preview_roi = tuple(hx._add_roi)
+        hx.adv.checked = [40]
+        hx._on_add_committed_cb = None
+        hx._accept_add()
+        # REVIEW keeps the run for "+ Add another" (as the Cells run
+        # source does); Done ends it
+        assert hx._add_review
+        hx._add_primary()
+    else:                                     # REVIEW -> Done
+        hx._add_running = False
+        hx._add_review = True
+        hx._add_primary()                     # Done
+    assert hx._add_run_guide is None, exit_
+    assert hx._add_levels_cache == {}, exit_
+    assert hx._add_whole_patch is False, exit_
+    assert hx.adv.last("busy") is False, exit_
+
+
+def test_a_preset_switch_resets_the_inside_run(hx):
+    """The other run is dropped at a preset switch; the whole patch stays
+    whole on either preset (only S, M, L or a Numbers slider make it a box
+    again) -- on Nuclei ▸ Anywhere Preview says why instead."""
+    _inside_whole(hx)
+    hx._add_preview_result = None
+    hx.adv.source = ("labels", "cells")       # Cells' whole patch
+    hx._on_add_preset_changed("cells")
+    assert hx._add_run_guide is None
+    assert hx._add_whole_patch is True
+    hx.adv.look = ("anywhere", None)
+    hx._on_add_preset_changed("nuclei")
+    assert hx._add_whole_patch is True

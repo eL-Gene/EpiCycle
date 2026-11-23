@@ -78,13 +78,16 @@ def test_idle_cells_shows_only_the_preset(panel):
 # --------------------------------------------------------------------------- #
 def test_the_row_labels_are_the_mockups(panel):
     texts = _labels_in(panel._add_s3_container)
-    for want in ("Adding", "From", "Nuclei channel", "Channel", "Wall type"):
+    for want in ("Adding", "From", "Nuclei channel", "Channel", "Wall type",
+                 "Ball"):
         assert want in texts, want
-    for gone in ("Preset", "Membrane", "Walls"):
+    for gone in ("Preset", "Membrane", "Walls", "Click ball radius"):
         assert gone not in texts, gone
     assert "Size" in _labels_in(panel._add_box_container)
+    # the placed count is off the card body: the Markers title and the
+    # first line carry it
     panel.update_add_ui_state(click_count=7)
-    assert panel.add_click_count_label.text() == "7 placed"
+    assert panel.add_click_count_label.isHidden()
 
 
 def test_the_box_row_fits_the_card(panel, qapp):
@@ -104,6 +107,9 @@ def _index_in_markers(panel, widget):
         if it.widget() is widget:
             return i
         sub = it.layout()
+        if sub is None and it.widget() is not None:
+            # a row widget wrapping a row layout (the From row)
+            sub = it.widget().layout()
         if sub is not None:
             for j in range(sub.count()):
                 if sub.itemAt(j).widget() is widget:

@@ -13,18 +13,20 @@ import numpy as np
 import pytest
 
 from packages.epicycle_annotator import add_preview as AP
+from packages.epicycle_annotator import add_segment as _AS
 
 from .add_harness import Harness, install_fakes
 from .add_widget_fixture import qapp, reset_add, widget  # noqa: F401
 
 NUCLEI = {"add_clahe_cb": False, "add_clahe_clip_sb": 0.01,
           "add_separate_cb": True, "add_min_distance_sb": 3,
+          "add_marker_spacing_sb": _AS.ADD_MARKER_SPACING_DEFAULT,
           "add_clear_border_cb": True, "add_edge_margin_sb": 3,
           "add_min_size_sb": 0, "add_auto_smooth_cb": True,
           "add_smooth_sigma_sb": 1.5}
 CELLS = {"add_wall_kind_combo": 0, "add_prep_zcorrect_cb": True,
          "add_prep_bgsub_cb": False, "add_prep_lift_cb": False,
-         "add_prep_denoise_cb": False, "add_click_radius_sb": 2.0,
+         "add_prep_denoise_cb": False, "add_click_radius_sb": 1.0,
          "add_core_erode_sb": 1.0, "add_dark_clearance_sb": 2.0,
          "add_dark_factor_sb": 0.5, "add_clear_border_cb": True,
          "add_edge_margin_sb": 3, "add_min_size_sb": 0,
@@ -133,7 +135,7 @@ def test_the_default_spacing_note_is_amber_under_s1_on_cells(widget):
     widget.set_add_preset("cells")
     widget.update_add_ui_state(default_spacing=True, box_active=True)
     note = widget.add_spacing_note
-    # with a box the Settings button is locked: the boxed variant (A-M2)
+    # with a box: the same sentence (Set spacing… stays live; A-M2)
     assert note.text() == AP.ADD_NOTE_DEFAULT_SPACING_BOXED
     assert note.styleSheet() == PANEL_WARN_STYLE
     assert not note.isHidden()

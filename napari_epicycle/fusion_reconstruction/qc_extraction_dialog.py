@@ -24,8 +24,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -42,6 +44,10 @@ from qtpy.QtWidgets import (
 )
 
 from napari_epicycle.fusion_reconstruction._step3_pr_text import (
+    QC_EROSION_HINT,
+    QC_EXCLUDE_BORDER_HINT,
+    QC_INVERT_Z_HINT,
+    QC_RADIUS_HINT,
     QC_SPACING_FALLBACK,
 )
 from napari_epicycle.fusion_reconstruction.qc_features import (
@@ -60,6 +66,11 @@ _TEXT_DIM = "#999999"
 _TEXT_DIMMER = "#777777"
 _ACCENT = "#d4a843"  # Step 3 amber (matches PRIMARY_BTN_STYLE)
 from ._step3_rows import WARN_COLOUR as _WARN  # the rows' warn colour
+from .qc_pairing import COLUMNS as _MATCH_COLUMNS
+
+#: the columns of the pairing check (and the word column the plot derives
+#: from them): never selected for qc_score by "Select all"
+_MATCH_ONLY = frozenset(_MATCH_COLUMNS) | {"match_status"}
 _ACCENT_BG = "rgba(212,168,67,0.20)"
 _ACCENT_BORDER = "rgba(212,168,67,0.40)"
 _HEADER_BG = "#333348"
@@ -247,6 +258,49 @@ class _FeatureGroupWidget(QWidget):
         return f"QCheckBox {{ color: {color}; font-size: 11px; }}"
 
 
+class _WheelGuard(QObject):
+    """A wheel over an UNFOCUSED input scrolls the page, never the value.
+
+    The settings sit inside a scroll area, so a spin box or combo under the
+    pointer would otherwise swallow the gesture and silently change a
+    setting the user was scrolling past.  Paired with ``Qt.StrongFocus`` on
+    every input, so scrolling cannot hand an input the focus.
+    """
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt naming
+        try:
+            if event.type() != QEvent.Wheel or obj.hasFocus():
+                return False
+            area = obj.parentWidget()
+            while area is not None and not isinstance(area, QScrollArea):
+                area = area.parentWidget()
+            if area is None:
+                return False
+            QApplication.sendEvent(area.viewport(), event)
+            return True
+        except Exception:
+            return False
+
+
+def _channel_row_words(index, prefix, role=None) -> tuple:
+    """``(text, tooltip)`` of one Intensity channels row: "Channel {i}",
+    with its role in the active run when it had one ("Channel 0 (channel
+    to segment)"); the tooltip says where its columns are, then the role's
+    sentence."""
+    from . import _step3_pr_text as T
+    from ._step3_channels import ROLE_HELPER, ROLE_SEGMENT
+
+    words = {ROLE_SEGMENT: (T.QC_CHANNEL_ROLE_SEGMENT,
+                            T.QC_CHANNEL_TIP_SEGMENT),
+             ROLE_HELPER: (T.QC_CHANNEL_ROLE_HELPER,
+                           T.QC_CHANNEL_TIP_HELPER)}.get(role)
+    tip = T.QC_CHANNEL_TIP_PREFIX.format(prefix=prefix)
+    if words is None:
+        return T.QC_CHANNEL_ROW.format(i=index), tip
+    return (T.QC_CHANNEL_ROW_ROLE.format(i=index, role=words[0]),
+            tip + "\n" + words[1])
+
+
 # ---------------------------------------------------------------------------
 # Main dialog
 # ---------------------------------------------------------------------------
@@ -276,6 +330,11 @@ class QCExtractionDialog(QDialog):
         Auto-detected channels: ``[{"index": int, "prefix": str}, ...]``.
         When empty/None, the channel section is hidden — Step 3 falls
         back to using the manifest's seg_channel only.
+    channel_roles : dict[int, str], optional
+        ``{channel index: _step3_channels.ROLE_SEGMENT | ROLE_HELPER}``,
+        the role each channel had in the active run; a channel row says
+        its role.  None (or a channel not in it): the row reads
+        "Channel {i}" alone.
     """
 
     def __init__(
@@ -286,21 +345,41 @@ class QCExtractionDialog(QDialog):
         feature_manifest: Optional[dict[str, list[str]]] = None,
         descriptions: Optional[dict[str, str]] = None,
         available_channels: Optional[list[dict]] = None,
+        channel_roles: Optional[dict] = None,
         patch_spacing_lines: Optional[list] = None,
+        match_runs: Optional[list] = None,
+        match_default: Optional[str] = None,
+        match_none: bool = False,
+        match_patch: str = "",
     ):
         super().__init__(parent)
         self._patch_spacing_lines = list(patch_spacing_lines or [])
+        # the pairing check: the other runs of this patch with labels, as
+        # ``[(slug, display name)]``; the run it is compared with (its
+        # choice this session, else its last extraction's record); whether
+        # "(none)" was chosen; and the patch the choice belongs to.  Every
+        # patch has its own choice: the others ride through untouched.
+        self._match_runs = [
+            (str(slug), str(name or slug))
+            for slug, name in (match_runs or []) if slug]
+        self._match_default = match_default or None
+        self._match_none = bool(match_none)
+        self._match_patch = str(match_patch or "")
+        _choices = (settings or {}).get("match_run")
+        self._match_choices = (dict(_choices)
+                                 if isinstance(_choices, dict) else {})
         self.setWindowTitle("QC Extraction & Settings")
         self.setMinimumWidth(480)
-        # Allow vertical resize.  Pre-fix used a hardcoded
-        # setMaximumHeight(720) which prevented the user from making
-        # the dialog taller — content below the cap was unreachable
-        # without scrolling on every section.  Now: set a generous
-        # minimum + initial size, no maximum.
-        self.setMinimumHeight(520)
+        # The sections live in a scroll area, so the dialog may be as short
+        # as the screen needs; it opens at its natural height, capped at 90%
+        # of the available screen, and is never taller than that screen.
+        self._wheel_guard = _WheelGuard(self)
+        self._body: Optional[QWidget] = None
         try:
-            screen_h = self.screen().geometry().height()
-            self.resize(self.minimumWidth(), int(screen_h * 0.75))
+            avail = self._available_geometry()
+            self.setMinimumHeight(min(360, max(avail.height() - 80, 200)))
+            self.setMaximumHeight(avail.height())
+            self.resize(self.minimumWidth(), int(avail.height() * 0.75))
         except Exception:
             self.resize(480, 700)
         # Enable the corner size grip so the resize affordance is
@@ -327,6 +406,7 @@ class QCExtractionDialog(QDialog):
 
         self._descriptions = descriptions or {}
         self._available_channels = available_channels or []
+        self._channel_roles = dict(channel_roles or {})
         self._group_widgets: dict[str, _FeatureGroupWidget] = {}
         self._channel_checkboxes: dict[int, QCheckBox] = {}
 
@@ -341,18 +421,37 @@ class QCExtractionDialog(QDialog):
         )
         main_lay.addWidget(title)
 
+        # The five sections go into one scrolling body; the title above and
+        # the OK / Cancel row below stay outside it, always in view.
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        body = QWidget()
+        body.setStyleSheet("QWidget#qcExtractBody { background: transparent; }")
+        body.setObjectName("qcExtractBody")
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 4, 0)
+        body_lay.setSpacing(8)
+        scroll.setWidget(body)
+        main_lay.addWidget(scroll, 1)
+        self._body = body
+        self._scroll = scroll
+
         # --- Sections (top-down) ---
         # Restructured 2026-05-04 per user UX direction: split the
         # original "Composite & clustering" section into separate
         # "QC Score" and "Clustering" sections, and fold the feature
         # selection panel into "QC Score" so the "what feeds qc_score"
         # decision sits next to the "how qc_score is computed" choice.
-        self._build_extraction_section(main_lay)
+        self._build_extraction_section(body_lay)
         if self._available_channels:
-            self._build_channels_section(main_lay)
-        self._build_qc_score_section(main_lay, feature_manifest)
-        self._build_clustering_section(main_lay)
-        self._build_dimred_section(main_lay)
+            self._build_channels_section(body_lay)
+        self._build_qc_score_section(body_lay, feature_manifest)
+        self._build_clustering_section(body_lay)
+        self._build_dimred_section(body_lay)
+        self._guard_inputs(body)
 
         # --- OK / Cancel ---
         btn_box = QDialogButtonBox(
@@ -371,6 +470,98 @@ class QCExtractionDialog(QDialog):
         # Apply incoming settings
         if settings:
             self._apply_settings(settings)
+        try:
+            avail = self._available_geometry()
+            self.resize(
+                self._wanted_width(avail),
+                min(body.sizeHint().height() + 110, int(avail.height() * 0.9)),
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Screen fit
+    # ------------------------------------------------------------------
+
+    def _available_geometry(self):
+        """The usable area of the screen this dialog sits on.
+
+        Before it is shown a dialog reports the primary screen, so a parented
+        dialog asks its parent's window instead; ``showEvent`` re-reads it.
+        """
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            try:
+                screen = parent.window().screen()
+            except Exception:
+                screen = None
+        if screen is None:
+            screen = self.screen()
+        return screen.availableGeometry()
+
+    def _wanted_width(self, avail) -> int:
+        """Width that shows every input in full: the body's own minimum, the
+        vertical scroll bar and the margins, never past 90% of the screen.
+        The horizontal scroll bar is off while the whole body fits and comes
+        on only when the screen cap makes the dialog narrower than the body,
+        so no input is ever cut off without a way to reach it."""
+        body = self._body
+        if body is None:
+            return self.minimumWidth()
+        bar = self._scroll.verticalScrollBar().sizeHint().width()
+        margins = self.layout().contentsMargins()
+        wanted = (
+            body.minimumSizeHint().width() + bar + 4
+            + margins.left() + margins.right()
+            + 2 * self._scroll.frameWidth()
+        )
+        cap = int(avail.width() * 0.9)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded if wanted > cap else Qt.ScrollBarAlwaysOff
+        )
+        return max(self.minimumWidth(), min(wanted, cap))
+
+    def _guard_inputs(self, root: QWidget) -> None:
+        """StrongFocus + the wheel filter on every spin box and combo."""
+        for w in root.findChildren(QAbstractSpinBox) + root.findChildren(QComboBox):
+            w.setFocusPolicy(Qt.StrongFocus)
+            w.installEventFilter(self._wheel_guard)
+
+    def showEvent(self, event):  # noqa: N802 - Qt naming
+        super().showEvent(event)
+        self._fit_to_screen()
+        # The window frame (title bar) is often not measured yet while the
+        # show event runs, so fit once more when the event loop is idle.
+        QTimer.singleShot(0, self._fit_to_screen)
+        # On a second monitor with a different scale factor the frame is
+        # placed by the window manager a little later still, so fit a third
+        # time after a short delay.
+        QTimer.singleShot(120, self._fit_to_screen)
+
+    def _fit_to_screen(self) -> None:
+        """Keep the whole window frame, title bar included, on the screen."""
+        try:
+            avail = self._available_geometry()
+            frame_extra = max(self.frameGeometry().height() - self.height(), 0)
+            limit = max(avail.height() - frame_extra, 200)
+            self.setMinimumHeight(min(360, max(limit - 80, 200)))
+            self.setMaximumHeight(limit)
+            width = self._wanted_width(avail)
+            if self.width() < width or self.width() > int(avail.width() * 0.9):
+                self.resize(width, self.height())
+            if self.height() > limit:
+                self.resize(self.width(), limit)
+            frame = self.frameGeometry()
+            dy = 0
+            if frame.bottom() > avail.bottom():
+                dy = avail.bottom() - frame.bottom()
+            if frame.top() + dy < avail.top():
+                dy = avail.top() - frame.top()
+            if dy:
+                self.move(self.x(), self.y() + dy)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Section builders
@@ -464,6 +655,8 @@ class QCExtractionDialog(QDialog):
             "Erosion iterations for boundary/interior intensity split",
         )
         lay.addRow("Erosion iters:", self.erosion_iters_sb)
+        self.erosion_hint = self._hint_label(QC_EROSION_HINT)
+        lay.addRow("", self.erosion_hint)
 
         self.max_radius_sb = QSpinBox()
         self.max_radius_sb.setRange(1, 50)
@@ -473,6 +666,8 @@ class QCExtractionDialog(QDialog):
             "Max neighbor search radius in voxels (graduated dilation)",
         )
         lay.addRow("Neighbor radius:", self.max_radius_sb)
+        self.radius_hint = self._hint_label(QC_RADIUS_HINT)
+        lay.addRow("", self.radius_hint)
 
         # New: exclude_border + invert_z
         self.exclude_border_cb = QCheckBox(
@@ -485,6 +680,8 @@ class QCExtractionDialog(QDialog):
             "supplementary points."
         )
         lay.addRow("", self.exclude_border_cb)
+        self.exclude_border_hint = self._hint_label(QC_EXCLUDE_BORDER_HINT)
+        lay.addRow("", self.exclude_border_hint)
 
         self.invert_z_cb = QCheckBox("Invert Z axis (flip apical/basal)")
         self.invert_z_cb.setToolTip(
@@ -493,8 +690,78 @@ class QCExtractionDialog(QDialog):
             "(apical_basal_area_ratio etc.) with the right orientation.",
         )
         lay.addRow("", self.invert_z_cb)
+        self.invert_z_hint = self._hint_label(QC_INVERT_Z_HINT)
+        lay.addRow("", self.invert_z_hint)
+
+        self._build_match_row(lay)
 
         parent_lay.addWidget(group)
+
+    def _hint_label(self, text: str, parent=None) -> QLabel:
+        """One dim wrapped line under a control, in the field column (the
+        caller adds it with ``lay.addRow("", label)``), so a setting says
+        what it does without a hover."""
+        label = QLabel(text, parent)
+        label.setWordWrap(True)
+        label.setStyleSheet(
+            f"color: {_TEXT_DIM}; font-size: 10px; padding: 2px 0 2px 0;")
+        return label
+
+    def _build_match_row(self, lay) -> None:
+        """The pairing check's row: "Compare with:" (one line, like its
+        siblings, so the field column stays where it is without the row; the
+        long words are in the tooltip of the label and the combo) and a
+        combo of the other runs, shown only when this patch has another run
+        with labels.  Preselected: "(none)" when it was
+        chosen; the run this patch is compared with if it still lists;
+        "(none)" when that run no longer lists (archived or deleted); with
+        nothing recorded, the only other run, else "(none)"."""
+        from ._qc_pairing_text import (
+            PICKER_HINT, PICKER_LABEL, PICKER_NONE, PICKER_TOOLTIP,
+        )
+
+        # Children of the scrolled body, shown or not, so the body's wheel
+        # guard reaches the combo: a wheel over it scrolls the page and never
+        # switches the compared run.
+        body = getattr(self, "_body", None) or self
+        self.match_label = QLabel(PICKER_LABEL, body)
+        self.match_label.setToolTip(PICKER_TOOLTIP)
+        self.match_combo = QComboBox(body)
+        self.match_combo.setToolTip(PICKER_TOOLTIP)
+        self.match_combo.setMaximumWidth(220)
+        # One dim line under the row says what the pick does, like the
+        # Method row's description: nobody hovers a label to learn that.
+        self.match_hint = self._hint_label(PICKER_HINT, body)
+        self.match_combo.addItem(PICKER_NONE, None)
+        for slug, name in self._match_runs:
+            self.match_combo.addItem(name, slug)
+        slugs = [s for s, _ in self._match_runs]
+        if self._match_none:
+            pick = 0
+        elif self._match_default in slugs:
+            pick = slugs.index(self._match_default) + 1
+        elif self._match_default:
+            pick = 0          # the recorded run is gone: never another one
+        elif len(slugs) == 1:
+            pick = 1
+        else:
+            pick = 0
+        self.match_combo.setCurrentIndex(pick)
+        if self._match_runs:
+            lay.addRow(self.match_label, self.match_combo)
+            lay.addRow("", self.match_hint)
+        else:
+            # no row at all: the form is what it was without the check
+            self.match_label.hide()
+            self.match_combo.hide()
+            self.match_hint.hide()
+
+    def get_match_run(self) -> Optional[str]:
+        """The other run picked (its slug), or ``None``."""
+        if not self._match_runs:
+            return None
+        data = self.match_combo.currentData()
+        return str(data) if data else None
 
     def _build_qc_score_section(
         self,
@@ -582,7 +849,7 @@ class QCExtractionDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setMinimumHeight(180)
+        scroll.setMinimumHeight(120)
 
         scroll_widget = QWidget()
         scroll_lay = QVBoxLayout(scroll_widget)
@@ -853,7 +1120,10 @@ class QCExtractionDialog(QDialog):
         for ch in self._available_channels:
             idx = ch.get("index")
             prefix = ch.get("prefix", f"ch{idx}")
-            cb = QCheckBox(f"  Channel {idx} — {prefix}")
+            text, tip = _channel_row_words(
+                idx, prefix, self._channel_roles.get(idx))
+            cb = QCheckBox("  " + text)
+            cb.setToolTip(tip)
             cb.setChecked(False)  # opt-in per channel
             lay.addWidget(cb)
             self._channel_checkboxes[idx] = cb
@@ -875,6 +1145,18 @@ class QCExtractionDialog(QDialog):
         y = self.spacing_y_sb.value()
         x = self.spacing_x_sb.value()
         spacing = None if (z == 1.0 and y == 1.0 and x == 1.0) else (z, y, x)
+        out = self._settings_dict(spacing, z, y, x)
+        # the pairing check: one choice per patch, this patch's set only
+        # when the row was offered (otherwise the next extraction keeps the
+        # run its patch recorded); the other patches' choices ride through
+        choices = dict(self._match_choices)
+        if self._match_runs and self._match_patch:
+            choices[self._match_patch] = self.get_match_run()
+        if choices:
+            out["match_run"] = choices
+        return out
+
+    def _settings_dict(self, spacing, z, y, x) -> dict:
         return {
             "spacing": spacing,
             "spacing_values": (z, y, x),
@@ -964,6 +1246,10 @@ class QCExtractionDialog(QDialog):
                 set(gw._checkboxes.keys())
                 if hasattr(gw, "_checkboxes") else set()
             )
+            # the match columns compare with another run; they never
+            # join qc_score by "Select all" (exactly those columns: any
+            # other feature whose name starts "match_" is still a feature)
+            feats = feats - _MATCH_ONLY
             gw.set_pca_features(feats)
         self._refresh_selection_count()
 

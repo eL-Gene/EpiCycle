@@ -60,8 +60,8 @@ S3_UNUSED_KNOBS_NOTE = (
 
 #: Cellpose's channel codes, unchanged: the item's INDEX is
 #: the code ``_collect_seg_config`` passes
-S3_CHAN1_ITEMS = ("0: gray", "1: red", "2: green", "3: blue")
-S3_CHAN2_ITEMS = ("0: none", "1: red", "2: green", "3: blue")
+S3_CHAN1_ITEMS = R.SEG_CODE_ITEMS_SEGMENT
+S3_CHAN2_ITEMS = R.SEG_CODE_ITEMS_HELPER
 
 # ── Step 3 widget names -> the shared keys ───────────────────
 #: Step 3 keeps its own widget names; this alias map feeds the labels, the
@@ -97,11 +97,14 @@ S3_OWN_HELP_LINES = {
         "reconstructed with. You can still change any of them; the list "
         "then says Custom."),
     "chan1_combo": (
-        "The channel that shows the cell outlines, as Cellpose’s code: "
-        "0 gray (all channels together), 1 red, 2 green, 3 blue."),
+        "The channel that shows what this model finds: the cell outlines "
+        "for a cell model, the nuclei for a nuclei model. As Cellpose’s "
+        "code: 0 gray (all channels averaged), 1 red, 2 green, 3 blue."),
     "chan2_combo": (
-        "An optional second channel, usually the nuclei, that helps the "
-        "model tell touching cells apart; 0 means none."),
+        "An optional second channel that helps a cell model tell touching "
+        "cells apart, usually the nuclei; 0 means none. A nuclei model "
+        "needs none. With Channel to segment on 0: gray, this box is not "
+        "used."),
     # "diameter_sb": Step 3's own pixel line until R2b; since R2b the width
     # is in µm and the shared line (``cell_width_um_sb``) is Step 3's too
     # "rescale_cb": the prediction manifest records the resize RULE since
@@ -148,6 +151,41 @@ S3_LOG_LAST_RUN_GONE = (
     "[SETTINGS] Start from was this run’s last reconstruction, which is no "
     "longer there; the settings keep the values they have now.")
 
+# ── A new run's channels, the run's channel memory, one-channel patches ───
+#: "Channel to segment" left blank (a Cellpose built-in records no
+#: channels): the grey text the box shows until a channel is picked
+S3_CHAN1_PLACEHOLDER = "pick a channel"
+#: the New Run dialog, under its built-in model list
+S3_NEW_RUN_BUILTIN_NOTE = (
+    "A built-in model does not say which channel it reads: after creating "
+    "the run, pick the channel to segment in Settings.")
+#: ``{seg}`` / ``{helper}`` in the log lines: the box's item text, or this
+#: word for a blank "Channel to segment"
+S3_CHANNEL_BLANK = "blank"
+S3_LOG_NEW_RUN_CHANNELS = (
+    "[SETTINGS] New run {run}: channels from its model, channel to segment "
+    "{seg}, helper {helper}.")
+S3_LOG_NEW_RUN_PICK = (
+    "[SETTINGS] New run {run}: its model does not record its channels; pick "
+    "the channel to segment.")
+S3_LOG_NUCLEI_SPECKS = (
+    "[SETTINGS] EpiCycle defaults for the nuclei model: Remove specks "
+    "smaller than {n} voxels.")
+S3_LOG_MODEL_OVERLAY = (
+    "[SETTINGS] Another model picked: Remove specks smaller than is back to "
+    "{n} voxels for it.")
+S3_LOG_RUN_MEMORY = (
+    "[SETTINGS] This run’s channels: channel to segment {seg}, helper "
+    "{helper}; Remove specks smaller than {n} voxels.")
+#: QC reads the channel of a patch with no recorded channels from the box;
+#: a blank box is read as channel 0, and said so
+S3_LOG_QC_BLANK_CHANNEL = (
+    "[SETTINGS] Channel to segment is blank, so QC reads the first "
+    "channel.")
+S3_LOG_ONE_CHANNEL = (
+    "[PREDICT] {patch} has one channel: predicted as 0: gray; the run keeps "
+    "channel to segment {seg}.")
+
 # ── Predict (R2b, R2c) ─────────────────────────────────────────────────────
 #: the log line after a patch's arrays (and its prediction manifest) are
 #: on disk -- the words it had before R2c
@@ -159,6 +197,35 @@ S3_LOG_WIDTH_IN_PIXELS = (
 # The section's layout (brick R3):
 # the run row, the Model and Patches cards on the left, the
 # pinned foot under the settings, Session's pointer line.
+
+# ── When saving the open edits fails ─────────────────────────────────────
+#: shown (and logged) when the save that guards a move (switching the run,
+#: converting the layout, leaving Step 3) fails: nothing moved, the edits
+#: are still marked unsaved
+S3_SAVE_FAILED = ("Your edits could not be saved, so nothing was changed. "
+                  "Close any program that has the file open, then try again.")
+
+#: a write of the QC table refused: the table in memory belongs to another
+#: patch than the one the write would name (nothing was written)
+S3_SAVE_REFUSED_OTHER_PATCH = (
+    "Edits for {patch} were not written: they belong to another patch than "
+    "the one in view. Open {patch} to save them, or discard them.")
+#: leaving Step 3 (or changing the Session folder) refused while an
+#: annotator operation is staged
+S3_STAGED_WORK_OPEN = "Accept or reject the open edit first."
+
+#: Reset to Predicted pressed while a save, a load or a job is running
+S3_RESET_BUSY = "Reset waits for the running job. Try again after it."
+
+#: Browse / Use another folder pressed while a Step 3 job runs
+S3_BROWSE_LOCKED = ("A job is running in Step 3. Change the folder when it "
+                    "has finished.")
+#: the confirm when the 3D annotator is open
+S3_BROWSE_CONFIRM_TITLE = "Change folder"
+S3_BROWSE_CONFIRM_BODY = (
+    "The 3D Curation Annotator is open. Changing the folder closes it. "
+    "Work you saved stays where it is.")
+S3_BROWSE_CONFIRM = "Change folder"
 
 # ── The run row ────────────────────────────────────────────────────────────
 S3_RUN_LABEL = "Run:"
@@ -183,25 +250,35 @@ S3_MODEL_AX_TIP = "Side (XZ, YZ) model: {name}"
 #: B (board D): under the two model lines, what the active models were
 #: trained on (``_step3_rows.trained_line``; the Cellpose codes read from
 #: the training config beside the weights).  ``{run}`` is
-#: ``S3_MODEL_TRAINED_RUN`` for a Step 2 model, else empty.
-S3_MODEL_TRAINED_ON = "Trained on {n} channels: {names}{run}."
-S3_MODEL_TRAINED_ONE = "Trained on 1 channel: {names}{run}."
+#: ``S3_MODEL_TRAINED_RUN`` for a Step 2 model, else empty.  Each channel
+#: is named by the channel box's own item (``S3_CHAN1_ITEMS`` /
+#: ``S3_CHAN2_ITEMS``), so the card and the box beside it never name the
+#: same channel two ways.
+#: no count: the named channels say how many there are (and the line keeps
+#: to the card's wrapped-line room)
+S3_MODEL_TRAINED_ON = "Trained on {names}{run}."
+S3_MODEL_TRAINED_ONE = "Trained on {names}{run}."
 S3_MODEL_TRAINED_RUN = " · Step 2 run “{run}”"
-S3_MODEL_CHANNEL = "{name} ({index})"
+#: one trained channel: its role, then the box's item, "segment 2: green"
+S3_MODEL_CHANNEL = R.SEG_TRAINED_CHANNEL
 S3_MODEL_CHANNEL_JOIN = ", "
-S3_MODEL_ROLE_MEMBRANE = "membrane"
-S3_MODEL_ROLE_NUCLEI = "nuclei"
-#: Cellpose code 0 for the first channel: the image read as grayscale -- no
-#: role and no index are claimed for it
+#: the roles by what the model does with the channel (the names are
+#: historical: a nuclei model segments the nuclear stain)
+S3_MODEL_ROLE_MEMBRANE = R.SEG_ROLE_SEGMENT
+S3_MODEL_ROLE_NUCLEI = R.SEG_ROLE_HELPER
+#: kept defined, no longer used
 S3_MODEL_ROLE_GRAY = "grayscale"
-S3_MODEL_TRAINED_GRAY = "Trained on one grayscale channel{run}."
+#: the first code 0: every channel averaged into one image, the helper
+#: ignored (whatever the second code is), so no channel is named
+S3_MODEL_TRAINED_GRAY = (
+    "Trained on one grayscale image (all channels averaged){run}.")
+S3_MODEL_GRAY_ITEM = R.SEG_TRAINED_GRAY_ITEM
 #: grey: nothing is invented for a built-in model or a missing config
 S3_MODEL_TRAINED_UNKNOWN = (
     "The channels this model was trained on are not recorded.")
 #: the two models disagree: BOTH sets are named; ``{runs}`` is
 #: ``S3_MODEL_TRAINED_DIFFER_RUNS`` / ``_RUN`` for Step 2 models, else empty
-S3_MODEL_TRAINED_DIFFER = (
-    "Trained on different channels: lateral {lat} · axial {ax}.{runs}")
+S3_MODEL_TRAINED_DIFFER = "Trained on lateral {lat} · axial {ax}.{runs}"
 S3_MODEL_TRAINED_DIFFER_RUNS = " Step 2 runs “{lat}” / “{ax}”."
 S3_MODEL_TRAINED_DIFFER_RUN = " Step 2 run “{run}”."
 
@@ -209,6 +286,7 @@ S3_MODEL_TRAINED_DIFFER_RUN = " Step 2 run “{run}”."
 S3_PATCHES_TITLE = "Patches"
 S3_PATCHES_DESC = "Ticked patches are the ones Predict and Reconstruct run on."
 S3_TICK_ALL_LINK = "Tick all unprocessed"
+S3_UNTICK_ALL_LINK = "Untick all"
 #: the ticked lines, one per button; " · {k} protected" only when k > 0
 S3_TICKED_PREDICT = "Predict: {n} ticked"
 S3_TICKED_PROTECTED = " · {k} protected"
@@ -237,6 +315,16 @@ S3_GATE_STATUS_JOIN = ", "
 #: the same without the statuses -- for a foot too narrow for two lines
 S3_GATE_SKIPPED_SHORT = "{k} protected is skipped"
 S3_GATE_SKIPPED_SHORT_PLURAL = "{k} protected are skipped"
+#: "Channel to segment" is blank and a ticked patch has more than one
+#: channel (Step 4's ``SEG_PICK_CHANNEL``, the same sentence)
+S3_GATE_PICK_CHANNEL = "Pick the channel to segment."
+#: the ready line's sentence for ticked patches that have one channel: they
+#: run as gray whatever the boxes say, and the boxes are left as they are.
+#: One sentence per state: it is not added after
+#: ``S3_GATE_NOTHING_TO_RECONSTRUCT`` (the two would not fit the foot's two
+#: lines in the 578 px dock)
+S3_GATE_ONE_CHANNEL = "{patch}: one channel, runs as 0: gray."
+S3_GATE_ONE_CHANNEL_PLURAL = "{k} patches: one channel, run as 0: gray."
 
 #: a Session-list click on a predicted (or further) patch: its cached
 #: predictions restored, or none on disk (the words they had before R3)
@@ -307,10 +395,14 @@ S3_ROW_HELP_LINES = {
 #: the list and the link, now that the ticks are the choice
 S3_LIST_HELP = (
     "Tick the patches to run on; Ctrl+A ticks every patch that can be "
-    "ticked. Click a row to highlight it for View.")
+    "ticked. Click a row to highlight it for View; its eye shows what the "
+    "patch has so far, and right-click for its prediction and model "
+    "details.")
 S3_TICK_ALL_HELP = "Ticks every patch that has not been predicted yet."
 S3_LAYOUT_HELP_LINES["_patch_state_list"] = S3_LIST_HELP
 S3_LAYOUT_HELP_LINES["pr_tick_all_link"] = S3_TICK_ALL_HELP
+S3_UNTICK_ALL_HELP = "Clears every tick in the list."
+S3_LAYOUT_HELP_LINES["pr_untick_all_link"] = S3_UNTICK_ALL_HELP
 #: under the list while Predict / Reconstruct runs (the ticked lines give
 #: way to it; the mockup's board F)
 S3_LOCK_LIST_NOTE = "You can still click rows and use View on finished patches."
@@ -319,7 +411,9 @@ S3_LOCK_LIST_NOTE = "You can still click rows and use View on finished patches."
 S3_REPREDICT_TITLE = "Predict Again"
 S3_REPREDICT_BODY = (
     "These ticked patches already have results. Predicting again replaces "
-    "their predictions:\n\n{lines}")
+    "their predictions. A reconstructed patch keeps its 3D labels and its "
+    "curation until you Reconstruct it again, which replaces them:"
+    "\n\n{lines}")
 S3_REPREDICT_CONFIRM = "Predict again"
 #: one line of the list above
 S3_RERUN_LINE = "{patch} — {status}"
@@ -350,9 +444,10 @@ S3_LOCK_QC_EXTRACT = "Measuring the cells — wait for it to finish."
 S3_LOCK_REFINE = (
     "A refine step is staged in the annotator — Accept or Discard it there.")
 S3_LOCK_RESHAPE = (
-    "A split is open in the annotator — Accept or Cancel it there.")
+    "A split is open in the annotator — Accept or Discard it there.")
 S3_LOCK_ADD = (
-    "An Add session is open in the annotator — Accept or Cancel it there.")
+    "An Add box is open in the annotator — finish it first: press Accept, "
+    "or Discard a result and close the box, on the Add tab.")
 S3_LOCK_BATCH_REFINE = (
     "Batch Refine is open in the annotator — finish or close it there.")
 #: flag -> sentence, in priority order (specific first, ``_curation_busy``
@@ -546,8 +641,10 @@ S3_MADE_BY_NOT_ACTIVE = "{made_by}" + S3_MADE_BY_NOT_ACTIVE_TAIL
 #: help on the chip and on the ⓘ (the shared painter's keys)
 S3_ROW_HELP_LINES["row_made_by"] = (
     "The model that predicted this patch. An amber border means it is not "
-    "the model now active above.")
+    "the model now active above. Right-click for the model details.")
 S3_ROW_HELP_LINES["row_tiers"] = S3_SESSION_TIERS_TIP     # (audit L8)
+#: the ⓘ's own line: the glyph gave its slot to the eye, so no row draws it
+#: any more (the painter knob stays; a later tidy removes both)
 S3_ROW_HELP_LINES["row_info"] = (
     "Opens the details of the model that predicted this patch, with notes "
     "you can keep.")
@@ -690,6 +787,32 @@ S3_SPACING_NO_TAGS_HINT = (
 QC_SPACING_FALLBACK = (
     "Used for patches with no voxel size of their own; set one per patch in "
     "Session.")
+
+# ── QC Settings (one dim line under each extraction parameter) ─────────────
+QC_EROSION_HINT = (
+    "How many voxel layers count as the boundary of each object when the "
+    "intensity features split it into boundary and interior.")
+QC_RADIUS_HINT = (
+    "How far, in voxels, to look for neighbours when counting them and "
+    "measuring the nearest one.")
+QC_EXCLUDE_BORDER_HINT = (
+    "Objects touching the top or bottom of the stack are left out when the "
+    "composite score and the PCA are fitted, then placed on them afterwards.")
+QC_INVERT_Z_HINT = (
+    "Tick when the apical side is at the top slice instead of the bottom, so "
+    "apical/basal features read the right way round.")
+
+# ── QC Settings (the Intensity channels rows) ──────────────────────────────
+#: a channel's row with no role in the active run, and with one
+QC_CHANNEL_ROW = "Channel {i}"
+QC_CHANNEL_ROW_ROLE = "Channel {i} ({role})"
+#: the role words in the row (the channel boxes' own names)
+QC_CHANNEL_ROLE_SEGMENT = "channel to segment"
+QC_CHANNEL_ROLE_HELPER = "helper channel"
+#: the row's tooltip: where its columns are, then the role's sentence
+QC_CHANNEL_TIP_PREFIX = "Its columns start with {prefix}."
+QC_CHANNEL_TIP_SEGMENT = "The active run segmented this channel."
+QC_CHANNEL_TIP_HELPER = "The active run used this channel as its helper."
 
 
 def _number(v: Any) -> str:
@@ -846,3 +969,133 @@ S3_LOG_SPACING_FOUND = "[spacing] {patch}: {spacing} (from the file)"
 S3_LOG_SPACING_RESOLVED = (
     "[STEP3-SPACING] {why}: {n} patch(es), {changed} changed")
 
+
+
+# ── The Patches rows' eye and the prediction window ────────────────────────
+# Every Predict + Reconstruct row that is not missing carries an eye in the
+# slot the ⓘ had: a predicted patch opens the prediction window, a
+# reconstructed one views its labels (the same method as Session's eye and
+# the foot's View), an unprocessed one is dimmed.  The model details window
+# moved to the row's right-click menu and to the prediction window's foot.
+#: the eye's tooltip, by what a click does
+S3_PR_EYE_VIEW_TIP = "Shows this patch’s labels in the viewer."
+S3_PR_EYE_PREDICTION_TIP = (
+    "Shows what the model saw and predicted for this patch.")
+#: an unprocessed row: its tooltip, and the foot's line on a click
+S3_PR_EYE_NOTHING = "Nothing to show yet — predict it first."
+#: a prediction file a re-Predict could not remove (the console and log)
+S3_LOG_CACHE_KEPT = "[PREDICT] Could not remove {file}: {error}"
+#: the row menu's two items (a present row)
+S3_SHOW_PREDICTION_MENU = "Show prediction…"
+S3_MODEL_DETAILS = "Model details…"
+#: the window refused (on the foot's status line)
+S3_PRED_REFUSED_RUNNING = "{patch} is being predicted. Wait for it to finish."
+S3_PRED_GONE = "The prediction of {patch} is no longer on disk."
+#: ``{size}`` = "Z × Y × X", ``{limit}`` = millions of voxels
+S3_PRED_TOO_LARGE = (
+    "This patch is too large to show its prediction here: {size} voxels, "
+    "and the window shows up to {limit} million.")
+#: the patch on disk no longer matches its prediction (its shape, or a
+#: channel it no longer has)
+S3_PRED_SHAPE_CHANGED = (
+    "The patch has changed since it was predicted, so only the prediction "
+    "is shown.")
+
+PRED_WINDOW_TITLE = "Prediction"
+#: the window's title and first line; ``{patch}`` = the patch name
+PRED_TITLE = "Prediction — {patch}"
+#: the two-line provenance (``{model}``: the short name; ``{when}``: local
+#: time; ``{seg}`` / ``{helper}``: the item texts of the REQUESTED codes)
+PRED_LINE1 = "{run} · {model} · predicted {when}"
+PRED_LINE2 = "channel to segment {seg} · helper {helper}"
+#: the second line of a one-channel patch: what RAN, not the codes asked
+#: for (Cellpose reads such a patch as gray whatever they were)
+PRED_LINE2_ONE_CHANNEL = "one-channel image · ran as 0: gray"
+#: a channel to segment recorded as blank
+PRED_CHANNEL_BLANK = "blank"
+PRED_LINE_NO_RECORD = "{run} · predicted before EpiCycle recorded its settings"
+#: a Cellpose built-in model's name in the first line
+PRED_MODEL_BUILTIN = "{model} (built-in)"
+PRED_PASS_LABEL = "Pass:"
+PRED_PASS_XY = "XY (top-down)"
+PRED_PASS_XZ = "XZ (side)"
+PRED_PASS_YZ = "YZ (side)"
+#: the pass's short name in the right pane's title
+PRED_PASS_SHORT = {"xy": "XY", "xz": "XZ", "yz": "YZ"}
+PRED_MAP_LABEL = "Map:"
+PRED_MAP_PROB = "Probability"
+PRED_MAP_FLOWS = "Flows"
+#: the panes' titles
+PRED_LEFT = "What the model saw"
+PRED_RIGHT = "{map}, {pass} pass"
+#: the left pane's caption, in the channel boxes' words
+PRED_LEFT_CAPTION = "{seg}"
+PRED_LEFT_CAPTION_PAIR = "{seg} (segment) + {helper} (helper)"
+PRED_LEFT_GRAY_AVG = "0: gray — every channel averaged"
+PRED_LEFT_ONE_CHANNEL = "0: gray — this image has one channel"
+#: no channels recorded on a multi-channel patch: a guess, said so
+PRED_LEFT_NO_RECORD = "no record — shown with {seg}"
+PRED_LEFT_CONTRAST = (
+    "Brightness is stretched for the whole patch, not slice by slice as "
+    "Cellpose does.")
+#: beside the plane slider (``{axis}`` z / y / x; counted from 0, as
+#: napari counts, ``{n}`` the last plane)
+PRED_SLIDER = "{axis} {i} / {n}"
+#: the key under the right pane: the probability's fixed scale (the
+#: colours run over −6 … 6 on every patch), the flows' colour wheel
+PRED_PROB_KEY = "−6 … 6"
+PRED_FLOWS_KEY = "hue = direction, brightness = strength"
+#: the line under the panes
+PRED_READING = (
+    "One bright blob per cell is a good sign. A smear often means the wrong "
+    "channel.")
+PRED_READING_FLOWS = (
+    "Colour is the direction the flows point, brightness how strong they "
+    "are, as Cellpose draws them. Each cell should show one tidy swirl of "
+    "colours around its centre.")
+PRED_LOADING = "Loading…"
+PRED_LOADING_MAP = "Loading the {pass} pass…"
+PRED_FAILED = "Could not read this prediction: {error}"
+#: after the helper's item when the channel to segment is 0: gray
+PRED_HELPER_UNUSED = " (not used with 0: gray)"
+PRED_CLOSE = "Close"
+
+#: the words the prediction window takes (``texts=``); a test holds every
+#: key to a constant above
+PRED_TEXTS = {
+    "window_title": PRED_WINDOW_TITLE,
+    "title": PRED_TITLE,
+    "line1": PRED_LINE1,
+    "line2": PRED_LINE2,
+    "line2_one_channel": PRED_LINE2_ONE_CHANNEL,
+    "channel_blank": PRED_CHANNEL_BLANK,
+    "line_no_record": PRED_LINE_NO_RECORD,
+    "pass_label": PRED_PASS_LABEL,
+    "pass_xy": PRED_PASS_XY,
+    "pass_xz": PRED_PASS_XZ,
+    "pass_yz": PRED_PASS_YZ,
+    "pass_short": PRED_PASS_SHORT,
+    "map_label": PRED_MAP_LABEL,
+    "map_prob": PRED_MAP_PROB,
+    "map_flows": PRED_MAP_FLOWS,
+    "left": PRED_LEFT,
+    "right": PRED_RIGHT,
+    "left_caption": PRED_LEFT_CAPTION,
+    "left_caption_pair": PRED_LEFT_CAPTION_PAIR,
+    "left_gray_avg": PRED_LEFT_GRAY_AVG,
+    "left_one_channel": PRED_LEFT_ONE_CHANNEL,
+    "left_no_record": PRED_LEFT_NO_RECORD,
+    "left_contrast": PRED_LEFT_CONTRAST,
+    "slider": PRED_SLIDER,
+    "reading": PRED_READING,
+    "reading_flows": PRED_READING_FLOWS,
+    "prob_key": PRED_PROB_KEY,
+    "flows_key": PRED_FLOWS_KEY,
+    "loading": PRED_LOADING,
+    "loading_map": PRED_LOADING_MAP,
+    "failed": PRED_FAILED,
+    "shape_changed": S3_PRED_SHAPE_CHANGED,
+    "helper_unused": PRED_HELPER_UNUSED,
+    "details": S3_MODEL_DETAILS,
+    "close": PRED_CLOSE,
+}

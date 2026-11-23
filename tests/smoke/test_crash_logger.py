@@ -110,3 +110,293 @@ def test_excepthook_logs_and_chains(tmp_path, reset_crash_logger):
     assert "UNCAUGHT PYTHON EXCEPTION" in text
     assert "boom-xyz" in text
     assert chained.get("called") is not None  # original hook still ran
+
+
+# ---------------------------------------------------------------------------
+# Console mirror
+# ---------------------------------------------------------------------------
+
+import io
+import logging
+import threading
+import time
+
+
+class _Rec:
+    """A recording stand-in for a console stream."""
+
+    encoding = "utf-8"
+
+    def __init__(self):
+        self.calls = []
+        self.text = ""
+
+    def write(self, s):
+        self.calls.append(("write", s))
+        self.text += s
+        return 7  # a distinctive return value
+
+    def flush(self):
+        self.calls.append(("flush",))
+
+    def isatty(self):
+        return True
+
+    def fileno(self):
+        return 5
+
+
+class _Raising(_Rec):
+    def fileno(self):
+        raise io.UnsupportedOperation("fileno")
+
+
+@pytest.fixture
+def mirror(tmp_path, reset_crash_logger, monkeypatch):
+    """An installed logger (no auto mirror) plus clean mirror state."""
+    monkeypatch.setenv("EPICYCLE_SESSION_LOG", "0")
+    path = crash_logger.install_crash_logging(log_dir=tmp_path)
+    saved = (sys.stdout, sys.stderr)
+    yield path
+    crash_logger.restore_console()
+    sys.stdout, sys.stderr = saved
+    crash_logger._MIRRORED = False
+    crash_logger._MIRROR_STOPPED = False
+
+
+def _lines(path):
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def test_console_copy_is_unchanged(mirror):
+    fake = _Rec()
+    tee = crash_logger._Tee(fake)
+    ret = [tee.write("abc"), tee.write("\n"), tee.write(""),
+           tee.write("\r 10%|#  |"), tee.write("\r100%|###|\n"),
+           tee.write("caf\u00e9 \u2713\n")]
+    tee.flush()
+    assert ret == [7] * 6
+    assert fake.calls == [
+        ("write", "abc"), ("write", "\n"), ("write", ""),
+        ("write", "\r 10%|#  |"), ("write", "\r100%|###|\n"),
+        ("write", "caf\u00e9 \u2713\n"), ("flush",),
+    ]
+
+
+def test_print_calls_reach_original_in_order(mirror):
+    fake = _Rec()
+    tee = crash_logger._Tee(fake)
+    print("x", end="", file=tee)
+    print("y", file=tee)
+    assert fake.text == "xy\n"
+
+
+def test_attribute_delegation(mirror):
+    tee = crash_logger._Tee(_Rec())
+    assert tee.isatty() is True
+    assert tee.encoding == "utf-8"
+    assert tee.fileno() == 5
+    bad = crash_logger._Tee(_Raising())
+    with pytest.raises(io.UnsupportedOperation):
+        bad.fileno()
+
+
+def test_file_side_whole_lines_with_timestamps(mirror):
+    import re
+    tee = crash_logger._Tee(_Rec())
+    tee.write("abc")
+    assert "abc" not in mirror.read_text(encoding="utf-8")  # no newline yet
+    tee.write("\n")
+    # on disk right after the newline, without closing the writer
+    assert any(l.endswith(" abc") for l in _lines(mirror))
+    tee.write("\r 10%|#  |")
+    tee.write("\r100%|###|\n")
+    lines = _lines(mirror)
+    assert any(l.endswith(" 10%|#  |") for l in lines)
+    assert any(l.endswith(" 100%|###|") for l in lines)
+    stamped = [l for l in lines if l.endswith(" abc")]
+    assert re.match(r"^\d\d:\d\d:\d\d\.\d{3} abc$", stamped[0])
+
+
+def test_two_threads_never_mix_a_line(mirror):
+    tee = crash_logger._Tee(_Rec())
+    barrier = threading.Barrier(2)
+
+    def work(tag):
+        barrier.wait()
+        for i in range(1000):
+            tee.write(tag)
+            tee.write(f"-{i}")
+            tee.write("\n")
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        ts = [threading.Thread(target=work, args=(t,))
+              for t in ("AAAA", "BBBB")]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    body = [l.split(" ", 1)[1] for l in _lines(mirror)
+            if " AAAA-" in l or " BBBB-" in l]
+    assert len(body) == 2000
+    for b in body:
+        assert b.startswith(("AAAA-", "BBBB-")) and b.count("-") == 1
+
+
+def test_file_failure_stops_once_and_console_keeps_everything(mirror):
+    class _Bad:
+        def write(self, s):
+            raise OSError("disk gone")
+
+        def flush(self):
+            pass
+
+        def fileno(self):
+            return 0
+
+        def close(self):
+            pass
+
+    good = crash_logger._LOG_FH
+    crash_logger._LOG_FH = _Bad()
+    try:
+        fake = _Rec()
+        tee = crash_logger._Tee(fake)
+        tee.write("one\n")
+        tee.write("two\n")
+        tee.write("three\n")
+        assert fake.text.count("[SESSION-LOG] mirror stopped") == 1
+        assert "one\n" in fake.text and "two\n" in fake.text
+        assert "three\n" in fake.text
+    finally:
+        crash_logger._LOG_FH = good
+
+
+def test_fileno_without_a_console_raises_the_io_error(mirror):
+    with pytest.raises(io.UnsupportedOperation):
+        crash_logger._Tee(None).fileno()
+
+
+def test_other_write_errors_do_not_stop_the_mirror(mirror):
+    class _Odd:
+        n = 0
+
+        def write(self, s):
+            _Odd.n += 1
+            if _Odd.n == 1:
+                raise ValueError("odd")
+
+        def flush(self):
+            pass
+
+    good = crash_logger._LOG_FH
+    crash_logger._LOG_FH = _Odd()
+    try:
+        tee = crash_logger._Tee(_Rec())
+        tee.write("one" + '\n')
+        tee.write("two" + '\n')
+        assert _Odd.n == 2 and crash_logger._MIRROR_STOPPED is False
+    finally:
+        crash_logger._LOG_FH = good
+
+
+def test_original_none_writes_file_only(mirror):
+    tee = crash_logger._Tee(None)
+    assert tee.write("only file\n") == len("only file\n")
+    tee.flush()
+    assert tee.isatty() is False
+    assert any(l.endswith("only file") for l in _lines(mirror))
+
+
+def test_handler_repointing_and_restore(mirror):
+    orig = io.StringIO()
+    handler = logging.StreamHandler(orig)
+    lg = logging.getLogger("epicycle_test_repoint")
+    lg.addHandler(handler)
+    lg.propagate = False
+    lg.setLevel(logging.INFO)
+    try:
+        assert crash_logger.mirror_console(stdout=orig, stderr=io.StringIO())
+        lg.info("handler-line-xyz")
+        assert any(l.endswith("handler-line-xyz") for l in _lines(mirror))
+        assert "handler-line-xyz" in orig.getvalue()
+        crash_logger.restore_console()
+        assert handler.stream is orig
+    finally:
+        lg.removeHandler(handler)
+
+
+def test_mirror_is_idempotent_and_restore_respects_foreign(mirror):
+    a, b = io.StringIO(), io.StringIO()
+    assert crash_logger.mirror_console(stdout=a, stderr=b)
+    first = sys.stdout
+    assert crash_logger.mirror_console(stdout=a, stderr=b)
+    assert sys.stdout is first
+    foreign = io.StringIO()
+    sys.stdout = foreign
+    crash_logger.restore_console()
+    assert sys.stdout is foreign
+
+
+def test_install_twice_rearms_faulthandler(tmp_path, reset_crash_logger,
+                                           monkeypatch):
+    import faulthandler
+    monkeypatch.setenv("EPICYCLE_SESSION_LOG", "0")
+    crash_logger.install_crash_logging(log_dir=tmp_path)
+    seen = []
+    monkeypatch.setattr(faulthandler, "enable",
+                        lambda **kw: seen.append(kw))
+    crash_logger.install_crash_logging()
+    assert len(seen) == 1 and seen[0]["file"] is crash_logger._LOG_FH
+
+
+def test_pytest_guard_skips_without_streams(mirror, capsys, monkeypatch):
+    monkeypatch.delenv("EPICYCLE_SESSION_LOG", raising=False)
+    before = sys.stdout
+    assert crash_logger.mirror_console() is False
+    assert sys.stdout is before
+    out = capsys.readouterr().out
+    assert "[SESSION-LOG] skipped" in out and "under pytest" in out
+
+
+def test_install_without_dir_skips_under_pytest(reset_crash_logger, capsys):
+    assert crash_logger.install_crash_logging() is None
+    assert crash_logger.log_path() is None
+    assert "[SESSION-LOG] skipped" in capsys.readouterr().out
+
+
+def test_header_has_no_host_or_user_and_footer_written_once(mirror):
+    import getpass
+    import platform
+    text = mirror.read_text(encoding="utf-8")
+    assert text.splitlines()[0].startswith("EpiCycle session log.")
+    assert "versions:" in text
+    node = platform.node()
+    if node:
+        assert node not in text
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    if user and len(user) > 3:
+        assert user not in text
+    crash_logger.write_footer()
+    crash_logger.write_footer()  # only once
+    assert mirror.read_text(encoding="utf-8").count(
+        "=== session end (clean) ===") == 1
+
+
+def test_log_path_matches_install(mirror):
+    assert crash_logger.log_path() == mirror
+
+
+def test_mirror_speed_loose_bound(mirror):
+    tee = crash_logger._Tee(_Rec())
+    t0 = time.perf_counter()
+    for i in range(10000):
+        tee.write(f"line {i}\n")
+    assert time.perf_counter() - t0 < 5.0

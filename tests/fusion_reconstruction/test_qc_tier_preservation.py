@@ -198,14 +198,17 @@ class TestQcTierPreservation:
         })
         ctrl = _make_bare_controller(prev_df=prev)
         # Fresh extract: labels 1, 2 still in volume; label 5 was
-        # absorbed by merge (label_status="superseded" in prev_df).
-        df = _fresh_features_df([1, 2])
+        # absorbed by merge (label_status="superseded" in prev_df).  The
+        # fresh table holds a higher id (9): a removed id ABOVE the fresh
+        # table's highest id is kept, as an inactive row, to hold the id
+        # floor (test_discard_garbage_active_rows.py); one below it goes.
+        df = _fresh_features_df([1, 2, 9])
         FusionReconstructionController._on_qc_extract_finished(
             ctrl, df, "patch_001"
         )
         result = ctrl._qc_features_df
         # Only active labels survive.
-        assert set(result["label"]) == {1, 2}
+        assert set(result["label"]) == {1, 2, 9}
         # No ghost rows.
         if "label_status" in result.columns:
             assert (result["label_status"] == "active").all()
@@ -375,15 +378,17 @@ class TestAutoSaveAfterMerge:
             "label_status": ["active", "active", "superseded"],
         })
         ctrl = _make_bare_controller(prev_df=prev, working_dir=tmp_path)
-        df = _fresh_features_df([1, 2])
+        # 9 is above the ghost 7: a removed id above the fresh table's
+        # highest id would be kept to hold the id floor
+        df = _fresh_features_df([1, 2, 9])
         FusionReconstructionController._on_qc_extract_finished(
             ctrl, df, "patch_xyz"
         )
         csv_path = tmp_path / "artifacts" / "step3" / "qc" / "patch_xyz_features.csv"
         disk_df = pd.read_csv(csv_path)
-        # 2 active rows, 0 ghosts.
-        assert len(disk_df) == 2
-        assert set(disk_df["label"]) == {1, 2}
+        # 3 active rows, 0 ghosts.
+        assert len(disk_df) == 3
+        assert set(disk_df["label"]) == {1, 2, 9}
         # No ghost rows survived to disk.
         assert 7 not in disk_df["label"].values
 
@@ -412,11 +417,10 @@ class TestAutoSaveAfterMerge:
         assert tier_map[1] == "review"
         assert tier_map[2] == "good"
 
-    def test_first_extract_no_prev_df_skips_auto_save(self, tmp_path):
-        """First-time extract has no prev_df.  The auto-save block is
-        gated on ``prev_df is not None`` because there's nothing to
-        preserve — the worker's own write at line 728 already wrote
-        the fresh features to disk."""
+    def test_first_extract_no_prev_df_auto_saves_the_final_table(self, tmp_path):
+        """A first-time extract has no prev_df, but the table in memory
+        (with its default tiers) is still written back, so the file on disk
+        carries the tier column the Session row's counts read."""
         from napari_epicycle.fusion_reconstruction.controller import (
             FusionReconstructionController,
         )
@@ -425,11 +429,8 @@ class TestAutoSaveAfterMerge:
         FusionReconstructionController._on_qc_extract_finished(
             ctrl, df, "patch_xyz"
         )
-        # Auto-save was skipped — CSV should NOT have been written by
-        # this code path.  (The worker would write it in production,
-        # but we're testing _on_qc_extract_finished in isolation.)
         csv_path = tmp_path / "artifacts" / "step3" / "qc" / "patch_xyz_features.csv"
-        assert not csv_path.exists()
+        assert csv_path.exists()
 
 
 # ===========================================================================

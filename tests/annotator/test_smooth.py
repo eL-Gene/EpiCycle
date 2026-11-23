@@ -265,3 +265,180 @@ class TestSmoothSplitFragments:
         )
         # Should not crash; only label 10 processed
         assert np.any(vol == 10)
+
+
+# ===========================================================================
+# TestSmoothSplitKeepsTheObject
+# ===========================================================================
+
+def _slab_split(n_slabs, *, keep_object=False, sigma_z=3.0, sigma_xy=1.5,
+                depth=60):
+    """Split a rod into ``n_slabs`` marker slabs, then auto-smooth it.
+
+    Returns (volume, roi, original_mask, ids).
+    """
+    from packages.epicycle_annotator.split import (
+        apply_split_to_volume,
+        seeded_watershed_split,
+    )
+
+    vol = np.zeros((72, 16, 16), dtype=np.int32)
+    vol[6:6 + depth, 4:12, 4:12] = 250
+    original = vol == 250
+    roi = (slice(0, 72), slice(0, 16), slice(0, 16))
+    baseline = vol[roi].copy()
+    step = depth // n_slabs
+    marked = vol[roi].copy()
+    for k in range(n_slabs):
+        z = 6 + step * k + step // 2
+        marked[z, 6:10, 6:10] = 1000 + k
+    result, ids, _msg = seeded_watershed_split(baseline, marked, 250)
+    apply_split_to_volume(vol, roi, result, 250)
+    smooth_split_fragments(vol, roi, ids, sigma_z=sigma_z, sigma_xy=sigma_xy,
+                           keep_object=keep_object)
+    return vol, roi, original, ids
+
+
+class TestSmoothSplitKeepsTheObject:
+    @pytest.mark.parametrize("n_slabs", [2, 6, 12])
+    def test_slab_split_keeps_object_and_pieces(self, n_slabs):
+        vol, _roi, original, ids = _slab_split(n_slabs, keep_object=True)
+        assert len(ids) == n_slabs
+        in_ids = np.isin(vol, ids)
+        # nothing grows outside the object
+        assert not np.any(in_ids & ~original)
+        # every voxel of the object is still owned by a piece
+        assert np.count_nonzero(in_ids) == np.count_nonzero(original)
+        # no piece vanished
+        for i in ids:
+            assert np.any(vol == i), f"piece {i} is empty"
+
+    def test_default_mode_still_loses_voxels_on_many_slabs(self):
+        """keep_object=False is today's behaviour: the mode is pinned."""
+        vol, _roi, original, ids = _slab_split(12)
+        kept = np.count_nonzero(np.isin(vol, ids)) / np.count_nonzero(original)
+        assert kept < 0.95
+
+    @pytest.mark.parametrize("keep_object", [False, True])
+    def test_two_separated_staircase_blocks_still_smooth(self, keep_object):
+        vol = np.zeros((30, 30, 30), dtype=np.int32)
+        for z in range(5, 25):
+            off = z % 2
+            vol[z, 5 + off:12 + off, 5:12] = 10
+            vol[z, 18 + off:25 + off, 18:25] = 20
+        before = vol.copy()
+        roi = (slice(0, 30), slice(0, 30), slice(0, 30))
+        total, _msg = smooth_split_fragments(
+            vol, roi, [10, 20], sigma_z=2.0, sigma_xy=0.5,
+            keep_object=keep_object,
+        )
+        assert np.any(vol == 10) and np.any(vol == 20)
+        if keep_object:
+            # Each block is its own whole object here, so keeping the
+            # object means its voxel set cannot change.
+            assert np.array_equal(vol > 0, before > 0)
+        else:
+            assert total > 0
+            assert not np.array_equal(vol, before)
+
+    def test_a_piece_that_would_vanish_is_left_untouched_when_keeping(self):
+        vol = np.zeros((20, 20, 20), dtype=np.int32)
+        vol[5:15, 5:15, 5:15] = 10
+        vol[9, 9, 9] = 0
+        vol[9, 9, 9] = 30
+        vol[9, 10, 10] = 30   # a thin two-voxel piece inside the block
+        before_thin = (vol == 30).copy()
+        roi = (slice(0, 20), slice(0, 20), slice(0, 20))
+        smooth_split_fragments(vol, roi, [10, 30], sigma_z=3.0, sigma_xy=1.5,
+                               keep_object=True)
+        assert np.array_equal(vol == 30, before_thin)
+        assert np.any(vol == 10)
+
+
+class TestKeepObjectFillStaysInsideTheObject:
+    def _u_shape(self):
+        vol = np.zeros((12, 30, 30), dtype=np.int32)
+        vol[3:9, 4:26, 4:10] = 1    # left arm
+        vol[3:9, 4:26, 20:26] = 1   # right arm
+        vol[3:9, 20:26, 4:26] = 1   # the base joining them
+        return vol
+
+    def test_u_shaped_object_pieces_stay_one_component_each(self):
+        from scipy.ndimage import label as nd_label
+        from packages.epicycle_annotator.split import (
+            apply_split_to_volume,
+            seeded_watershed_split,
+        )
+
+        vol = self._u_shape()
+        original = vol == 1
+        roi = (slice(0, 12), slice(0, 30), slice(0, 30))
+        baseline = vol[roi].copy()
+        marked = baseline.copy()
+        marked[5, 6, 6] = 11
+        marked[5, 6, 23] = 12
+        result, ids, _ = seeded_watershed_split(baseline, marked, 1)
+        vol[original] = 0
+        vol[original] = result[original]
+        smooth_split_fragments(vol, roi, ids, sigma_z=3.0, sigma_xy=1.5,
+                               keep_object=True, object_mask=original)
+        assert np.array_equal(np.isin(vol, ids), original)
+        for i in ids:
+            _, n = nd_label(vol == i)
+            assert n == 1, f"piece {i} has {n} components"
+
+    def test_object_mask_is_the_object_not_what_the_pieces_hold(self):
+        vol = np.zeros((20, 20, 20), dtype=np.int32)
+        vol[5:15, 5:15, 5:10] = 10
+        vol[5:15, 5:15, 10:15] = 20
+        # one object voxel was left as something else (not a piece)
+        vol[9, 9, 9] = 99
+        obj = np.zeros(vol.shape, dtype=bool)
+        obj[5:15, 5:15, 5:15] = True
+        roi = (slice(0, 20), slice(0, 20), slice(0, 20))
+        smooth_split_fragments(vol, roi, [10, 20], sigma_z=2.0,
+                               sigma_xy=1.0, keep_object=True,
+                               object_mask=obj)
+        assert vol[9, 9, 9] == 99
+        assert not np.any(np.isin(vol, [10, 20]) & ~obj)
+
+    def test_keep_count_is_measured_after_the_clip(self):
+        vol = np.zeros((20, 20, 20), dtype=np.int32)
+        vol[5:15, 5:15, 5:15] = 10
+        before = vol.copy()
+        roi = (slice(0, 20), slice(0, 20), slice(0, 20))
+        total, _ = smooth_split_fragments(vol, roi, [10], sigma_z=2.0,
+                                          sigma_xy=1.0, keep_object=True)
+        assert total == int(np.count_nonzero(before != vol)) == 0
+
+
+class TestKeepModeProtectsThePaintedMarkers:
+    def test_twelve_slab_split_keeps_every_marker_whole(self):
+        from scipy.ndimage import label as nd_label
+        from packages.epicycle_annotator.split import (
+            apply_split_to_volume,
+            seeded_watershed_split,
+        )
+
+        vol = np.zeros((72, 16, 16), dtype=np.int32)
+        vol[6:66, 4:12, 4:12] = 250
+        original = vol == 250
+        roi = (slice(0, 72), slice(0, 16), slice(0, 16))
+        baseline = vol[roi].copy()
+        marked = baseline.copy()
+        for k in range(12):
+            z = 6 + 5 * k + 2
+            marked[z, 5:11, 5:11] = 1000 + k
+        result, ids, _ = seeded_watershed_split(baseline, marked, 250)
+        apply_split_to_volume(vol, roi, result, 250)
+        markers = np.where(np.isin(marked, ids), marked, 0)
+        smooth_split_fragments(
+            vol, roi, ids, sigma_z=3.0, sigma_xy=1.5,
+            keep_object=True, object_mask=original, marker_labels=markers,
+        )
+        assert np.array_equal(np.isin(vol, ids), original)
+        for i in ids:
+            mine = markers == i
+            assert np.all(vol[mine] == i), f"marker {i} lost voxels"
+            _, n = nd_label(vol == i)
+            assert n == 1, f"piece {i} has {n} components"

@@ -31,6 +31,18 @@ Three toggles follow: **Lasso** (drag a loop to select), **Density** (contour li
 
 **Colour by** colours the points by a tier, a cluster, the border labels, or any measured feature. With a feature, **Scale** (Linear, Log or Rank) and **Colours** appear, and a bar under the plot shows the feature's range. After a patch loads the plot is coloured by qc_score, Coolwarm, Rank.
 
+Hold the pointer over an entry of **X**, **Y** or **Colour by** to read what it is: a measured feature shows its one-line description (the same one the QC Extraction window shows). The entries that colour by a group, most offered only when the table has what they need, say:
+
+| Entry | What it colours by |
+|---|---|
+| **QC status** | "Whether each label passed the old threshold filter: pass, flagged, or excluded as too small. That filter is no longer in the panel, so a new table shows every label grey; colour by QC tier instead." Offered only when the table has QC status values. |
+| **QC tier** | "Each label's triage tier: curated, good, review, bad or garbage, from the tier lines on qc_score or from your own assignments. A label with no tier yet is unassigned." |
+| **Cluster** | "The group each label fell into the last time you pressed Cluster under QC Features. Labels that fit no group are noise." |
+| **Patch** | "Which patch each label comes from, one colour per patch. With a single patch, every label has the same colour." |
+| **Border cell** | "Whether a label touches an edge of the patch. A label cut by the edge is missing part of its shape, so its measurements are less reliable." |
+| **Topology** | "The label's shape from its Euler number: Solid, Has cavity (a hollow inside, or a label in more than one piece), Has tunnel (a hole right through) or Complex (several tunnels)." |
+| **Overlap with …** | "Colour by what the other run says about each object: no match, one, several, or a match shared with another object." |
+
 The **legend** under the plot counts the labels of each colour. Click a colour in the legend to select those labels. Changing the plot type keeps what you selected.
 
 ### Ghosts
@@ -51,7 +63,7 @@ The area under the plot shows one of two views. The two word-tabs **Histogram** 
 
 ### Histogram
 
-**Triage by** picks the feature along the bottom; **Colour bars by** splits each bar, for example by tier. With no patch the histogram reads "No QC data yet."; a feature with nothing measured reads "No values for {feature} on this patch."
+**Triage by** picks the feature along the bottom; **Colour bars by** splits each bar, for example by tier. After a comparison with another run it also offers the plot's **Overlap with** entry, stacked in the plot's match colours (see QC Features). With no patch the histogram reads "No QC data yet."; a feature with nothing measured reads "No values for {feature} on this patch."
 
 On **qc_score** three lines sort the labels into tiers (a higher qc_score is worse):
 
@@ -120,6 +132,9 @@ Make sure **Lasso** is on and the loop closes around some points. The count show
 
 ### Assign stays grey
 Nothing is selected, or Step 3 is busy (look at the status line under the busy bar).
+
+### A Mark button in the navigator says it was refused
+While **Commit Triage** is saving, the table is being written and a mark would be lost. The line under the plot says "Mark refused: Commit Triage is still saving. Try again when it has finished." Mark again once the save is done.
 
 ### Tier changes are lost on reload
 Tier changes live in memory until you press **Commit Triage** or **Save Curation**.

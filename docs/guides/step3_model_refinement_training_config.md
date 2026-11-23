@@ -32,22 +32,40 @@ Pick a **Preset** and click **Apply** to fill Epochs, Learning rate, Batch size 
 | quick | "100 epochs, learning rate 0.01, batch 32. A larger batch runs faster; use it to check whether new curated data helped before a long run." |
 | thorough | "1000 epochs, learning rate 0.01, batch 16. A long run for a final model; it is slow, so use it sparingly." |
 | finetune | "500 epochs, learning rate 0.001 (ten times lower). Small steps keep what the starting model already knows; pair it with an Init that starts from a trained model." |
-| dense_tissue | "750 epochs, batch 8, the minimum-masks filter off. A smaller batch needs less memory on crowded slices, and every fragment stays in as training signal." |
-| stratified_epithelia | "500 epochs, learning rate 0.01, channels green (segment) and red (auxiliary). Changes nothing if you have not moved the channel defaults." |
+| Dense tissue | "750 epochs, batch 8, the minimum-masks filter off. A smaller batch needs less memory on crowded slices, and every fragment stays in as training signal." |
+| Stratified epithelia | "500 epochs, learning rate 0.01, channels green (segment) and red (helper). Changes nothing if you have not moved the channel defaults." |
 
 ---
 
 ## Channels (in Advanced Parameters)
 
-Two combo boxes — one for each Cellpose channel slot. Cellpose expects two channels: one for **membranes** and one for **nuclei**.
+Two combo boxes — one for each Cellpose channel slot: **Channel to segment** and **Helper channel**.
 
-> **What to pick:** put the channel index that matches your **membrane stain** in slot 1, and your **nuclei stain** in slot 2.
+> **What to pick:** in **Channel to segment**, put the channel the model should segment: the membrane or cytoplasm stain for a cell model, the nuclear stain (DAPI, Hoechst) for a nuclei model. **Helper channel** is optional: for a cell model it is usually the nuclear stain, which helps tell touching cells apart; a nuclei model needs none (`0: none`).
 >
 > Indices follow Cellpose's convention: `0 = gray`, `1 = red`, `2 = green`, `3 = blue` — they refer to physical channel position in your image, not biological meaning.
 >
-> **Default `[2, 1]`:** green = membrane, red = nuclei. Adjust based on your imaging setup.
+> **Default `[2, 1]`:** green to segment, red as the helper. Adjust based on your imaging setup.
 >
-> **Single-channel data:** pick `0: gray` for slot 1 and `0: none` for slot 2.
+> **Single-channel data:** pick `0: gray` in Channel to segment and `0: none` in Helper channel.
+
+---
+
+## The other Advanced Parameters
+
+**Advanced Parameters** is a collapsed block under Batch size (click its title to open it). Besides the two channel boxes it holds:
+
+| Control | What it does |
+|---|---|
+| **Weight decay** | Holds the model back from fitting a small training set too closely. Default 0.00001. Raise it (to 0.0001, say) only if the train loss drops while the validation loss climbs. |
+| **Momentum** | How much each training step carries on from the steps before it, which smooths the learning. Default 0.9; rarely needs changing. It only matters while **Use SGD** is ticked. |
+| **Min train masks** | Leaves out training slices with fewer cells than this. Default 0 (keep every slice). |
+| **Seed** | 0 (the default) gives each run fresh randomness. Any other number repeats the same shuffling and augmentation, so repeated runs come out close; it does not make them identical and does not fix the train / validation split. |
+| **Normalize input** | Evens out each slice's brightness before training (on by default). Keep it as it was during Step 2 training. |
+| **Rescale to training diameter** | Resizes slices so cells match the size the model expects (on by default). Leave it on unless all your cells are the same size. |
+| **Use SGD (instead of RAdam)** | Which learning method is used (on by default). SGD can be steadier when fine-tuning on a small set. |
+| **Recompute flows** | Works out the model's training targets from the masks again during training (off by default). |
+| **Device** | **GPU** (the default) or **CPU**. Training on the CPU is 10–100 times slower; use it only on a computer without a suitable graphics card. |
 
 ---
 
@@ -112,7 +130,7 @@ When ON (default), the splitter groups **contiguous adjacent slices** into chunk
 
 Adjacent Z slices in your volume are *almost identical* (same cells, one voxel apart). If slice 200 lands in train and slice 201 lands in val, the model has effectively seen the val data already during training — val loss becomes meaninglessly low.
 
-Keeping neighbouring slices together puts slices 200–209 *together* in either train or val, so the nearest train slice to a val slice is ≥ 10 indices away — far enough to be a genuinely separate prediction problem.
+Keeping neighbouring slices together puts slices 200–209 *together* in either train or val, so most val slices sit several slices away from any train slice. Only the slices at the two ends of a val chunk can still touch a train slice in the next chunk, so far fewer near-copies leak across than with a random shuffle.
 
 ### Worked example: 2 patches, no cap, Fine-tune Lateral
 

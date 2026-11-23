@@ -221,7 +221,7 @@ class _CurationCallbackHarness:
     def _commit_curation_action(self, action_type, label_id, description,
                                 *, roi_slices=None, old_roi_data=None,
                                 df_updater=None, extra=None,
-                                marks_stale=None):
+                                marks_stale=None, push=True):
         """Simplified version: just run the updater and mark dirty."""
         if df_updater is not None:
             df_updater()
@@ -254,6 +254,9 @@ _BOUND_METHODS = [
     "_on_commit_triage_finished",
     "_commit_triage_partial_failure_refresh",
     "_maybe_lift_for_save",
+    # a half-size save marks rows whose cell left the mask deleted
+    "_reconcile_rows_with_layer",
+    "_halfsize_gone_ids",
     "_scaled_centroid_from_row",  # D2.1 helper used by _build_flagged_label_items
     "_current_downsample_factor",  # D2.4 helper used by _scaled_centroid_from_row
     # 2026-05-17 diagnostic: every curation callback ends by calling
@@ -266,6 +269,9 @@ _BOUND_METHODS = [
     "_busy_show",
     "_busy_progress",
     "_busy_hide",
+    # a finished extract starts both undo stacks over
+    "_clear_all_undo_stacks",
+    "_drop_tier_undo",
 ]
 
 for _name in _BOUND_METHODS:

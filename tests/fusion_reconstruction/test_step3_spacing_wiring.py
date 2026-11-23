@@ -1007,3 +1007,70 @@ def test_the_cell_width_reads_the_same_spacing(w, tmp_path, monkeypatch):
     monkeypatch.setattr(CW, "ensure_cell_width_lines", spy)
     c._update_cell_width_line()
     assert seen[-1] == (P.S3_CELL_WIDTH_PX.format(px=16, um="0.50"), "")
+
+
+def test_the_annotator_context_names_where_the_spacing_came_from(
+        w, tmp_path, monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    c._qc_view_patch_name = "A.tif"
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing_source"] == "patch"
+    assert ctx["spacing"] == tuple(VOXEL_A)
+    c._qc_view_patch_name = "B.tif"
+    c._qc_settings["spacing"] = (1.0, 0.4, 0.4)
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing_source"] == "qc_settings"
+    assert ctx["spacing"] == (1.0, 0.4, 0.4)
+    c._qc_settings["spacing"] = None
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing_source"] == "unknown"
+    assert ctx["spacing"] == (1.0, 1.0, 1.0)
+    # the other keys are untouched by the new one
+    assert {"workspace", "patch_name", "run_id", "run_epoch",
+            "downsample_factor", "spacing"} <= set(ctx)
+
+
+def test_the_annotator_context_scales_spacing_by_the_downsample(
+        w, tmp_path, monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    c._qc_view_patch_name = "A.tif"
+    monkeypatch.setattr(c, "_current_downsample_factor", lambda *a: 2)
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing"] == tuple(v * 2 for v in VOXEL_A)
+    assert ctx["downsample_factor"] == 2
+    assert ctx["spacing_source"] == "patch"
+    monkeypatch.setattr(c, "_current_downsample_factor", lambda *a: 1)
+    assert c._on_annotator_reshape_context()["spacing"] == tuple(VOXEL_A)
+
+
+def test_a_half_size_patch_of_0_5_um_is_known_to_add_and_refine(
+        w, tmp_path, monkeypatch):
+    """A 0.5 um patch in a half-size session reaches the annotator as
+    (1, 1, 1) from the patch -- and Add and Refine both call it known."""
+    import types
+
+    from napari_epicycle.annotator.curation_3d_widget import (
+        Curation3DAnnotator,
+    )
+
+    c = _load(w, tmp_path, monkeypatch)
+    c.state_manager.set_patch_spacing("B.tif", [0.5, 0.5, 0.5], "user")
+    c._qc_view_patch_name = "B.tif"
+    monkeypatch.setattr(c, "_current_downsample_factor", lambda *a: 2)
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing"] == (1.0, 1.0, 1.0)
+    assert ctx["spacing_source"] == "patch"
+    fake = types.SimpleNamespace(_reshape_context=lambda: dict(ctx))
+    assert Curation3DAnnotator._refine_spacing_known(fake) is True
+    assert Curation3DAnnotator._add_spacing_unknown(fake) is False
+
+
+def test_an_unknown_spacing_stays_unknown_when_downsampled(
+        w, tmp_path, monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    c._qc_view_patch_name = "B.tif"
+    c._qc_settings["spacing"] = None
+    monkeypatch.setattr(c, "_current_downsample_factor", lambda *a: 2)
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing"] == (1.0, 1.0, 1.0)
+    assert ctx["spacing_source"] == "unknown"

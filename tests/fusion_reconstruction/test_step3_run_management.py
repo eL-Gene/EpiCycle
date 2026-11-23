@@ -745,6 +745,88 @@ class TestMaterializeRunModel:
         }
 
 
+    # -- the training configs go with the weights (a new run reads its
+    # trained channels from its OWN copy) --------------------------------
+
+    @staticmethod
+    def _config(path, codes):
+        path.write_text(json.dumps({"hyperparameters": {"channels": codes}}),
+                        encoding="utf-8")
+
+    def _refined_source(self, ws, lat_codes=None, ax_codes=None):
+        src_lat = p.refined_model_weights_path(ws, "src", "lateral")
+        src_ax = p.refined_model_weights_path(ws, "src", "axial")
+        src_lat.parent.mkdir(parents=True, exist_ok=True)
+        src_lat.write_bytes(b"LAT")
+        src_ax.write_bytes(b"AX")
+        if lat_codes is not None:
+            self._config(src_lat.parent / "lateral_training_config.json",
+                         lat_codes)
+        if ax_codes is not None:
+            self._config(src_ax.parent / "axial_training_config.json",
+                         ax_codes)
+        return man.init_spec_step3_refined(source_step3_bundle="src")
+
+    def test_each_bucket_copies_its_own_training_config(self, tmp_path):
+        from napari_epicycle.ui_shell._model_files import (
+            read_trained_channels,
+        )
+        spec = self._refined_source(tmp_path, [2, 1], [3, 0])
+        sel = rm.materialize_run_model(tmp_path, "cells", spec)
+        d = p.refined_model_dir(tmp_path, rm.INIT_MODEL_NAME, "cells")
+        assert (d / "lateral_training_config.json").is_file()
+        assert (d / "axial_training_config.json").is_file()
+        assert read_trained_channels(sel["lateral_model_path"]) == [2, 1]
+        assert read_trained_channels(sel["axial_model_path"]) == [3, 0]
+
+    def test_a_bucket_never_takes_its_siblings_config(self, tmp_path):
+        from napari_epicycle.ui_shell._model_files import (
+            read_trained_channels,
+        )
+        spec = self._refined_source(tmp_path, [2, 1], None)
+        sel = rm.materialize_run_model(tmp_path, "cells", spec)
+        d = p.refined_model_dir(tmp_path, rm.INIT_MODEL_NAME, "cells")
+        assert (d / "lateral_training_config.json").is_file()
+        assert not (d / "axial_training_config.json").exists()
+        assert read_trained_channels(sel["axial_model_path"]) is None
+
+    def test_a_source_with_no_config_copies_none(self, tmp_path):
+        spec = self._refined_source(tmp_path)
+        rm.materialize_run_model(tmp_path, "cells", spec)
+        d = p.refined_model_dir(tmp_path, rm.INIT_MODEL_NAME, "cells")
+        assert not list(d.glob("*_training_config.json"))
+
+    def test_a_step2_model_config_is_copied_under_the_bucket_name(
+            self, tmp_path):
+        from napari_epicycle.ui_shell._model_files import (
+            read_trained_channels,
+        )
+        folder = tmp_path / "ext"
+        folder.mkdir()
+        ext = folder / "Cell_lateral_round_01"
+        ext.write_bytes(b"EXT")
+        self._config(folder / f"{ext.name}_training_config.json", [1, 0])
+        sel = rm.materialize_run_model(
+            tmp_path, "nuc", man.init_spec_browse(external_path=str(ext)))
+        assert read_trained_channels(sel["lateral_model_path"]) == [1, 0]
+        assert read_trained_channels(sel["axial_model_path"]) == [1, 0]
+
+    def test_a_failed_config_copy_rolls_the_bundle_back(self, tmp_path,
+                                                         monkeypatch):
+        spec = self._refined_source(tmp_path, [2, 1], [2, 1])
+        real = rm._atomic_copy
+
+        def copy(src, dst):
+            if str(dst).endswith("_training_config.json"):
+                raise OSError("disk full")
+            return real(src, dst)
+        monkeypatch.setattr(rm, "_atomic_copy", copy)
+        with pytest.raises(OSError):
+            rm.materialize_run_model(tmp_path, "cells", spec)
+        assert not p.refined_model_dir(
+            tmp_path, rm.INIT_MODEL_NAME, "cells").exists()
+
+
 # ---------------------------------------------------------------------------
 # map_model_source_mode_to_state — vocabulary mapping (audit MED-1)
 # ---------------------------------------------------------------------------

@@ -210,36 +210,88 @@ class TestWorkflowShellStepHooks:
 
 
 class TestFusionControllerOnStepExit:
-    """FusionReconstructionController.on_step_exit calls cleanup methods."""
+    """FusionReconstructionController.on_step_exit cleans up Step 3.
 
-    def test_on_step_exit_calls_clear_methods(self):
-        """on_step_exit should call the old cleanup methods."""
-        import inspect
+    These drive the real ``on_step_exit`` on a bare controller: the two
+    refusal checks are stubbed to let the user leave, the dock lookup is
+    faked, and the layer clears and the lifecycle manager record what they
+    were asked to do.
+    """
+
+    @pytest.fixture
+    def exited(self, monkeypatch):
+        import napari_epicycle.annotator.launcher as launcher_mod
         from napari_epicycle.fusion_reconstruction.controller import (
             FusionReconstructionController,
         )
-        source = inspect.getsource(FusionReconstructionController.on_step_exit)
-        assert "_clear_population_grid" in source
-        assert "_clear_qc_view_layers" in source
-        assert "_clear_curation_layers" in source
 
-    def test_on_step_exit_calls_clear_step_on_manager(self):
-        """on_step_exit should call layer_lifecycle_manager.clear_step."""
-        import inspect
-        from napari_epicycle.fusion_reconstruction.controller import (
-            FusionReconstructionController,
-        )
-        source = inspect.getsource(FusionReconstructionController.on_step_exit)
-        assert 'clear_step("step3")' in source
+        calls = []
+        looked_up = []
 
-    def test_on_step_exit_closes_annotator_dock(self):
-        """on_step_exit should attempt to close the 3D curation annotator dock."""
-        import inspect
-        from napari_epicycle.fusion_reconstruction.controller import (
-            FusionReconstructionController,
+        class _FakeDock:
+            closed = False
+
+            def close(self):
+                self.closed = True
+                calls.append("dock_close")
+
+        dock = _FakeDock()
+
+        def _fake_find(viewer, title):
+            looked_up.append(title)
+            return dock
+
+        monkeypatch.setattr(launcher_mod, "_find_dock_by_title", _fake_find)
+
+        class _RecordingLLM:
+            def __init__(self):
+                self.cleared = []
+
+            def clear_step(self, step):
+                self.cleared.append(step)
+                calls.append(f"clear_step:{step}")
+
+        c = FusionReconstructionController.__new__(
+            FusionReconstructionController
         )
-        source = inspect.getsource(FusionReconstructionController.on_step_exit)
-        assert "EpiCycle 3D Curation Annotator" in source
+        c.viewer = MagicMock()
+        c.layer_lifecycle_manager = _RecordingLLM()
+        c._staged_annotator_work = lambda: False
+        c._guard_unsaved_changes = lambda: True
+        c._reset_qc_plot_area = lambda *a, **k: None
+        c._stop_step3_thumbs = lambda: None
+        c._stop_tier_counts = lambda: None
+        c._close_provenance_windows = lambda: None
+        c._close_prediction_windows = lambda: None
+        c._clear_qc_view_layers = lambda: calls.append("clear_qc")
+        c._clear_curation_layers = lambda: calls.append("clear_curation")
+
+        result = c.on_step_exit()
+        assert result is not False, "the user should be let out of Step 3"
+        return {"ctrl": c, "calls": calls, "dock": dock,
+                "looked_up": looked_up}
+
+    def test_on_step_exit_calls_clear_methods(self, exited):
+        """on_step_exit runs both layer clears, QC view first, after the
+        dock is closed.  (The population-grid clear went with population
+        mode in May 2026.)"""
+        calls = exited["calls"]
+        assert [x for x in calls if x.startswith("clear_")
+                and not x.startswith("clear_step")] == [
+            "clear_qc", "clear_curation",
+        ]
+        assert calls.index("dock_close") < calls.index("clear_qc"), calls
+
+    def test_on_step_exit_calls_clear_step_on_manager(self, exited):
+        """on_step_exit asks the layer lifecycle manager to clear Step 3,
+        once, after the old clears."""
+        assert exited["ctrl"].layer_lifecycle_manager.cleared == ["step3"]
+        assert exited["calls"][-1] == "clear_step:step3", exited["calls"]
+
+    def test_on_step_exit_closes_annotator_dock(self, exited):
+        """on_step_exit closes the 3D curation annotator dock."""
+        assert exited["looked_up"] == ["EpiCycle 3D Curation Annotator"]
+        assert exited["dock"].closed
 
 
 # ---------------------------------------------------------------------------

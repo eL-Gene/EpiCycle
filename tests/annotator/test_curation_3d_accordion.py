@@ -1725,6 +1725,7 @@ def _make_delete_detection_annotator(volume_data=None, label_id=5):
     ann._zero_label_in_volume = types.MethodType(
         Curation3DAnnotator._zero_label_in_volume, ann
     )
+    ann._snapshot_label_roi = Curation3DAnnotator._snapshot_label_roi
     ann._all_subviewer_label_layers = lambda: []
     ann._pending_undo_sources = set()
     ann._set_selected_label_all = lambda lid: None  # no-op stub
@@ -4031,3 +4032,240 @@ class TestLauncherStoresNavigatorDock:
         ann._navigator_dock = fake_dock
 
         assert ann._navigator_dock is fake_dock
+
+
+# ---------------------------------------------------------------------------
+# Reopen hygiene: the main labels layer outlives the annotator
+# ---------------------------------------------------------------------------
+
+
+class TestReopenLeavesNoStaleHooksOnMainLayer:
+    @staticmethod
+    def _main_layer():
+        from napari.layers import Labels
+        from packages.epicycle_annotator.sync import lock_brush_size_to_1
+
+        layer = Labels(np.zeros((4, 8, 8), np.int32), name="curation_3d_run1")
+        lock_brush_size_to_1(layer)
+        return layer
+
+    @staticmethod
+    def _counts(layer):
+        return {
+            n: len(getattr(layer.events, n).callbacks)
+            for n in ("brush_size", "n_edit_dimensions", "colormap", "selected_label")
+        }
+
+    def test_close_cleanup_disconnects_even_when_early_step_raises(self):
+        from unittest import mock
+
+        from napari_epicycle.annotator.curation_3d_widget import Curation3DAnnotator
+        from napari_epicycle.annotator.native_multiview_widget import (
+            NativeMultiviewAnnotator,
+        )
+        from packages.epicycle_annotator.sync import LabelSyncManager
+
+        main = self._main_layer()
+        base = self._counts(main)
+        vms = [types.SimpleNamespace(layers=[]) for _ in range(3)]
+        viewer = types.SimpleNamespace(layers=[main])
+        sync = LabelSyncManager(
+            main_viewer=viewer, viewer_model_xy=vms[0], viewer_model_xz=vms[1],
+            viewer_model_yz=vms[2], qt_viewer_xy=None, qt_viewer_xz=None,
+            qt_viewer_yz=None,
+        )
+        sync.connect_main_label_sync(main)
+        sync.connect_label_sync(main)
+        assert self._counts(main) != base
+
+        ann = mock.MagicMock()
+        ann._close_cleanup_done = False
+        ann.viewer = viewer
+        ann.sync_manager = sync
+        ann.subviewer_manager = None
+        ann._active_labels_name = "curation_3d_run1"
+        ann._smooth_running = True
+        ann._reject_smooth.side_effect = RuntimeError("boom in step 1")
+        for name in ("_close_cleanup",):
+            setattr(ann, name, types.MethodType(
+                getattr(Curation3DAnnotator, name), ann))
+        ann._disconnect_viewer_events = types.MethodType(
+            NativeMultiviewAnnotator._disconnect_viewer_events, ann)
+        ann._disconnect_label_handlers = types.MethodType(
+            Curation3DAnnotator._disconnect_label_handlers, ann)
+        ann._navigator_widget = None
+        ann._interp_snapshot = None
+        ann._split_running = False
+        ann._isolation_active = False
+
+        try:
+            ann._close_cleanup()
+        except Exception:
+            pass
+        assert self._counts(main) == base
+
+    def test_refine_selection_hook_rebinds_to_live_annotator(self):
+        from napari_epicycle.annotator.curation_3d_widget import Curation3DAnnotator
+
+        main = self._main_layer()
+
+        class _Ann:
+            def __init__(self):
+                self.fired = 0
+                self.viewer = types.SimpleNamespace(layers=[main])
+                self._active_labels_name = main.name
+
+            def _layer_by_name(self, layers, name):
+                return main
+
+            def _on_refine_selection_changed(self, *_a):
+                self.fired += 1
+
+        hook = Curation3DAnnotator._hook_refine_selection
+        old, new = _Ann(), _Ann()
+        hook(old)
+        # old annotator closes without resetting anything (aborted close)
+        hook(new)
+        main.selected_label = 5
+        assert new.fired == 1
+        assert old.fired == 0
+        hook(new)  # idempotent for the owner
+        main.selected_label = 6
+        assert new.fired == 2
+
+    def test_label_handler_disconnect_unhooks_refine_selection(self):
+        from napari_epicycle.annotator.curation_3d_widget import Curation3DAnnotator
+
+        main = self._main_layer()
+        base = self._counts(main)
+
+        class _Ann:
+            viewer = types.SimpleNamespace(layers=[main])
+            _active_labels_name = main.name
+            _show_sel_cb = None
+
+            def _layer_by_name(self, layers, name):
+                return main
+
+            def _on_refine_selection_changed(self, *_a):
+                pass
+
+            def _on_labels_data_changed(self, *_a):
+                pass
+
+            def _on_labels_painted(self, *_a):
+                pass
+
+            def _all_subviewer_label_layers(self):
+                return []
+
+        a = _Ann()
+        Curation3DAnnotator._hook_refine_selection(a)
+        assert self._counts(main)["selected_label"] == base["selected_label"] + 1
+        Curation3DAnnotator._disconnect_label_handlers(a)
+        assert self._counts(main) == base
+        assert main._epicycle_refine_sel_hooked is False
+
+    def test_one_raising_reject_skips_only_its_own_step(self):
+        from unittest import mock
+
+        from napari_epicycle.annotator.curation_3d_widget import Curation3DAnnotator
+        from napari_epicycle.annotator.native_multiview_widget import (
+            NativeMultiviewAnnotator,
+        )
+
+        ann = mock.MagicMock()
+        ann._close_cleanup_done = False
+        ann.viewer = types.SimpleNamespace(layers=[])
+        ann.sync_manager = None
+        ann.subviewer_manager = None
+        ann._active_labels_name = "x"
+        ann._smooth_running = False
+        ann._split_running = True
+        ann._reject_split.side_effect = RuntimeError("boom")
+        ann._interp_snapshot = None
+        ann._isolation_active = False
+        ann._isolation_proxy_active = True
+        ann._navigator_widget = None
+        ann._batch_running = False
+        ann._batch_staged = False
+        ann._batch_refine_dialog = None
+        ann._merge_dialog = None
+        ann._add_running = False
+        ann._close_cleanup = types.MethodType(
+            Curation3DAnnotator._close_cleanup, ann)
+        ann._disconnect_viewer_events = types.MethodType(
+            NativeMultiviewAnnotator._disconnect_viewer_events, ann)
+        ann._disconnect_label_handlers = types.MethodType(
+            Curation3DAnnotator._disconnect_label_handlers, ann)
+        ann._close_cleanup()
+        ann._remove_isolation_proxy.assert_called_once()
+        ann._alive_check_timer.stop.assert_called_once()
+        ann._teardown_reshape_for_switch.assert_called_once()
+
+    def test_closed_annotator_is_not_kept_alive_by_the_layer(self):
+        import gc
+        import weakref
+
+        from napari_epicycle.annotator.curation_3d_widget import Curation3DAnnotator
+
+        main = self._main_layer()
+
+        class _Ann:
+            viewer = types.SimpleNamespace(layers=[main])
+            _active_labels_name = main.name
+            _show_sel_cb = None
+
+            def _layer_by_name(self, layers, name):
+                return main
+
+            def _on_refine_selection_changed(self, *_a):
+                pass
+
+            def _on_labels_data_changed(self, *_a):
+                pass
+
+            def _on_labels_painted(self, *_a):
+                pass
+
+            def _all_subviewer_label_layers(self):
+                return []
+
+        a = _Ann()
+        Curation3DAnnotator._hook_refine_selection(a)
+        Curation3DAnnotator._disconnect_label_handlers(a)
+        assert main._epicycle_refine_sel_cb is None
+        ref = weakref.ref(a)
+        del a
+        gc.collect()
+        assert ref() is None
+
+        b = _Ann()  # leaky close: no disconnect; layer must not pin it
+        Curation3DAnnotator._hook_refine_selection(b)
+        ref = weakref.ref(b)
+        del b
+        gc.collect()
+        assert ref() is None
+
+
+class TestUpdateSplitUiDuringClose:
+    def test_none_status_label_does_not_raise(self, capsys):
+        from napari_epicycle.annotator.curation_3d_widget import Curation3DAnnotator
+
+        ann = types.SimpleNamespace(
+            _interp_status_label=None,
+            _get_advanced_features_widget=lambda: None,
+        )
+        Curation3DAnnotator._update_split_ui(ann, status_text="Split cancelled")
+        assert "[CLOSE-CLEANUP]" not in capsys.readouterr().out
+
+    def test_live_status_label_still_written(self):
+        from napari_epicycle.annotator.curation_3d_widget import Curation3DAnnotator
+
+        seen = []
+        ann = types.SimpleNamespace(
+            _interp_status_label=types.SimpleNamespace(setText=seen.append),
+            _get_advanced_features_widget=lambda: None,
+        )
+        Curation3DAnnotator._update_split_ui(ann, status_text="hello")
+        assert seen == ["hello"]

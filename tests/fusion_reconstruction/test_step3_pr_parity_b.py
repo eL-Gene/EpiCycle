@@ -387,19 +387,19 @@ def _rec(kind="bootstrap", ch=(2, 1), run="wound-v2"):
 def test_the_trained_line_names_the_roles_and_the_step2_run():
     text, known = R.trained_line(_rec(), _rec())
     assert known
-    assert text == ("Trained on 2 channels: membrane (1), nuclei (0) · "
+    assert text == ("Trained on segment 2: green, helper 1: red · "
                     "Step 2 run “wound-v2”.")
 
 
 def test_one_channel_reads_singular():
     text, known = R.trained_line(_rec(ch=(1, 0)), _rec(ch=(1, 0)))
-    assert known and text.startswith("Trained on 1 channel: membrane (0) · ")
+    assert known and text.startswith("Trained on segment 1: red · ")
 
 
 def test_a_refined_bundle_names_no_step2_run():
     text, known = R.trained_line(_rec("refined", (2, 1), "mine"),
                                  _rec("refined", (2, 1), "mine"))
-    assert known and text == "Trained on 2 channels: membrane (1), nuclei (0)."
+    assert known and text == "Trained on segment 2: green, helper 1: red."
 
 
 def test_a_domain_specialized_model_names_its_step2_run():
@@ -433,22 +433,22 @@ def test_two_models_trained_on_different_channels_name_both_sets():
     text, known = R.trained_line(_rec(ch=(2, 1), run="a"),
                                  _rec(ch=(1, 0), run="b"))
     assert known and text == (
-        "Trained on different channels: lateral membrane (1), nuclei (0) · "
-        "axial membrane (0). Step 2 runs “a” / “b”.")
+        "Trained on lateral segment 2: green, helper 1: red · "
+        "axial segment 1: red. Step 2 runs “a” / “b”.")
 
 
 def test_different_channels_of_one_run_and_of_refined_models():
     text, _ = R.trained_line(_rec(ch=(2, 1), run="a"), _rec(ch=(1, 0), run="a"))
-    assert text.endswith("axial membrane (0). Step 2 run “a”.")
+    assert text.endswith("axial segment 1: red. Step 2 run “a”.")
     text, _ = R.trained_line(_rec("refined", (2, 1), "m"),
                              _rec("refined", (1, 0), "m"))
-    assert text == ("Trained on different channels: lateral membrane (1), "
-                    "nuclei (0) · axial membrane (0).")
+    assert text == ("Trained on lateral segment 2: green, helper 1: red · "
+                    "axial segment 1: red.")
 
 
 def test_two_different_step2_runs_name_none():
     text, _ = R.trained_line(_rec(run="a"), _rec(run="b"))
-    assert text == "Trained on 2 channels: membrane (1), nuclei (0)."
+    assert text == "Trained on segment 2: green, helper 1: red."
 
 
 def test_the_card_shows_the_line_for_a_step2_model(lay, ws):
@@ -459,7 +459,7 @@ def test_the_card_shows_the_line_for_a_step2_model(lay, ws):
     w.axial_model_path.setText(str(model))
     c._refresh_model_status()
     lbl = w.pr_model_trained_label
-    assert lbl.text() == ("Trained on 2 channels: membrane (1), nuclei (0)"
+    assert lbl.text() == ("Trained on segment 2: green, helper 1: red"
                           " · Step 2 run “cells”.")
     assert not lbl.isHidden()
     from napari_epicycle.ui_shell.theme import DIM_LABEL_STYLE
@@ -489,7 +489,7 @@ def test_the_trained_line_wraps_and_keeps_the_whole_sentence_as_tooltip(lay):
     w.resize(700, 900)
     w.show()
     text = PT.S3_MODEL_TRAINED_ON.format(
-        n=2, names="membrane (1), nuclei (0)",
+        n=2, names="segment 2: green, helper 1: red",
         run=PT.S3_MODEL_TRAINED_RUN.format(run="w" * 44))
     w.show_pr_trained(text, True)
     lbl = w.pr_model_trained_label
@@ -500,7 +500,7 @@ def test_the_trained_line_wraps_and_keeps_the_whole_sentence_as_tooltip(lay):
     usual = lbl.heightForWidth(228) // line
     assert 2 <= usual <= 3, usual
     differ = PT.S3_MODEL_TRAINED_DIFFER.format(
-        lat="membrane (1), nuclei (0)", ax="membrane (0)",
+        lat="segment 2: green, helper 1: red", ax="segment 1: red",
         runs=PT.S3_MODEL_TRAINED_DIFFER_RUNS.format(
             lat="w" * 44, ax="w" * 44 + "-b"))
     w.show_pr_trained(differ, True)
@@ -536,10 +536,10 @@ def test_the_guides_quote_what_brick_b_added():
     model = {norm(q) for q in quotes(MODEL_GUIDE)}
     assert norm(PT.S3_MODEL_TRAINED_UNKNOWN) in model
     assert norm(PT.S3_MODEL_TRAINED_DIFFER.format(
-        lat="membrane (1), nuclei (0)", ax="membrane (0)",
+        lat="segment 2: green, helper 1: red", ax="segment 1: red",
         runs=PT.S3_MODEL_TRAINED_DIFFER_RUNS.format(lat="a", ax="b"))) in model
     assert norm(PT.S3_MODEL_TRAINED_ON.format(
-        n=2, names="membrane (1), nuclei (0)",
+        n=2, names="segment 2: green, helper 1: red",
         run=PT.S3_MODEL_TRAINED_RUN.format(run="wound-v2"))) in model
     assert norm(PT.S3_UNUSED_KNOBS_NOTE) in {norm(q) for q in quotes(GUIDE)}
     patches = {norm(q) for q in quotes(PATCHES_GUIDE)}
@@ -603,8 +603,8 @@ def test_m1_the_card_names_both_sets_for_a_refined_bundle(lay, ws):
     w.axial_model_path.setText(str(ax))
     c._refresh_model_status()
     assert w.pr_model_trained_label.text().startswith(
-        "Trained on different channels: lateral membrane (1), nuclei (0) · "
-        "axial membrane (0).")
+        "Trained on lateral segment 2: green, helper 1: red · "
+        "axial segment 1: red.")
 
 
 def test_m2_a_missing_axial_config_never_takes_the_lateral_one(lay, ws):
@@ -638,16 +638,40 @@ def _fits_two_lines(w):
 
 
 def test_m4_the_skipped_clause_survives_a_narrow_foot(lay):
+    """The fit rule is the foot's TWO lines: the statuses stay while the
+    whole line fits in two lines, and are the first thing to go when it
+    would need a third; the skipped clause itself survives.  The narrow
+    width is found, not pinned: offscreen glyph widths differ by platform."""
     w, c, statuses = lay
     _models(w, c)
-    w.pipeline_status_label.setFixedWidth(480)   # ~300 px in the real font (offscreen glyphs are ~1.6x wide)
     rows = {"a.tif": "unprocessed", "b.tif": "unprocessed",
             "c.tif": "unprocessed", "d.tif": "accepted",
             "e.tif": "finalized"}
-    _tick_protected(w, c, statuses, rows, set(rows))
-    text = w.pipeline_status_label.text()
-    assert "…" not in text, text
+    _tick_protected(w, c, statuses, rows, set(rows))     # the 1400 px foot
+    whole = _foot(w)
+    with_statuses = PT.S3_GATE_SKIPPED_PLURAL.format(
+        k=2, statuses=PT.S3_GATE_STATUS_JOIN.join(("accepted", "finalized")))
+    assert with_statuses in whole, whole
+    short = whole.replace(with_statuses,
+                          PT.S3_GATE_SKIPPED_SHORT_PLURAL.format(k=2))
+    lbl = w.pipeline_status_label
+    # a foot where the whole line wraps once: the statuses are kept
+    lbl.setFixedWidth(480)
+    c._refresh_pr_foot_gates()
+    if w.pr_status_fits(whole):
+        assert _foot(w) == whole
+    # a foot too narrow for the whole line in two lines
+    for width in range(480, 199, -10):
+        lbl.setFixedWidth(width)
+        if not w.pr_status_fits(whole):
+            break
+    else:
+        pytest.fail("the whole line fits two lines even at 200 px")
+    assert w.pr_status_fits(short), width
+    c._refresh_pr_foot_gates()
+    assert "…" not in lbl.text(), lbl.text()
     full = _foot(w)
+    assert full == short, (width, full)
     assert "2 protected" in full and "skipped" in full
     # the statuses were the first thing to go
     assert "accepted" not in full and "finalized" not in full
@@ -684,10 +708,12 @@ def test_l4_grayscale_is_said_as_such():
     text, known = R.trained_line(_rec(ch=(0, 0), run=None),
                                  _rec(ch=(0, 0), run=None))
     assert known and text == PT.S3_MODEL_TRAINED_GRAY.format(run="")
-    assert "membrane" not in text
+    assert "segment" not in text
     text, _ = R.trained_line(_rec("refined", (0, 2), "m"),
                              _rec("refined", (0, 2), "m"))
-    assert text == "Trained on 2 channels: grayscale, nuclei (1)."
+    # the helper is ignored on gray: none is named
+    assert text == PT.S3_MODEL_TRAINED_GRAY.format(run="")
+    assert "helper" not in text
 
 
 def test_l6_a_pretrained_pick_refreshes_the_cards_lines(lay, ws):

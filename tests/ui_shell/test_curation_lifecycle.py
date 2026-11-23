@@ -129,18 +129,62 @@ class TestTrashCanDeletion:
 
         assert removed == [("curation_3d_abc", "step3/curation")]
 
-    def test_controller_handler_closes_annotator_on_curation_delete(self):
+    def test_controller_handler_closes_annotator_on_curation_delete(
+        self, monkeypatch
+    ):
         """_on_layer_externally_removed should close the annotator dock
-        when a step3/curation layer is deleted."""
-        import inspect
+        when a step3/curation layer is deleted.
+
+        Calls the real handler on a bare controller with a fake dock lookup
+        and checks the dock was closed.  The layers are already going away
+        with the deletion, so the handler must not clear any layers itself.
+        """
+        import napari_epicycle.annotator.launcher as launcher_mod
         from napari_epicycle.fusion_reconstruction.controller import (
             FusionReconstructionController,
         )
-        source = inspect.getsource(
-            FusionReconstructionController._on_layer_externally_removed
+
+        looked_up = []
+
+        class _FakeDock:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        dock = _FakeDock()
+
+        def _fake_find(viewer, title):
+            looked_up.append(title)
+            return dock
+
+        monkeypatch.setattr(launcher_mod, "_find_dock_by_title", _fake_find)
+
+        class _RecordingLLM:
+            def __init__(self):
+                self.cleared = []
+
+            def clear_step(self, step):
+                self.cleared.append(step)
+
+        cleared = []
+        logs = []
+        ctrl = FusionReconstructionController.__new__(
+            FusionReconstructionController
         )
-        assert "EpiCycle 3D Curation Annotator" in source
-        assert "dock.close()" in source
+        ctrl.viewer = MagicMock()
+        ctrl.layer_lifecycle_manager = _RecordingLLM()
+        ctrl._clear_qc_view_layers = lambda: cleared.append("qc")
+        ctrl._clear_curation_layers = lambda: cleared.append("curation")
+        ctrl._append_log = logs.append
+
+        ctrl._on_layer_externally_removed("curation_3d_x", "step3/curation")
+
+        assert looked_up == ["EpiCycle 3D Curation Annotator"]
+        assert dock.closed, "deleting a curation layer must close the dock"
+        assert cleared == [], "close-only: no layer clears from this handler"
+        assert ctrl.layer_lifecycle_manager.cleared == []
+        assert any("curation_3d_x" in m for m in logs), logs
 
     def test_controller_handler_ignores_non_curation_context(self):
         """_on_layer_externally_removed should ignore non-curation layers."""

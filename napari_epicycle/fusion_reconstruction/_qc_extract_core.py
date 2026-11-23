@@ -72,6 +72,7 @@ def run_full_qc_extraction(
     log: Optional[LogCb] = None,
     spacing_from_file: bool = False,
     spacing_workspace: str = "",
+    match_labels: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Run the full Step 3 QC feature-extraction chain on disk inputs.
 
@@ -82,6 +83,13 @@ def run_full_qc_extraction(
 
     Args mirror ``_QCFeatureWorker.__init__`` 1:1 (all disk paths + scalar
     config).  ``progress`` / ``log`` are optional callbacks for live markers.
+
+    ``match_labels`` (a JSON-safe dict, or ``None``) names another run of
+    this patch to compare with (``qc_pairing_group.make_match_bundle``).
+    With it the ``cross_run_pairing`` group runs right after the core
+    morphology and writes the five match columns, or refuses (the sentence
+    goes to the log and the summary).  Without it the chain and the CSV are
+    what they were.
 
     Returns:
         dict with keys:
@@ -97,6 +105,9 @@ def run_full_qc_extraction(
                                  df and reproduce the adjacency_curated.csv
                                  behavior byte-for-byte.
             ``artifacts``      — dict, the ``persist_qc_artifacts`` result.
+            ``pairing``        — dict or None, what the pairing group
+                                 returned (the floors and links, or the
+                                 refusal sentence); None without a match.
     """
     channel_configs = channel_configs or []
     # R7: a patch with no voxel size
@@ -125,7 +136,7 @@ def run_full_qc_extraction(
         persist_qc_artifacts,
     )
     from napari_epicycle.segmentation.feature_registry import (
-        build_registry, run_extraction,
+        build_registry, run_extraction, with_cross_run_pairing,
     )
 
     t0 = time.time()
@@ -189,6 +200,11 @@ def run_full_qc_extraction(
         available["exclude_border"] = True
     if invert_z:
         available["invert_z"] = True
+    # The pairing check: a copy, so the group's result never lands in the
+    # caller's dict
+    pairing_bundle = dict(match_labels) if match_labels else None
+    if pairing_bundle is not None:
+        available["match_labels"] = pairing_bundle
 
     # Source stack (multi-channel TIFF).  Per-channel registry entries call
     # ``extract_single_channel`` internally on ``raw_stack``.
@@ -215,6 +231,8 @@ def run_full_qc_extraction(
         checked_channels=channel_configs or None,
     )
     registry = [g for g in registry if g.name != "composite"]
+    if pairing_bundle is not None:
+        registry = with_cross_run_pairing(registry)
     _log(
         f"Registry: {len(registry)} groups, inputs: "
         f"{sorted(available.keys())}"
@@ -228,6 +246,13 @@ def run_full_qc_extraction(
         progress_cb=lambda pct: None,  # log per-group instead
     )
     _qcp_lap("run_extraction_all_groups")
+    from .qc_pairing_group import pairing_outcome
+    from ._qc_pairing_text import pairing_log_line
+    pairing = pairing_outcome(pairing_bundle)
+    # one line in the extraction log: the refusal, or what was compared
+    _pair_line = pairing_log_line(pairing)
+    if _pair_line:
+        _log(_pair_line)
 
     # Free large arrays held only for extraction.
     available.pop("prob_volume", None)
@@ -293,7 +318,28 @@ def run_full_qc_extraction(
 
     elapsed = time.time() - t0
     _log(f"Done in {elapsed:.1f}s — {len(df)} labels extracted")
-    save_patch_csv(df, csv_path)
+    # The tiers already saved for this patch must survive the rewrite.  They
+    # are read BEFORE the file is replaced and merged into a copy of the
+    # fresh table, and the features CSV is written once, already carrying
+    # them: a cancel or an error can never leave a table without its tiers.
+    # The features_raw.csv backup is a pure pre-curation snapshot, so when
+    # it is created here it is written from the unmerged table.
+    _old_tiers = _read_saved_tiers(csv_path)
+    _out = df
+    if _old_tiers is not None:
+        try:
+            _out = df.merge(_old_tiers, on="label", how="left")
+            _out["label_status"] = "active"
+            _out.attrs.update(df.attrs)
+        except Exception as _merge_err:
+            _log(f"[ERROR] Could not carry saved tiers forward: {_merge_err}")
+            raise
+    save_patch_csv(_out, csv_path)
+    if _old_tiers is not None:
+        _log(
+            f"Kept qc_tier for {int(_out['qc_tier'].notna().sum())} "
+            f"of {len(_out)} labels from the saved table"
+        )
     # 2026-05-20 Step 3 restructure: persist net-new artifacts
     # (features_raw.csv backup, adjacency_raw.csv / adjacency_curated.csv).
     artifacts: Dict[str, Any] = {}
@@ -303,6 +349,18 @@ def run_full_qc_extraction(
             patch_status=patch_status,
         )
         if artifacts["raw_backup_written"]:
+            if _out is not df:
+                # the backup was copied from the file just written, which
+                # carries tiers; replace it with the unmerged table
+                _name = Path(csv_path).name
+                _stem = (
+                    _name[: -len("_features.csv")]
+                    if _name.endswith("_features.csv")
+                    else Path(csv_path).stem
+                )
+                save_patch_csv(
+                    df, Path(csv_path).parent / f"{_stem}_features_raw.csv",
+                )
             _log("Wrote features_raw.csv backup (initial extraction)")
         if artifacts["raw_skipped_post_curation"]:
             _log(
@@ -344,12 +402,38 @@ def run_full_qc_extraction(
         "adjacency_list": adjacency_list,
         "artifacts": artifacts,
         "spacing_found": spacing_found,
+        "pairing": pairing,
     }
+
+
+def _read_saved_tiers(csv_path: str):
+    """``[label, qc_tier]`` of the ACTIVE rows of the CSV already on disk.
+
+    ``None`` unless the file exists, has a ``qc_tier`` column and at least
+    one non-empty tier (a table with no tiers has nothing to carry, and an
+    all-empty column would stop the later automatic tier assignment).
+    Superseded and deleted rows never lend their tier.  Never raises.
+    """
+    try:
+        if not Path(csv_path).exists():
+            return None
+        from .qc_features import active_rows, load_patch_csv
+
+        old = load_patch_csv(csv_path)
+        if "qc_tier" not in old.columns or "label" not in old.columns:
+            return None
+        old = active_rows(old)
+        if not old["qc_tier"].notna().any():
+            return None
+        return old[["label", "qc_tier"]].drop_duplicates(
+            subset="label", keep="last")
+    except Exception:      # noqa: BLE001 -- an unreadable old file just means no tiers
+        return None
 
 
 def resolve_patch_spacing_from_file(stack_path: str,
                                     workspace: str = "") -> Optional[dict]:
-    """A patch's voxel size read with ``read_file=True`` (R7): Step 1's
+    """A patch's voxel size read with ``read_file=True``: Step 1's
     registry (a processed patch's store scale included), else the file's
     own tags.  ``{"zyx", "source"}`` or ``None``.  For a worker / the
     subprocess only -- it opens the file.  Never raises."""

@@ -168,6 +168,14 @@ class _FakeController:
         # The post-switch re-wire passes the id floor
         return 0
 
+    def _add_kept_tier_count(self, ids):
+        # ... and the Clear confirm's "marked Good" count
+        return 0
+
+    def _live_add_clear_seqs(self):
+        # ... and the Clears still live in the main Undo
+        return set()
+
 
 #: The launcher's full wiring, by keyword.
 def _wire_everything(widget, ctrl):
@@ -294,3 +302,15 @@ class TestTheRealSyncHelperDoesTheSameThing:
         )
         w._on_label_smoothed_cb(1)
         assert c._curation_dirty is True
+
+    def test_post_switch_annotator_sync_rewires_the_id_floor(self):
+        """New ids stay above the removed ones after a switch: the page's
+        own Clear floor resets there, so the controller's floor must be
+        re-wired."""
+        w = _FakeAnnotator()
+        c = _FakeController(w)
+        _wire_everything(w, c)
+        helper = _C()._post_switch_annotator_sync.__get__(c, _FakeController)
+        helper(w, "stack_patch_1")
+        assert getattr(w, "_get_label_id_floor_cb", None) == (
+            c._add_label_id_floor)

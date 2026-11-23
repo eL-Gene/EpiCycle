@@ -56,6 +56,7 @@ from qtpy.QtWidgets import (
 )
 
 from . import _paths as _step3_paths
+from . import _step3_pr_text as _PRT
 from ._migrate_step3_runs import DEFAULT_RUN_ID
 from packages.epicycle_io.step3_run_manifest import (
     init_spec_browse,
@@ -459,7 +460,8 @@ class NewRunDialog(QDialog):
         pretrained_v.setSpacing(4)
         pretrained_lbl = QLabel(
             "Pick a Cellpose built-in pretrained model.  Most users start "
-            "with cyto3 (general) or nuclei (for DAPI-style channels).",
+            "with cyto3 (general) or nuclei (for DAPI-style channels). "
+            + _PRT.S3_NEW_RUN_BUILTIN_NOTE,
             parent=pretrained_page,
         )
         pretrained_lbl.setWordWrap(True)

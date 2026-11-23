@@ -63,6 +63,77 @@ def _safe_deferred_refresh(layer):
         pass
 
 
+_LAYER_HOOKS_ATTR = "_epicycle_annotator_hooks"
+
+
+def _layer_hook_host(owner):
+    return getattr(getattr(owner, "viewer", None), "layers", None)
+
+
+def purge_stale_layer_hooks(owner) -> int:
+    """Disconnect layer-list hooks left behind by any earlier annotator.
+
+    Purging every other owner's hooks on connect is safe because the plugin
+    runs one annotator per viewer.
+    """
+    layers = _layer_hook_host(owner)
+    if layers is None:
+        return 0
+    stored = getattr(layers, _LAYER_HOOKS_ATTR, None)
+    if not stored or stored[0] == id(owner):
+        return 0
+    from packages.epicycle_annotator.sync import _purge_layer_callbacks
+
+    return _purge_layer_callbacks(layers, _LAYER_HOOKS_ATTR, self_id=id(owner))
+
+
+def drop_own_layer_hooks(owner) -> int:
+    """Disconnect and forget only the hooks ``owner`` left on the ledger.
+
+    Never raises; another owner's entries are not touched.
+    """
+    try:
+        layers = _layer_hook_host(owner)
+        if layers is None:
+            return 0
+        from packages.epicycle_annotator.sync import _purge_layer_callbacks
+
+        return _purge_layer_callbacks(layers, _LAYER_HOOKS_ATTR, owner=id(owner))
+    except Exception:
+        return 0
+
+
+def register_layer_hook(owner, emitter, callback) -> None:
+    """Connect ``callback`` and record it on the layer list under ``owner``."""
+    emitter.connect(callback)
+    layers = _layer_hook_host(owner)
+    if layers is None:
+        return
+    try:
+        stored = getattr(layers, _LAYER_HOOKS_ATTR, None)
+        if not stored or stored[0] != id(owner):
+            stored = (id(owner), [])
+            setattr(layers, _LAYER_HOOKS_ATTR, stored)
+        stored[1].append((emitter, callback))
+    except Exception:
+        pass
+
+
+def unregister_layer_hook(owner, emitter, callback) -> None:
+    """Disconnect ``callback`` and drop it from the layer-list ledger."""
+    try:
+        emitter.disconnect(callback)
+    except (ValueError, AttributeError, TypeError):
+        pass
+    layers = _layer_hook_host(owner)
+    stored = getattr(layers, _LAYER_HOOKS_ATTR, None) if layers is not None else None
+    if stored and stored[0] == id(owner):
+        stored[1][:] = [
+            (e, c) for (e, c) in stored[1] if not (e is emitter and c == callback)
+        ]
+
+
+
 class NativeMultiviewAnnotator(QWidget):
     """Three-view annotator focused on draw/close/fill workflow."""
 
@@ -86,6 +157,12 @@ class NativeMultiviewAnnotator(QWidget):
         if parent is None:
             try:
                 self.hide()
+            except Exception:
+                pass
+            # The combo-refresh hooks read the combos Phase 2 is about to
+            # null; take them off the layer list first.
+            try:
+                self._disconnect_combo_refresh_hooks()
             except Exception:
                 pass
             # ---- Phase 1: collect all child QWidgets, hide + schedule delete.
@@ -160,20 +237,16 @@ class NativeMultiviewAnnotator(QWidget):
         self.status_label = QLabel("", parent=self)
         self.status_label.setVisible(False)
 
-        # Lifecycle tracker: snapshot all top-level widget IDs BEFORE creating
-        # QtViewers.  QtViewer construction can spawn internal top-level
-        # windows (QtPopup, magicgui).  Taking the snapshot first ensures those
-        # are "new" and eligible for cleanup by _destroy_orphan_toplevel_widgets.
-        self._creation_toplevel_ids: set = set()
+        # Lifecycle tracker: snapshot the top-level windows BEFORE creating
+        # QtViewers, and again at the end of __init__.  QtViewer construction
+        # spawns internal top-level windows (QtPopup, magicgui); the ones that
+        # appear in between are this annotator's own, and only those may be
+        # taken by _destroy_orphan_toplevel_widgets.  None = sweep nothing.
+        self._own_toplevel_widgets = None
         try:
-            from qtpy.QtWidgets import QApplication as _LifecycleApp
-            _lc_app = _LifecycleApp.instance()
-            if _lc_app is not None:
-                self._creation_toplevel_ids = {
-                    id(w) for w in _lc_app.topLevelWidgets() if w is not None
-                }
+            self._creation_toplevel_ids = set(self._toplevel_widgets_by_address())
         except Exception:
-            pass
+            self._creation_toplevel_ids = None
 
         self.viewer_model_xy = ViewerModel()
         self.viewer_model_xz = ViewerModel()
@@ -228,6 +301,33 @@ class NativeMultiviewAnnotator(QWidget):
         self._build_ui()
         self._wire_signals()
         self._refresh_layer_options()
+
+        if self._creation_toplevel_ids is not None:
+            try:
+                self._own_toplevel_widgets = {
+                    a: w for a, w in self._toplevel_widgets_by_address().items()
+                    if a not in self._creation_toplevel_ids
+                }
+            except Exception:
+                pass
+
+    @staticmethod
+    def _toplevel_widgets_by_address() -> dict:
+        """Every current top-level widget, keyed by its C++ address.
+
+        The address is the identity, never ``id()``: for windows Qt made
+        itself, ``topLevelWidgets()`` hands back short-lived Python wrappers,
+        so the same window gets a new ``id()`` from one call to the next.
+        """
+        from qtpy import sip
+        from qtpy.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is None:
+            return {}
+        return {
+            sip.unwrapinstance(w): w for w in app.topLevelWidgets() if w is not None
+        }
 
     def _layer_by_name(self, layer_list, name: str):
         if not name:
@@ -616,15 +716,13 @@ class NativeMultiviewAnnotator(QWidget):
 
         # --- Viewer-level event handlers (napari EventEmitter) ---
         # Store references for clean disconnection in _disconnect_viewer_events.
-        self._viewer_inserted_cb = lambda _e: self._refresh_layer_options()
-        self._viewer_removed_cb = lambda _e: self._refresh_layer_options()
+        self._viewer_inserted_cb = self._on_viewer_layers_changed
+        self._viewer_removed_cb = self._on_viewer_layers_changed
         self._dims_xy_cb = lambda _event=None: self._sync_slider_from_dims("XY")
         self._dims_xz_cb = lambda _event=None: self._sync_slider_from_dims("XZ")
         self._dims_yz_cb = lambda _event=None: self._sync_slider_from_dims("YZ")
 
-        self.viewer.layers.events.inserted.connect(self._viewer_inserted_cb)
-        self.viewer.layers.events.removed.connect(self._viewer_removed_cb)
-        self.viewer.layers.events.removed.connect(self._on_main_layer_removed)
+        self._connect_layer_list_hooks()
         self.viewer.layers.selection.events.active.connect(self.sync_manager.sync_active_layer)
         for orient, slider in [
             ("XY", getattr(self, "xy_slice_slider", None)),
@@ -638,6 +736,37 @@ class NativeMultiviewAnnotator(QWidget):
         self.viewer_model_xy.dims.events.current_step.connect(self._dims_xy_cb)
         self.viewer_model_xz.dims.events.current_step.connect(self._dims_xz_cb)
         self.viewer_model_yz.dims.events.current_step.connect(self._dims_yz_cb)
+
+    def _connect_layer_list_hooks(self) -> None:
+        """Connect the layer-list hooks through the layer-owned ledger, first
+        dropping any a previous annotator never got to disconnect."""
+        purge_stale_layer_hooks(self)
+        ev = self.viewer.layers.events
+        register_layer_hook(self, ev.inserted, self._viewer_inserted_cb)
+        register_layer_hook(self, ev.removed, self._viewer_removed_cb)
+        register_layer_hook(self, ev.removed, self._on_main_layer_removed)
+
+    def _on_viewer_layers_changed(self, _e=None) -> None:
+        """Refresh the channel combos; a no-op once closing or orphaned."""
+        if getattr(self, "_is_closing", False):
+            return
+        if any(
+            getattr(self, a, None) is None
+            for a in ("image_combo", "labels_combo", "patch_context_combo", "status_label")
+        ):
+            return
+        self._refresh_layer_options()
+
+    def _disconnect_combo_refresh_hooks(self) -> None:
+        ev = self.viewer.layers.events
+        for cb in (
+            getattr(self, "_viewer_inserted_cb", None),
+            getattr(self, "_viewer_removed_cb", None),
+        ):
+            if cb is None:
+                continue
+            unregister_layer_hook(self, ev.inserted, cb)
+            unregister_layer_hook(self, ev.removed, cb)
 
     def _disconnect_viewer_events(self) -> None:
         """Disconnect napari viewer-level event handlers to prevent
@@ -660,18 +789,19 @@ class NativeMultiviewAnnotator(QWidget):
         self._disconnect_rename_handlers()
 
         # --- Viewer-level events ---
-        try:
-            self.viewer.layers.events.inserted.disconnect(self._viewer_inserted_cb)
-        except (ValueError, AttributeError):
-            pass
-        try:
-            self.viewer.layers.events.removed.disconnect(self._viewer_removed_cb)
-        except (ValueError, AttributeError):
-            pass
-        try:
-            self.viewer.layers.events.removed.disconnect(self._on_main_layer_removed)
-        except (ValueError, AttributeError):
-            pass
+        for _name, _cb in (
+            ("inserted", getattr(self, "_viewer_inserted_cb", None)),
+            ("removed", getattr(self, "_viewer_removed_cb", None)),
+            ("removed", getattr(self, "_on_main_layer_removed", None)),
+        ):
+            if _cb is None:
+                continue
+            try:
+                unregister_layer_hook(
+                    self, getattr(self.viewer.layers.events, _name), _cb
+                )
+            except AttributeError:
+                pass
         try:
             self.viewer.layers.selection.events.active.disconnect(
                 self.sync_manager.sync_active_layer
@@ -682,8 +812,10 @@ class NativeMultiviewAnnotator(QWidget):
         standalone_cb = getattr(self, "_standalone_layer_inserted_cb", None)
         if standalone_cb is not None:
             try:
-                self.viewer.layers.events.inserted.disconnect(standalone_cb)
-            except (ValueError, AttributeError):
+                unregister_layer_hook(
+                    self, self.viewer.layers.events.inserted, standalone_cb
+                )
+            except AttributeError:
                 pass
             self._standalone_layer_inserted_cb = None
         # Subviewer dims events
@@ -858,40 +990,49 @@ class NativeMultiviewAnnotator(QWidget):
     })
 
     def _destroy_orphan_toplevel_widgets(self) -> None:
-        """Destroy orphan top-level widgets created during this widget's lifetime.
+        """Destroy the orphan top-level windows this annotator made.
 
-        Uses the snapshot from ``__init__`` (``_creation_toplevel_ids``) to
-        identify new widgets, then destroys known orphan classes
-        (QFrame, QtPopup, QtModalPopup, QWidget).  Also destroys any
-        widget with ``magicgui`` in title/class/objectName regardless of class.
-        UI controls like QPushButton, QCheckBox, etc. are our own widgets and
-        are left for Qt's natural
-        parent-based cleanup.
+        Before any close, only the annotator's own windows may be taken
+        (those that appeared while ``__init__`` built its viewers,
+        ``_own_toplevel_widgets``).  Once ``_close_subviewers`` has run, only
+        the set it froze (``_close_sweep_widgets``: own windows plus those
+        that appeared while the close ran) -- never a window that appeared
+        after the close returned.  Every other window belongs to the rest of
+        the app -- a pyqtgraph plot's hidden parentless QWidget, for one:
+        deleting it makes Qt abort when that plot is destroyed.  Of those, it
+        destroys known orphan classes (QFrame, QtPopup, QtModalPopup,
+        QWidget) and any widget with ``magicgui`` in title/class/objectName.
+        Windows are matched by C++ address, and the address must still hold
+        the same wrapper, so a later window that reuses a freed address is
+        not taken.  With no own set recorded, nothing is swept.
 
         Safe to call multiple times (idempotent) and from a deferred
         QTimer callback.
         """
-        pre_ids = getattr(self, "_creation_toplevel_ids", None)
-        if not pre_ids:
+        own = getattr(self, "_own_toplevel_widgets", None)
+        if own is None:
             return
+        allowed = getattr(self, "_close_sweep_widgets", None)
+        if allowed is None:
+            allowed = own
         try:
-            from qtpy.QtWidgets import QApplication
+            from qtpy import sip
+            current = self._toplevel_widgets_by_address()
         except Exception:
             return
-        app = QApplication.instance()
-        if app is None:
-            return
-        _safe_ids = set(pre_ids)
-        _safe_ids.add(id(self))
+        _safe = set()
         try:
+            _safe.add(sip.unwrapinstance(self))
             qt_main = getattr(getattr(self.viewer, "window", None), "_qt_window", None)
             if qt_main is not None:
-                _safe_ids.add(id(qt_main))
+                _safe.add(sip.unwrapinstance(qt_main))
         except Exception:
             pass
         destroyed = 0
-        for w in list(app.topLevelWidgets()):
-            if w is None or id(w) in _safe_ids:
+        for a, w in current.items():
+            if a in _safe:
+                continue
+            if allowed.get(a) is not w:
                 continue
             cls_name = type(w).__name__
             cls_name_l = str(cls_name or "").lower()
@@ -924,6 +1065,30 @@ class NativeMultiviewAnnotator(QWidget):
             except Exception:
                 pass
             pass  # orphan widgets destroyed
+
+    def _freeze_close_sweep_set(self) -> None:
+        """Fix the windows this close's sweeps may take, as address -> wrapper.
+
+        Own windows still at their address, plus windows that appeared since
+        ``_close_start_toplevel_ids`` was taken.  The deferred sweep a tick
+        later uses this set, so a window another panel makes after the close
+        returns is never taken.  A repeated close only narrows the set.
+        """
+        own = getattr(self, "_own_toplevel_widgets", None)
+        start = getattr(self, "_close_start_toplevel_ids", None)
+        previous = getattr(self, "_close_sweep_widgets", None)
+        frozen = {}
+        try:
+            if own is not None:
+                for a, w in self._toplevel_widgets_by_address().items():
+                    if own.get(a) is not w and (start is None or a in start):
+                        continue
+                    if previous is not None and previous.get(a) is not w:
+                        continue
+                    frozen[a] = w
+        except Exception:
+            frozen = {}
+        self._close_sweep_widgets = frozen
 
     def _sweep_magicgui_only(self) -> None:
         """Close orphan magicgui windows WITHOUT touching QtPopup/QtModalPopup.
@@ -994,6 +1159,12 @@ class NativeMultiviewAnnotator(QWidget):
         to ``None`` can create transient top-level windows ("magicgui") before
         deferred deletion runs.
         """
+        # Windows that appear between here and the sweep below come from this
+        # close; the orphan sweep may take them along with the annotator's own.
+        try:
+            self._close_start_toplevel_ids = set(self._toplevel_widgets_by_address())
+        except Exception:
+            self._close_start_toplevel_ids = None
         try:
             self.crosshair_manager.toggle_crosshairs(False)
         except Exception:
@@ -1055,17 +1226,24 @@ class NativeMultiviewAnnotator(QWidget):
         except Exception:
             pass
 
-        # Lifecycle cleanup: destroy ALL top-level widgets that didn't exist
-        # when this widget was created.  This is the definitive catch-all for
-        # magicgui and other orphan windows that accumulate across relaunch
-        # cycles.  Name-matching sweeps miss windows whose class/title/objectName
-        # don't contain "magicgui" — this approach doesn't depend on names.
+        # Lifecycle cleanup: destroy the orphan top-level windows this
+        # annotator made (while building itself, or since this close began),
+        # never another panel's.  Name-matching sweeps miss windows whose
+        # class/title/objectName don't contain "magicgui" — this approach
+        # doesn't depend on names.  The set it may take is fixed here, before
+        # the sweep and before the deferred sweep is scheduled.
+        try:
+            self._freeze_close_sweep_set()
+        except Exception:
+            pass
         self._destroy_orphan_toplevel_widgets()
 
-        # Schedule a deferred sweep for the NEXT event loop tick.  Some orphan
-        # windows are created by Qt DURING closeEvent processing (e.g., napari
-        # dock widget removal triggers magicgui creation).  The deferred sweep
-        # catches those since they don't exist yet at this point.
+        # Schedule a deferred sweep for the NEXT event loop tick.  It takes
+        # only the set fixed above (whatever this close left that Qt had not
+        # yet deleted), never a window that appears after this close returns
+        # -- another panel may make one in the same tick.  Late windows Qt
+        # creates after the close (e.g. napari dock removal triggering
+        # magicgui creation) are left to the name-based magicgui sweeps below.
         try:
             from qtpy.QtCore import QTimer as _CloseTimer
             _CloseTimer.singleShot(0, self._destroy_orphan_toplevel_widgets)
@@ -1248,6 +1426,11 @@ class NativeMultiviewAnnotator(QWidget):
         )
 
     def _refresh_layer_options(self) -> None:
+        if any(
+            getattr(self, a, None) is None
+            for a in ("image_combo", "labels_combo", "patch_context_combo", "status_label")
+        ):
+            return
         current_image = self.image_combo.currentText()
         current_labels = self.labels_combo.currentText()
 
@@ -2077,8 +2260,12 @@ class NativeMultiviewAnnotator(QWidget):
             self.sync_manager.unregister_layer(name)
         self.subviewer_manager.clear()
         self._clear_all_overlays()
+        if getattr(self, "status_label", None) is None:
+            return
         self._toggle_crosshairs(False)
         self._configure_slice_sliders()
+        if getattr(self, "status_label", None) is None:
+            return
         self.status_label.setText("Managed layer removed from viewer. Reload image/labels into subviewers.")
 
     def _on_active_image_renamed(self, event) -> None:
@@ -2344,6 +2531,17 @@ class NativeMultiviewAnnotator(QWidget):
                                     saved = getattr(lyr, "_epicycle_pre_hide_mode", None)
                                     if saved and getattr(lyr, "editable", False) and hasattr(lyr, "mode"):
                                         lyr.mode = saved
+                                except Exception:
+                                    pass
+                            # A layer hidden while its dims moved and a
+                            # colour or selection event fired is re-shown
+                            # with a render built for the wrong colour map;
+                            # repair every layer this key showed.
+                            heal = getattr(self, "_heal_label_render", None)
+                            if callable(heal):
+                                try:
+                                    heal(None, tag="channel-toggle",
+                                         extra_layers=list(targets))
                                 except Exception:
                                     pass
                     finally:

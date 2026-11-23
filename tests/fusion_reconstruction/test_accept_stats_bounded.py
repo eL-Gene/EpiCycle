@@ -324,8 +324,26 @@ class _FakeAnnotator:
         self.ui = []
 
     # --- the seams `_accept_add` reaches through -------------------------
+    def _clear_draw_snapshot(self):
+        pass
+
     def _add_shared_volume(self):
         return self._volume
+
+    def _add_review_chips(self, ids):
+        # REVIEW's chips: none for these plain objects.
+        return {}
+
+    def _add_review_order(self, ids, piece_chips=None):
+        return list(ids)
+
+    def _add_drop_outline_layer(self):
+        # The tissue-outline layer: nothing to drop here.
+        pass
+
+    def _add_accept_step(self, k):
+        # The whole-patch bar's steps: a box here, nothing is counted.
+        pass
 
     def _add_refused_while_batch(self, door):
         # Batch recipe brick: Add refuses while Batch Refine runs or is
@@ -337,6 +355,9 @@ class _FakeAnnotator:
 
     def _push_add_ui(self, **kw):
         self.ui.append(kw)
+
+    def _add_refresh_label_buttons(self):
+        pass
 
     def _remove_add_candidate(self):
         pass
@@ -361,8 +382,33 @@ class _FakeAnnotator:
     def _drop_add_walls(self):
         pass
 
+    # "Update as I click" (the live markers): nothing is in flight here, so
+    # Accept never waits; its quiet timer has nothing to stop
+    def _add_live_unsettled(self):
+        return False
+
+    def _add_live_stop(self):
+        pass
+
+    def _add_forget_user_ticks(self):
+        pass                      # the rows' ticks go with the box
+
+    # the prepared stages of the click-by-click fills (Nuclei markers on a
+    # whole patch, Cells click markers): Accept drops them; none is held here
+    def _add_drop_marker_cache(self, *_a, **_k):
+        pass
+
+    def _add_drop_cells_stage(self, *_a, **_k):
+        pass
+
     def _add_abandon_workers(self):
         pass
+
+    def _add_release_histogram(self):
+        pass                      # the page histogram goes with the session
+
+    def _add_push_review(self):
+        self._add_review = True   # Accept lands in REVIEW
 
     def _remove_add_side_callbacks(self):
         pass
@@ -385,6 +431,12 @@ class _FakeAnnotator:
 
     def _close_add_numbers(self):
         pass
+
+    def _stop_add_ball_timer(self):
+        pass                      # a Ball change's redraw timer: none here
+
+    def _add_paint_status(self, *_a, **_kw):
+        pass                      # Accept's wait words: no page here
 
     def _add_put_outline_down(self):
         pass

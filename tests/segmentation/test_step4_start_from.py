@@ -139,3 +139,37 @@ def test_a_hand_edit_flips_to_custom(qapp, ws):
         assert w.gd_iters_sb.value() == 25
     finally:
         close(w)
+
+
+def test_the_step3_preset_never_sees_a_one_channel_patchs_gray(qapp,
+                                                              tmp_path):
+    """A Step 3 patch with one channel is predicted as 0: gray, but its
+    records keep the codes the user asked for; its reconstruction is what
+    the "Step 3 run" item reads, so Step 4 gets those codes, never 0 / 0.
+    The ZYX patch is the one-channel fixture."""
+    from napari_epicycle.fusion_reconstruction import _step3_manifests as S3M
+    from packages.epicycle_training.config import SegmentationConfig
+    from tests.fusion_reconstruction._one_channel import write_zyx_patch
+    ws = make_workspace(tmp_path)
+    write_zyx_patch(ws / "artifacts/step3/patches", "Wound_patch_5.tif")
+    # the record Step 3 writes for that patch: the asked codes + the flag
+    pm = S3M.build_prediction_manifest(
+        patch_name="Wound_patch_5.tif", axes="ZYX",
+        seg_config=SegmentationConfig(channels=[2, 1]), one_channel=True)
+    assert pm["seg_config"]["channels"] == [2, 1]
+    d = ws / "artifacts/step3/runs/Wound_patch_5.tif"
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(json.dumps({
+        "recon_config": {"method": "direct"},
+        "seg_config": pm["seg_config"],
+        "one_channel": pm["one_channel"]}), encoding="utf-8")
+    found = M.newest_step3_manifest(str(ws))
+    assert found["channels"] == [2, 1]
+    w = panel(qapp, ws)
+    try:
+        i = w.start_from_combo.findData("step3")
+        w.start_from_combo.activated.emit(i)
+        pump(qapp)
+        assert w.chosen_channels() == (2, 1)      # the run's codes as they are
+    finally:
+        close(w)

@@ -1,0 +1,741 @@
+{
+ "source": "measured on the Wound patches, 2026-10-29",
+ "about": "Every label of another segmentation that touches the object being split, with how many of its voxels lie inside the object, its size in the whole mask and the object's size. verdict: real = a marker the cut needs; grazing = a neighbour that only touches the object; in between = neither, kept by the rule.",
+ "rule": {
+  "object_share": 0.1,
+  "label_share": 0.5,
+  "label_side_min_voxels": 20
+ },
+ "in_between_object_share_percent": {
+  "p3_nuc_97 label 684": 21.0,
+  "p4_nuc_91 label 289": 13.3
+ },
+ "cases": [
+  {
+   "name": "p1_pair_524_541",
+   "patch": "Wound_patch_1",
+   "what": "cells 524 + 541 merged, nuclei run as markers",
+   "object_voxels": 7215,
+   "contacts": [
+    {
+     "label": 241,
+     "inside": 5,
+     "label_voxels": 1217,
+     "verdict": "grazing"
+    },
+    {
+     "label": 243,
+     "inside": 50,
+     "label_voxels": 570,
+     "verdict": "grazing"
+    },
+    {
+     "label": 463,
+     "inside": 989,
+     "label_voxels": 993,
+     "verdict": "real"
+    },
+    {
+     "label": 477,
+     "inside": 1157,
+     "label_voxels": 1160,
+     "verdict": "real"
+    },
+    {
+     "label": 652,
+     "inside": 1,
+     "label_voxels": 294,
+     "verdict": "grazing"
+    },
+    {
+     "label": 675,
+     "inside": 2,
+     "label_voxels": 1032,
+     "verdict": "grazing"
+    },
+    {
+     "label": 676,
+     "inside": 43,
+     "label_voxels": 1090,
+     "verdict": "grazing"
+    }
+   ]
+  },
+  {
+   "name": "p1_pair_692_737",
+   "patch": "Wound_patch_1",
+   "what": "cells 692 + 737 merged, nuclei run as markers",
+   "object_voxels": 7614,
+   "contacts": [
+    {
+     "label": 486,
+     "inside": 30,
+     "label_voxels": 1138,
+     "verdict": "grazing"
+    },
+    {
+     "label": 524,
+     "inside": 56,
+     "label_voxels": 536,
+     "verdict": "grazing"
+    },
+    {
+     "label": 589,
+     "inside": 989,
+     "label_voxels": 1066,
+     "verdict": "real"
+    },
+    {
+     "label": 604,
+     "inside": 1,
+     "label_voxels": 858,
+     "verdict": "grazing"
+    },
+    {
+     "label": 635,
+     "inside": 1072,
+     "label_voxels": 1112,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_pair_653_685",
+   "patch": "Wound_patch_1",
+   "what": "cells 653 + 685 merged, nuclei run as markers",
+   "object_voxels": 8121,
+   "contacts": [
+    {
+     "label": 545,
+     "inside": 961,
+     "label_voxels": 1023,
+     "verdict": "real"
+    },
+    {
+     "label": 584,
+     "inside": 1162,
+     "label_voxels": 1201,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_pair_253_331",
+   "patch": "Wound_patch_1",
+   "what": "cells 253 + 331 merged, nuclei run as markers",
+   "object_voxels": 8325,
+   "contacts": [
+    {
+     "label": 276,
+     "inside": 1245,
+     "label_voxels": 1245,
+     "verdict": "real"
+    },
+    {
+     "label": 295,
+     "inside": 1413,
+     "label_voxels": 1422,
+     "verdict": "real"
+    },
+    {
+     "label": 420,
+     "inside": 3,
+     "label_voxels": 869,
+     "verdict": "grazing"
+    },
+    {
+     "label": 438,
+     "inside": 1,
+     "label_voxels": 837,
+     "verdict": "grazing"
+    }
+   ]
+  },
+  {
+   "name": "p1_cell_765",
+   "patch": "Wound_patch_1",
+   "what": "cell 765 as it is, nuclei run as markers",
+   "object_voxels": 7209,
+   "contacts": [
+    {
+     "label": 405,
+     "inside": 98,
+     "label_voxels": 2987,
+     "verdict": "grazing"
+    },
+    {
+     "label": 529,
+     "inside": 16,
+     "label_voxels": 963,
+     "verdict": "grazing"
+    },
+    {
+     "label": 575,
+     "inside": 2,
+     "label_voxels": 1152,
+     "verdict": "grazing"
+    },
+    {
+     "label": 670,
+     "inside": 111,
+     "label_voxels": 1480,
+     "verdict": "grazing"
+    },
+    {
+     "label": 671,
+     "inside": 1153,
+     "label_voxels": 1171,
+     "verdict": "real"
+    },
+    {
+     "label": 691,
+     "inside": 1092,
+     "label_voxels": 1160,
+     "verdict": "real"
+    },
+    {
+     "label": 740,
+     "inside": 45,
+     "label_voxels": 1154,
+     "verdict": "grazing"
+    }
+   ]
+  },
+  {
+   "name": "p4_pair_454_464",
+   "patch": "Wound_patch_4",
+   "what": "cells 454 + 464 merged, nuclei run as markers",
+   "object_voxels": 11052,
+   "contacts": [
+    {
+     "label": 312,
+     "inside": 18,
+     "label_voxels": 274,
+     "verdict": "grazing"
+    },
+    {
+     "label": 351,
+     "inside": 23,
+     "label_voxels": 697,
+     "verdict": "grazing"
+    },
+    {
+     "label": 371,
+     "inside": 3,
+     "label_voxels": 671,
+     "verdict": "grazing"
+    },
+    {
+     "label": 455,
+     "inside": 1147,
+     "label_voxels": 1147,
+     "verdict": "real"
+    },
+    {
+     "label": 466,
+     "inside": 1449,
+     "label_voxels": 1536,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p4_cell_127",
+   "patch": "Wound_patch_4",
+   "what": "cell 127 as it is, nuclei run as markers",
+   "object_voxels": 22589,
+   "contacts": [
+    {
+     "label": 128,
+     "inside": 582,
+     "label_voxels": 582,
+     "verdict": "real"
+    },
+    {
+     "label": 156,
+     "inside": 110,
+     "label_voxels": 1380,
+     "verdict": "grazing"
+    },
+    {
+     "label": 258,
+     "inside": 449,
+     "label_voxels": 449,
+     "verdict": "real"
+    },
+    {
+     "label": 312,
+     "inside": 14,
+     "label_voxels": 274,
+     "verdict": "grazing"
+    },
+    {
+     "label": 355,
+     "inside": 380,
+     "label_voxels": 408,
+     "verdict": "real"
+    },
+    {
+     "label": 371,
+     "inside": 668,
+     "label_voxels": 671,
+     "verdict": "real"
+    },
+    {
+     "label": 456,
+     "inside": 1,
+     "label_voxels": 2132,
+     "verdict": "grazing"
+    },
+    {
+     "label": 466,
+     "inside": 61,
+     "label_voxels": 1536,
+     "verdict": "grazing"
+    },
+    {
+     "label": 486,
+     "inside": 11,
+     "label_voxels": 1105,
+     "verdict": "grazing"
+    }
+   ]
+  },
+  {
+   "name": "p1_ctrl_642_728",
+   "patch": "Wound_patch_1",
+   "what": "nuclei 642 + 728 merged, cell run as markers",
+   "object_voxels": 2224,
+   "contacts": [
+    {
+     "label": 507,
+     "inside": 10,
+     "label_voxels": 3681,
+     "verdict": "grazing"
+    },
+    {
+     "label": 680,
+     "inside": 1061,
+     "label_voxels": 2855,
+     "verdict": "real"
+    },
+    {
+     "label": 819,
+     "inside": 1153,
+     "label_voxels": 4187,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_nuc_344",
+   "patch": "Wound_patch_1",
+   "what": "nucleus 344 as it is, cell run as markers",
+   "object_voxels": 2249,
+   "contacts": [
+    {
+     "label": 342,
+     "inside": 3,
+     "label_voxels": 3550,
+     "verdict": "grazing"
+    },
+    {
+     "label": 358,
+     "inside": 1125,
+     "label_voxels": 2387,
+     "verdict": "real"
+    },
+    {
+     "label": 621,
+     "inside": 1121,
+     "label_voxels": 5591,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_nuc_341",
+   "patch": "Wound_patch_1",
+   "what": "nucleus 341 as it is, cell run as markers",
+   "object_voxels": 2619,
+   "contacts": [
+    {
+     "label": 324,
+     "inside": 1464,
+     "label_voxels": 3272,
+     "verdict": "real"
+    },
+    {
+     "label": 548,
+     "inside": 2,
+     "label_voxels": 3391,
+     "verdict": "grazing"
+    },
+    {
+     "label": 589,
+     "inside": 1153,
+     "label_voxels": 4941,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_nuc_664",
+   "patch": "Wound_patch_1",
+   "what": "nucleus 664 as it is, cell run as markers",
+   "object_voxels": 2997,
+   "contacts": [
+    {
+     "label": 494,
+     "inside": 87,
+     "label_voxels": 2158,
+     "verdict": "grazing"
+    },
+    {
+     "label": 680,
+     "inside": 10,
+     "label_voxels": 2855,
+     "verdict": "grazing"
+    },
+    {
+     "label": 720,
+     "inside": 1734,
+     "label_voxels": 2850,
+     "verdict": "real"
+    },
+    {
+     "label": 825,
+     "inside": 1137,
+     "label_voxels": 4499,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_nuc_649",
+   "patch": "Wound_patch_1",
+   "what": "nucleus 649 as it is, cell run as markers",
+   "object_voxels": 2117,
+   "contacts": [
+    {
+     "label": 580,
+     "inside": 25,
+     "label_voxels": 2196,
+     "verdict": "grazing"
+    },
+    {
+     "label": 704,
+     "inside": 1007,
+     "label_voxels": 2127,
+     "verdict": "real"
+    },
+    {
+     "label": 747,
+     "inside": 44,
+     "label_voxels": 2294,
+     "verdict": "grazing"
+    },
+    {
+     "label": 756,
+     "inside": 5,
+     "label_voxels": 4282,
+     "verdict": "grazing"
+    },
+    {
+     "label": 813,
+     "inside": 1033,
+     "label_voxels": 4020,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_nuc_602",
+   "patch": "Wound_patch_1",
+   "what": "nucleus 602 as it is, cell run as markers",
+   "object_voxels": 2030,
+   "contacts": [
+    {
+     "label": 559,
+     "inside": 989,
+     "label_voxels": 3030,
+     "verdict": "real"
+    },
+    {
+     "label": 753,
+     "inside": 1041,
+     "label_voxels": 5095,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p1_nuc_719",
+   "patch": "Wound_patch_1",
+   "what": "nucleus 719 as it is, cell run as markers",
+   "object_voxels": 1944,
+   "contacts": [
+    {
+     "label": 705,
+     "inside": 135,
+     "label_voxels": 1623,
+     "verdict": "grazing"
+    },
+    {
+     "label": 715,
+     "inside": 920,
+     "label_voxels": 5447,
+     "verdict": "real"
+    },
+    {
+     "label": 738,
+     "inside": 12,
+     "label_voxels": 1877,
+     "verdict": "grazing"
+    },
+    {
+     "label": 831,
+     "inside": 860,
+     "label_voxels": 3800,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p2_ctrl_608_684",
+   "patch": "Wound_patch_2",
+   "what": "nuclei 608 + 684 merged, cell run as markers",
+   "object_voxels": 2307,
+   "contacts": [
+    {
+     "label": 677,
+     "inside": 993,
+     "label_voxels": 1330,
+     "verdict": "real"
+    },
+    {
+     "label": 770,
+     "inside": 1205,
+     "label_voxels": 3246,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p2_nuc_636",
+   "patch": "Wound_patch_2",
+   "what": "nucleus 636 as it is, cell run as markers",
+   "object_voxels": 3078,
+   "contacts": [
+    {
+     "label": 454,
+     "inside": 21,
+     "label_voxels": 9318,
+     "verdict": "grazing"
+    },
+    {
+     "label": 561,
+     "inside": 1036,
+     "label_voxels": 1607,
+     "verdict": "real"
+    },
+    {
+     "label": 721,
+     "inside": 1918,
+     "label_voxels": 4038,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p2_nuc_156",
+   "patch": "Wound_patch_2",
+   "what": "nucleus 156 as it is, cell run as markers",
+   "object_voxels": 503,
+   "contacts": [
+    {
+     "label": 127,
+     "inside": 271,
+     "label_voxels": 1245,
+     "verdict": "real"
+    },
+    {
+     "label": 262,
+     "inside": 225,
+     "label_voxels": 5096,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p3_ctrl_539_611",
+   "patch": "Wound_patch_3",
+   "what": "nuclei 539 + 611 merged, cell run as markers",
+   "object_voxels": 2466,
+   "contacts": [
+    {
+     "label": 294,
+     "inside": 38,
+     "label_voxels": 3620,
+     "verdict": "grazing"
+    },
+    {
+     "label": 569,
+     "inside": 1266,
+     "label_voxels": 1819,
+     "verdict": "real"
+    },
+    {
+     "label": 666,
+     "inside": 1053,
+     "label_voxels": 2894,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p3_nuc_288",
+   "patch": "Wound_patch_3",
+   "what": "nucleus 288 as it is, cell run as markers",
+   "object_voxels": 3432,
+   "contacts": [
+    {
+     "label": 230,
+     "inside": 175,
+     "label_voxels": 793,
+     "verdict": "grazing"
+    },
+    {
+     "label": 306,
+     "inside": 1374,
+     "label_voxels": 2602,
+     "verdict": "real"
+    },
+    {
+     "label": 533,
+     "inside": 1540,
+     "label_voxels": 3650,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p3_nuc_97",
+   "patch": "Wound_patch_3",
+   "what": "nucleus 97 as it is, cell run as markers",
+   "object_voxels": 2475,
+   "contacts": [
+    {
+     "label": 289,
+     "inside": 7,
+     "label_voxels": 1727,
+     "verdict": "grazing"
+    },
+    {
+     "label": 683,
+     "inside": 1847,
+     "label_voxels": 5203,
+     "verdict": "real"
+    },
+    {
+     "label": 684,
+     "inside": 520,
+     "label_voxels": 1081,
+     "verdict": "in between"
+    }
+   ]
+  },
+  {
+   "name": "p4_ctrl_520_551",
+   "patch": "Wound_patch_4",
+   "what": "nuclei 520 + 551 merged, cell run as markers",
+   "object_voxels": 2149,
+   "contacts": [
+    {
+     "label": 425,
+     "inside": 1093,
+     "label_voxels": 4421,
+     "verdict": "real"
+    },
+    {
+     "label": 469,
+     "inside": 5,
+     "label_voxels": 1346,
+     "verdict": "grazing"
+    },
+    {
+     "label": 518,
+     "inside": 1026,
+     "label_voxels": 5205,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p4_nuc_315",
+   "patch": "Wound_patch_4",
+   "what": "nucleus 315 as it is, cell run as markers",
+   "object_voxels": 2410,
+   "contacts": [
+    {
+     "label": 250,
+     "inside": 1344,
+     "label_voxels": 3077,
+     "verdict": "real"
+    },
+    {
+     "label": 394,
+     "inside": 27,
+     "label_voxels": 1659,
+     "verdict": "grazing"
+    },
+    {
+     "label": 446,
+     "inside": 966,
+     "label_voxels": 5666,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p4_nuc_489",
+   "patch": "Wound_patch_4",
+   "what": "nucleus 489 as it is, cell run as markers",
+   "object_voxels": 660,
+   "contacts": [
+    {
+     "label": 447,
+     "inside": 263,
+     "label_voxels": 5275,
+     "verdict": "real"
+    },
+    {
+     "label": 456,
+     "inside": 354,
+     "label_voxels": 5176,
+     "verdict": "real"
+    }
+   ]
+  },
+  {
+   "name": "p4_nuc_91",
+   "patch": "Wound_patch_4",
+   "what": "nucleus 91 as it is, cell run as markers",
+   "object_voxels": 2060,
+   "contacts": [
+    {
+     "label": 92,
+     "inside": 1784,
+     "label_voxels": 6362,
+     "verdict": "real"
+    },
+    {
+     "label": 289,
+     "inside": 274,
+     "label_voxels": 9410,
+     "verdict": "in between"
+    }
+   ]
+  }
+ ]
+}

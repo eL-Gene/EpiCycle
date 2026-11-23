@@ -19,7 +19,7 @@ Click a row to make that patch the active one; when its predictions are on disk 
 - **A second line** with what Step 3 knows about the patch, for example `ZCYX · 81×256×256 · 2 ch · 1,650 labels`: the axis order, the size (Z × Y × X), how many channels it has, and — once it has been reconstructed — how many labels its 3D result holds.  A part that is not known is left out rather than guessed — Step 3 never opens a patch file just to fill this line.  The channel count, for example, is always shown for a one-channel patch (axes `ZYX`) and for a patch whose axes Step 3 first read in this version; a patch whose axes were read by an earlier version shows no channel count (its picture still shows grey or colour).
 - **A third line with the patch's voxel size** — the size of one voxel in µm, Z × Y × X, and where it came from: "0.33 × 0.33 × 1.00 µm (from Step 1)", "0.33 × 0.33 × 1.00 µm (from the file)" or "0.33 × 0.33 × 1.00 µm (set by you)".  A patch with no voxel size shows the amber word "voxels": its measurements are in voxels, not µm — to set it, use **"Set spacing…"** on the row's **⋯** menu or when you right-click the row; there is no button on the row itself.
 - **A line of tier counts** once the patch's features have been extracted and triaged: a coloured dot, the number of labels and the tier — first the labels you marked curated, then good, review, bad, garbage.  Hover over it: "Labels per tier in this patch's saved features: curated, good, review, bad, garbage. They change when the features on disk change."  The counts are what the saved features file says — they change when an extraction finishes, when you press **Commit Triage** or **Save**, when the folder is read, the run is switched or you come back to this step, not while you drag the tier lines in the plot.  The same line is on the patch's row in **Curation**'s list.  When the row is too narrow the last tiers are left out ("…").
-- **An eye** on the right, on a patch that has been reconstructed: "View this patch's reconstruction in the viewer (the same as View in Predict + Reconstruct)."  If you have unsaved curation edits, Step 3 asks about them first, because viewing closes the curation.  While another job holds Step 3 (a save, an extraction, a curation step…) the eye is dimmed and a click says why on a line under the list (and on the status line of **Predict + Reconstruct**); while Predict or Reconstruct runs it works, as View does.
+- **An eye** on the right, on a patch that has been reconstructed: "View this patch's reconstruction in the viewer (the same as View in Predict + Reconstruct)."  If you have unsaved curation edits, Step 3 asks about them first, because viewing closes the curation.  While another job holds Step 3 (a save, an extraction, a curation step…) the eye is dimmed and a click says why on a line under the list (and on the status line of **Predict + Reconstruct**); while Predict or Reconstruct runs it works, as View does.  The Patches rows of Predict + Reconstruct carry the same eye; there, a patch that is only predicted opens its prediction window instead.
 - **A ⋯ menu** on the right with "Set spacing…" (and, on a missing patch, "Forget this patch…").
 
 ---
@@ -37,11 +37,11 @@ The voxel size belongs to the workspace, not to a run: it is the same in every r
 
 ### Set spacing…
 
-Press the **Set spacing…** button on an amber row to set that patch's voxel size.  For several patches at once, highlight their rows and pick **Set spacing…** in the **⋯** menu of one of them (or right-click it).  The window names the patches it will change, asks for Z, Y and X in µm and starts from the first highlighted patch's value.  **OK** gives every highlighted patch that value, marked **(set by you)**.
+To set a patch's voxel size, pick **Set spacing…** in its row's **⋯** menu (or right-click the row).  For several patches at once, highlight their rows and pick **Set spacing…** in the **⋯** menu of one of them (or right-click it).  The window names the patches it will change, asks for Z, Y and X in µm and starts from the first highlighted patch's value.  **OK** gives every highlighted patch that value, marked **(set by you)**.
 
 If any of those patches already has extracted features measured with another voxel size, Step 3 asks first: "Changing this makes the measured features of {name} out of date. Extract them again to update them."  The features keep their old numbers until you extract them again; the patch you are curating shows the usual out-of-date notice straight away.
 
-While Predict or Reconstruct runs, the row's button and the menu item are refused, and the line under the list says "Locked while Predict or Reconstruct runs; set it when the run ends."
+While Predict or Reconstruct runs, the menu item is refused, and the line under the list says "Locked while Predict or Reconstruct runs; set it when the run ends."
 
 ---
 
@@ -86,3 +86,21 @@ The rows dim while a prediction or reconstruction runs, like the Patches list in
 ## Pipeline status
 
 Under the list: "Pipeline status" — "Patch counts in this run." — how many patches of the active run are unprocessed, predicted, reconstructed, curating, accepted and finalized, then the last time anything changed and **Resume**, which jumps to the patch you were curating.
+
+---
+
+## When saving your edits fails
+
+Switching the run, converting the layout or leaving Step 3 first offers to save your unsaved tier and mask edits.  If that save fails (a file open in another program, a full disk), nothing moves: the run stays, the layout stays, you stay in Step 3 and your edits stay marked as unsaved.  Session's status line, the line under the QC plot, the status line of **Predict + Reconstruct** and the log say "Your edits could not be saved, so nothing was changed. Close any program that has the file open, then try again."
+
+### Leaving Step 3 with open edits
+
+Leaving Step 3 asks about unsaved tier or mask edits first, the same question a patch switch asks.  Cancel, or a save that fails, keeps you in Step 3.  If an operation of the 3D annotator is still staged (an interpolation preview, a split, a merge before Accept, a refined fragment), leaving is refused (and so is opening the annotator on another patch) with "Accept or reject the open edit first." The same sentence refuses a patch switch, a View change, a run switch, converting the layout and Forget while such an operation is staged. Closing napari itself cannot ask: unsaved edits are lost and the console says which.
+
+### Tier edits that belong to another patch
+
+The tiers on screen belong to the patch they were loaded for.  If a save (of tiers, a mask, Commit Triage or a recompute) would have to write them under another patch's name, it writes nothing, keeps the edits marked unsaved and says "Edits for P1.tif were not written: they belong to another patch than the one in view. Open P1.tif to save them, or discard them."
+
+### Changing the folder
+
+**Browse** and **Use another folder…** are greyed while a Step 3 job runs, and pressing them says "A job is running in Step 3. Change the folder when it has finished." After you pick a folder, Step 3 first asks about unsaved edits (while the old folder is still the working one, so a save goes there), refuses with "Accept or reject the open edit first." if an annotator operation is staged, and, if the 3D annotator is open, asks "The 3D Curation Annotator is open. Changing the folder closes it. Work you saved stays where it is." Only then is the annotator closed, the patch in view forgotten and the new folder read.

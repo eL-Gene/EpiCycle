@@ -687,6 +687,10 @@ def test_a_double_click_on_the_same_spot_is_refused_not_a_zoom(h):
     double-click interval of that marker's placement: no amber
     ADD_S1_CLICK_SAME_SPOT for a gesture the user made on purpose; a slow
     second click (outside the interval) is the ordinary refusal."""
+    # a 2 µm ball at 1 µm per voxel, so the second press, one voxel off
+    # on two axes, lands inside the first ball (the page's 1.0 µm default
+    # would make a ball of one voxel, and that press would miss it)
+    h.adv.params["click_radius_um"] = 2.0
     h._add_place_markers_on = True
     h._add_double_click_s = lambda: 60.0        # well inside the interval
     vm = h.viewer_model_xy

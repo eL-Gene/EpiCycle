@@ -62,8 +62,47 @@ GROUP_WORD = "C{id}"
 #: The noise cluster's legend word.
 NOISE_WORD = "noise"
 
+#: The tooltip of a measured feature in the X, Y and Colour by lists.
+FEATURE_TOOLTIP = "{column}: {description}"
+
+# --- What each Colour by entry colours by (its tooltip in the list) ---
+
+COLOUR_BY_QC_STATUS_TIP = (
+    "Whether each label passed the old threshold filter: pass, flagged, or "
+    "excluded as too small. That filter is no longer in the panel, so a new "
+    "table shows every label grey; colour by QC tier instead.")
+COLOUR_BY_QC_TIER_TIP = (
+    "Each label's triage tier: curated, good, review, bad or garbage, from "
+    "the tier lines on qc_score or from your own assignments. A label with "
+    "no tier yet is unassigned.")
+COLOUR_BY_CLUSTER_TIP = (
+    "The group each label fell into the last time you pressed Cluster under "
+    "QC Features. Labels that fit no group are noise.")
+COLOUR_BY_PATCH_TIP = (
+    "Which patch each label comes from, one colour per patch. With a single "
+    "patch, every label has the same colour.")
+COLOUR_BY_BORDER_TIP = (
+    "Whether a label touches an edge of the patch. A label cut by the edge "
+    "is missing part of its shape, so its measurements are less reliable.")
+COLOUR_BY_TOPOLOGY_TIP = (
+    "The label's shape from its Euler number: Solid, Has cavity (a hollow "
+    "inside, or a label in more than one piece), Has tunnel (a hole right "
+    "through) or Complex (several tunnels).")
+
+#: Colour by entry -> its tooltip (the entries are the plot's own words).
+COLOUR_BY_TIPS = {
+    "QC status": COLOUR_BY_QC_STATUS_TIP,
+    "QC tier": COLOUR_BY_QC_TIER_TIP,
+    "Cluster": COLOUR_BY_CLUSTER_TIP,
+    "Patch": COLOUR_BY_PATCH_TIP,
+    "Border cell": COLOUR_BY_BORDER_TIP,
+    "Topology": COLOUR_BY_TOPOLOGY_TIP,
+}
+
 #: What Step 3 passes as ``QCPlotWidget(texts=...)``.
 STEP3_PLOT_TEXTS = {
+    "FEATURE_TOOLTIP": FEATURE_TOOLTIP,
+    "COLOUR_BY_TIPS": COLOUR_BY_TIPS,
     "help": PLOT_HELP_LINES,
     "UMAP_EMPTY": UMAP_EMPTY,
     "TSNE_EMPTY": TSNE_EMPTY,
@@ -178,6 +217,13 @@ CARD_WARN_RECOMPUTING_ONE = ("The selected label is being recomputed; it "
 #: Undo assign refused: the snapshot is of another table (P2 audit HIGH-1).
 CARD_WARN_UNDO_STALE = ("Undo refused: the last tier change was made on "
                         "another patch.")
+#: A navigator tier mark refused while Commit Triage is still saving.
+CARD_WARN_MARK_WHILE_SAVING = ("Mark refused: Commit Triage is still "
+                               "saving. Try again when it has finished.")
+#: Extract refused while the patch has unsaved mask edits.
+CARD_WARN_EXTRACT_UNSAVED = ("Extract refused: this patch has unsaved "
+                             "curation edits. Save Curation first, or "
+                             "switch patch and choose Discard.")
 #: One chip / one part of the totals line: "curated 842".
 CARD_TIER_COUNT = "{tier} {n}"
 #: The totals line; ``{parts}`` is CARD_TIER_COUNT joined by SEE_SEP and

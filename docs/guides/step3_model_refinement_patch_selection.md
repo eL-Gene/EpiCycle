@@ -8,10 +8,10 @@ Picking which finalized patches to extract training pairs from, and seeing what 
 
 ## What “finalized” means
 
-This list only shows patches whose status is **finalized**. That means you've gone through three steps in the Curation section for each patch:
+This list only shows patches whose status is **finalized**. That means you've done this in the Curation section for each patch:
 
 1. Curated the masks (fixed mergers, splits, deletions) until you're happy
-2. Clicked **Accept Volume** to lock the curation state
+2. Optionally clicked **Accept Volume** to mark it as done (Finalize does not need it)
 3. Clicked **Finalize Labels** to commit those masks as the canonical labels
 
 Patches still in `accepted`, `curating`, or any earlier state won't appear here — the model shouldn't train on half-finished work.
@@ -69,7 +69,7 @@ Tick the patches **Extract Training Pairs** should run on. Ticks do not change w
 ## What if no patches show up?
 
 You haven't finalized any patches yet. Two routes:
-- Go to the **Curation** section, finish curation on a patch, click **Accept Volume**, then **Finalize Labels**
+- Go to the **Curation** section, finish curation on a patch, then click **Finalize Labels** (**Accept Volume** first is optional)
 - If you have patches that should be finalized but aren't appearing, check the patch list in **Predict + Reconstruct** — the status word should read `finalized`
 
 ---
@@ -88,7 +88,7 @@ A separate `manifest.json` in the `refinement` folder records every setting + pe
 
 ## Extraction settings
 
-Below the extract button, **Extraction Settings** is a collapsed block (click its title to open it). It holds a one-line summary of the current effective extraction config, the `Configure per-orientation params…` button, and the Train / Validation Split (train fraction, chunk size, keep neighbouring slices together; see the Training Configuration guide for what they do). To **change** the extraction config, click `Configure per-orientation params…` to open the modal.
+Above the extract button, at the bottom of the scrolling patch area (under the Will-train-on line), **Extraction Settings** is a collapsed block (click its title to open it). The **Extract Training Pairs** and **Clear…** row, with its bar and line, stays pinned at the foot of the column. Extraction Settings holds a one-line summary of the current effective extraction config, the `Configure per-orientation params…` button, and the Train / Validation Split (train fraction, chunk size, keep neighbouring slices together; see the Training Configuration guide for what they do). To **change** the extraction config, click `Configure per-orientation params…` to open the modal.
 
 Inside the dialog you get two independent columns — **Lateral (XY)** and **Axial (XZ + YZ)** — because cells genuinely look different in those two views and benefit from different tuning. Saved values persist per workspace.
 
@@ -120,9 +120,11 @@ When > 0, picks are sampled **uniformly across the stack** (not greedy-from-bott
 
 Minimum spacing (in slice indices) between two picked slices in the same view. Acts as a soft floor after uniform sampling — only matters when the cap is very high. **Defaults:** Lateral = 3, Axial = 5.
 
-### Mask preprocessing (Remove boundaries / Relabel / Min region size / Smoothing disk)
+### Mask preprocessing (Remove boundaries / Relabel / Min region size / Smoothing disk / Expand labels)
 
 Standard pre-training mask hygiene — separates touching cells (1 px erosion), drops fragments below the min size, smooths boundaries via per-instance morphological open + close. **Defaults:** all on, min_size = 100 (Lateral) / 50 (Axial), smoothing disk = 1.
+
+**Expand labels (px)** grows every cell outward by this many pixels after the smoothing. A cell stops growing where it meets a neighbour, so cells never merge. **Default:** 0 (off). Use it to give back what Remove boundaries takes: 1 when the smoothing disk is 0, 2 when it is 1 or more. Higher values make cells bigger than you drew them (they grow into the background only).
 
 > **For iterative refinement, consider turning Remove boundaries OFF.** Each round shaves 1 px off every label, so repeated rounds without it OFF can shrink cells across iterations. Once you have curated ground truth, your boundaries don't need the erosion-to-separate trick anymore.
 

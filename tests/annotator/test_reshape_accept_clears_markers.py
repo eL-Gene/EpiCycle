@@ -116,8 +116,8 @@ def _armed(widget):
     from napari_epicycle.annotator import advanced_features_widget as M
 
     widget.split_seeds_from_combo.setCurrentIndex(M.SEEDS_FROM_IMAGE)
-    widget.set_seed_channels(["nuclei", "membrane"])
-    widget.set_wall_channels(["membrane"])
+    widget.set_seed_channels(["nuclei", "membrane"], "nuclei")
+    widget.set_wall_channels(["membrane"], "membrane")
     widget.split_walls_from_combo.setCurrentIndex(M.WALLS_FROM_MEMBRANE)
     widget.split_target_count_sb.setValue(3)
     widget.split_target_count_cb.setChecked(True)
@@ -172,6 +172,7 @@ class TestWhatResetsAndWhatSurvives:
         _armed(widget)
         before = (widget.split_seed_channel_combo.currentText(),
                   widget.split_wall_channel_combo.currentText())
+        assert before == ("nuclei", "membrane")
         widget.clear_split_guided_ui()
         widget.clear_expected_count()
         assert (widget.split_seed_channel_combo.currentText(),

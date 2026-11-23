@@ -1950,6 +1950,9 @@ class TestPaintIsolationAnnotatorBehavior:
             ann._fake_layer if name == "test_layer" else None
         )
         ann.viewer = types.SimpleNamespace(layers=[])
+        # no edit is open and the Isolate box is not in play
+        ann.staged_kinds = lambda: frozenset()
+        ann._navigator_widget = None
         return ann
 
     def test_toggle_on_with_real_label_fires_isolation(self):
@@ -3599,3 +3602,39 @@ class TestTierButtonSystem:
         nav._table.selectRow(0)
         # Should silently no-op when _on_mark_tier_cb is None.
         _on_mark_tier_clicked(nav, "good")  # no assertion needed
+
+
+class TestClearSelectionSilently:
+    """The auto-advance clears the old rows without any callback firing."""
+
+    def test_clears_the_rows_with_signals_blocked_and_forgets_the_render(self):
+        from napari_epicycle.annotator.curation_label_navigator import (
+            CurationLabelNavigator)
+
+        log = []
+        sel = types.SimpleNamespace(
+            blockSignals=lambda b: log.append(("sel", b)))
+        table = types.SimpleNamespace(
+            blockSignals=lambda b: log.append(("table", b)),
+            selectionModel=lambda: sel,
+            clearSelection=lambda: log.append("clear"))
+        nav = types.SimpleNamespace(_table=table,
+                                    _last_rendered_label_ids={1, 2})
+        CurationLabelNavigator.clear_selection_silently(nav)
+        assert log == [("table", True), ("sel", True), "clear",
+                       ("sel", False), ("table", False)]
+        assert nav._last_rendered_label_ids == set()
+
+    def test_refreshes_the_render_button_state(self):
+        from napari_epicycle.annotator.curation_label_navigator import (
+            CurationLabelNavigator)
+
+        refreshed = []
+        table = types.SimpleNamespace(
+            blockSignals=lambda b: None, selectionModel=lambda: None,
+            clearSelection=lambda: None)
+        nav = types.SimpleNamespace(
+            _table=table, _last_rendered_label_ids={1, 2},
+            _update_render_button_state=lambda: refreshed.append(1))
+        CurationLabelNavigator.clear_selection_silently(nav)
+        assert refreshed == [1]

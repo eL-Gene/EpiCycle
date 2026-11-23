@@ -69,6 +69,8 @@ def _bare_controller(ws: Path) -> FusionReconstructionController:
     c._save_in_flight = False
     c._tiers_dirty = False
     c._curation_dirty = False
+    from packages.epicycle_annotator.curation_undo import CurationUndoStack
+    c._curation_undo_stack = CurationUndoStack(max_depth=20)
     # Avoid Qt dialogs on the abort path.
     c._show_run_error = lambda *a, **k: None
     sm = ReconstructionStateManager()

@@ -876,6 +876,16 @@ def materialize_run_model(
             raise ModelMaterializationError(
                 "copied weights missing immediately after copy"
             )
+        # Each bucket's training config goes beside its copied weights
+        # (``{bucket}_training_config.json``, the name the trained-channel
+        # reader looks for), so the run's own copy says which channels its
+        # model was trained on.  Each bucket reads ITS source's config,
+        # never the sibling's; a source with none copies nothing.  Inside
+        # the same try: a failed copy rolls the whole bundle back.
+        for bucket, src in (("lateral", src_lat), ("axial", src_ax)):
+            cfg = _first_training_config(src)
+            if cfg is not None:
+                _atomic_copy(cfg, model_dir / f"{bucket}_training_config.json")
         manifest = {
             "schema_version": "1.0",
             "backend": "cellpose",
@@ -1090,6 +1100,19 @@ def map_model_source_mode_to_state(mode: Optional[str]) -> str:
 # ----------------------------------------------------------------------------
 # Internal helpers
 # ----------------------------------------------------------------------------
+
+def _first_training_config(weights_path) -> Optional[Path]:
+    """The first training config that exists beside *weights_path*, in the
+    order the trained-channel reader tries them; None when there is none."""
+    from ..ui_shell._model_files import _training_config_files
+    try:
+        for cfg in _training_config_files(weights_path):
+            if Path(cfg).is_file():
+                return Path(cfg)
+    except OSError:
+        return None
+    return None
+
 
 def _atomic_copy(src: Path, dst: Path) -> None:
     """Copy a weights file (or dir) to ``dst`` atomically-ish.

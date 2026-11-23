@@ -63,15 +63,34 @@ __all__ = [
 #: 292 MB, held alongside the volume it guides -- hence the budget.
 GUIDE_BYTE_BUDGET = 512 * 1024 * 1024
 
-#: The DEFAULT run is the FLAT layout (design section 0.1 / Option A): it has
-#: no ``runs/default/`` context dir, so the path helpers must be called with
-#: ``run_id=None`` for it.
+#: The DEFAULT run's slug.  Where its files live depends on the workspace:
+#: the flat layout (no ``runs/default/`` context dir, path id ``None``) or,
+#: after the layout conversion, ``runs/default/`` (path id ``"default"``).
+#: The run-management resolver decides, fed by the workspace's own
+#: ``default_run_nested`` flag -- never a mapping of this module's own.
 _DEFAULT_RUN_ID = "default"
 
 #: Extensions we try for a labels stem, in preference order.
 _LABEL_EXTENSIONS = (".tif", ".tiff")
 
 _LAYER_NAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+#: The note shown when a mask is matched to a downsampled session.  It is
+#: a CAUTION (a marker can go missing), so the panel draws it in amber while
+#: the other loader notes are plain information.
+GUIDE_DOWNSAMPLE_NOTE = (
+    "This session is showing the patch at {}, so the mask is being "
+    "matched to it. Small labels may merge at this resolution - "
+    "turn downsampling off in QC Settings if a marker goes "
+    "missing."
+)
+
+
+def guide_note_is_caution(note: Any) -> bool:
+    """True when ``note`` is the downsample-match caution."""
+    head, _, tail = GUIDE_DOWNSAMPLE_NOTE.partition("{}")
+    text = str(note or "")
+    return text.startswith(head) and text.endswith(tail)
 
 _MB = 1024.0 * 1024.0
 
@@ -120,16 +139,6 @@ class GuideSource:
 # --------------------------------------------------------------------------- #
 # Listing the runs that can act as a guide
 # --------------------------------------------------------------------------- #
-def _paths_run_id(run_id: str) -> Optional[str]:
-    """Map a summary's ``run_id`` onto what the path helpers expect.
-
-    The default run is the flat layout, so it must be passed as ``None``.
-    """
-    if not run_id or str(run_id) == _DEFAULT_RUN_ID:
-        return None
-    return str(run_id)
-
-
 def _first_existing(stem: Any) -> str:
     """Return the first existing ``stem + ext`` (``.tif`` preferred), or ``""``."""
     for ext in _LABEL_EXTENSIONS:
@@ -218,6 +227,10 @@ def list_guide_sources(
 
         envelope = _read_state_envelope(step3_paths, workspace)
         excluded = str(exclude_run_id) if exclude_run_id else ""
+        # The layout conversion writes this flag to disk the moment it
+        # moves the default run under runs/default/, so the envelope is
+        # the truth for this workspace.
+        default_nested = bool(envelope.get("default_run_nested", False))
 
         for summary in summaries:
             try:
@@ -231,7 +244,8 @@ def list_guide_sources(
                 if excluded and run_id == excluded:
                     continue
 
-                path_run_id = _paths_run_id(run_id)
+                path_run_id = run_mgmt.run_path_id_for(
+                    run_id, default_nested=default_nested)
                 curated_stem = step3_paths.patch_curation_labels_stem(
                     workspace, patch_name, path_run_id
                 )
@@ -477,12 +491,7 @@ def validate_and_match_guide(
             # the guide was read from.  Section 5.4: "The file on disk is
             # never touched."
             matched = downsample_labels_majority(guide, factor)
-            notes.append(
-                "This session is showing the patch at {}, so the mask is being "
-                "matched to it. Small nuclei may merge at this resolution - "
-                "turn downsampling off in QC Settings if a seed goes "
-                "missing.".format(_size_phrase(factor))
-            )
+            notes.append(GUIDE_DOWNSAMPLE_NOTE.format(_size_phrase(factor)))
 
     if tuple(int(s) for s in matched.shape) != target_shape:
         if factor > 1:

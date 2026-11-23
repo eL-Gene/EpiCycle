@@ -215,6 +215,22 @@ class TestSpacing:
         src = inspect.getsource(_ann()._refine_spacing_known)
         assert "(1.0, 1.0, 1.0)" in src
 
+    @pytest.mark.parametrize("ctx, known", [
+        # a half-size session of 0.5 um voxels: 1.0 um per voxel, and known
+        ({"spacing": (1.0, 1.0, 1.0), "spacing_source": "patch"}, True),
+        ({"spacing": (1.0, 1.0, 1.0), "spacing_source": "qc_settings"},
+         True),
+        ({"spacing": (1.0, 1.0, 1.0), "spacing_source": "unknown"}, False),
+        # no word from the context: the numbers decide, as before
+        ({"spacing": (1.0, 1.0, 1.0)}, False),
+        ({"spacing": (0.5, 0.5, 0.5)}, True),
+    ])
+    def test_the_context_word_about_the_source_decides(self, ctx, known):
+        import types
+
+        fake = types.SimpleNamespace(_reshape_context=lambda: dict(ctx))
+        assert _ann()._refine_spacing_known(fake) is known
+
     def test_an_unknown_spacing_raises_the_amber_note(self):
         src = inspect.getsource(_ann()._finish_refine_preview)
         assert "_refine_spacing_known" in src

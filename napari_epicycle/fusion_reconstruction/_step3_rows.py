@@ -104,7 +104,8 @@ def build_row(name: str, status: str, axes: Optional[str] = None,
               made_by: Optional[str] = None,
               made_by_active: bool = True,
               source_shape=None, spacing=_NOT_GIVEN,
-              pixel_fallback: bool = True) -> Dict[str, Any]:
+              pixel_fallback: bool = True,
+              busy: bool = False) -> Dict[str, Any]:
     """The delegate record of one patch row.
 
     *status* is the patch's pipeline status; *running* ``"segmenting"`` /
@@ -113,11 +114,20 @@ def build_row(name: str, status: str, axes: Optional[str] = None,
     ``None``); *protected* defaults to the status being accepted or
     finalized; *missing* means the patch file is gone (row 27).
 
-    *made_by* (R6) is the chip's text (:func:`made_by_fields`) for a
+    *made_by* (which model made the patch) is the chip's text (:func:`made_by_fields`) for a
     patch that has been predicted, ``None`` for one that has not;
     *made_by_active* False draws it amber-bordered with "— not the active
-    model".  A row with the chip carries the ⓘ (``info``) unless its file
-    is missing (the ⋯ menu takes that slot).
+    model".  A row with the chip records ``info`` (it has model details:
+    the right-click menu offers them) unless its file is missing.
+
+    Every row that is not missing carries the eye (``eye_tip`` says what a
+    click does, :func:`eye_tip`): a predicted patch opens its prediction, a
+    reconstructed one (curating, accepted, finalized) views its labels, an
+    unprocessed one is dimmed (``eye_dim``) -- nothing to show yet.  A
+    missing row has no eye (``"eye": False``): the ⋯ menu takes its slot.
+    *busy* (the patch is being predicted, or still queued, in the running
+    Predict): a row with no labels to view has its eye dimmed and the
+    click's refusal as the tooltip.
 
     A3: given *source_shape* (the raw patch's recorded shape)
     the shape line is the metadata line ``Z×Y×X · N ch · k labels`` (axes
@@ -183,7 +193,30 @@ def build_row(name: str, status: str, axes: Optional[str] = None,
         if not made_by_active:
             rec["chips_top_tail"] = T.S3_MADE_BY_NOT_ACTIVE_TAIL
         rec["info"] = not missing
+    if missing:
+        rec["eye"] = False
+    else:
+        rec.update(eye=True, eye_dim=status not in EYE_ACTION_STATUSES,
+                   eye_tip=eye_tip(status))
+        if busy and status not in EYE_STATUSES:
+            # the click's order: labels are viewed first, then a patch in
+            # the running Predict is refused
+            rec.update(eye_dim=True,
+                       eye_tip=T.S3_PRED_REFUSED_RUNNING.format(patch=name))
     return rec
+
+
+#: the statuses whose eye does something (a prediction, or labels to view)
+EYE_ACTION_STATUSES = ("predicted",) + EYE_STATUSES
+
+
+def eye_tip(status: str) -> str:
+    """What a Predict + Reconstruct row's eye does, in its tooltip's words."""
+    if status in EYE_STATUSES:
+        return T.S3_PR_EYE_VIEW_TIP
+    if status == "predicted":
+        return T.S3_PR_EYE_PREDICTION_TIP
+    return T.S3_PR_EYE_NOTHING
 
 
 def build_refine_row(name: str, status: str, axes: Optional[str] = None, *,
@@ -253,10 +286,15 @@ def trained_line(lateral_rec, axial_rec) -> tuple:
     ``("", False)`` -- the line is hidden.  Otherwise both models
     must have recorded channels, else the line is the grey
     ``S3_MODEL_TRAINED_UNKNOWN`` (nothing is invented); two models trained
-    on different channels name BOTH sets (``S3_MODEL_TRAINED_DIFFER``); the
-    names are the roles (``membrane`` = code c1 - 1, ``nuclei`` = code c2 -
-    1, none for 0) with the array index in brackets (Step 4's rule); the
-    ``Step 2 run`` tail only when both are Step 2 models of ONE run."""
+    on different channels name BOTH sets (``S3_MODEL_TRAINED_DIFFER``); each
+    channel is its role ("segment" for code c1, "helper" for code c2 > 0)
+    followed by the channel box's own item for that code (``S3_CHAN1_ITEMS``
+    / ``S3_CHAN2_ITEMS``: "segment 2: green, helper 1: red"), so the card
+    and the box beside it name one channel one way.  A first code 0 means
+    Cellpose averaged every channel and ignored the helper: the line is
+    ``S3_MODEL_TRAINED_GRAY`` (``S3_MODEL_GRAY_ITEM`` where both models are
+    named), and no helper is named.  The ``Step 2 run`` tail only when both
+    are Step 2 models of ONE run."""
     if any(isinstance(r, Mapping)
            and r.get("kind") in ("pretrained", "unknown")
            for r in (lateral_rec, axial_rec)):
@@ -268,15 +306,21 @@ def trained_line(lateral_rec, axial_rec) -> tuple:
             codes.append((int(ch[0]), int(ch[1])))
         except (TypeError, ValueError, IndexError, KeyError):
             return T.S3_MODEL_TRAINED_UNKNOWN, False
+    def item(items, c):
+        # the box's own words for the code; a code the box does not offer
+        # is said as the bare code rather than invented
+        return items[c] if 0 <= c < len(items) else str(c)
+
     def names(code):
         c1, c2 = code
-        # code 0 = grayscale: no membrane role and no index are claimed
+        if c1 == 0:
+            # gray: every channel averaged, the helper ignored
+            return [T.S3_MODEL_GRAY_ITEM]
         parts = [T.S3_MODEL_CHANNEL.format(
-            name=T.S3_MODEL_ROLE_MEMBRANE, index=c1 - 1) if c1 > 0
-            else T.S3_MODEL_ROLE_GRAY]
+            role=T.S3_MODEL_ROLE_MEMBRANE, item=item(T.S3_CHAN1_ITEMS, c1))]
         if c2 > 0:
             parts.append(T.S3_MODEL_CHANNEL.format(
-                name=T.S3_MODEL_ROLE_NUCLEI, index=c2 - 1))
+                role=T.S3_MODEL_ROLE_NUCLEI, item=item(T.S3_CHAN2_ITEMS, c2)))
         return parts
 
     if codes[0] != codes[1]:
@@ -299,7 +343,7 @@ def trained_line(lateral_rec, axial_rec) -> tuple:
     run = ""
     if both_step2 and len(runs) == 1 and None not in runs:
         run = T.S3_MODEL_TRAINED_RUN.format(run=runs.pop())
-    if codes[0] == (0, 0):
+    if codes[0][0] == 0:
         return T.S3_MODEL_TRAINED_GRAY.format(run=run), True
     tpl = T.S3_MODEL_TRAINED_ON if len(parts) > 1 else T.S3_MODEL_TRAINED_ONE
     return tpl.format(n=len(parts), names=T.S3_MODEL_CHANNEL_JOIN.join(parts),

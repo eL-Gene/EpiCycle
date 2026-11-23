@@ -110,6 +110,12 @@ def _controller(working_dir="", real_load=False):
     ctrl._stack_dir_is_default = False
     ctrl.state_manager = ReconstructionStateManager()
     ctrl._suppress_publish = False
+    # a clean unsaved-edits guard: the folder change asks it first
+    ctrl._tiers_dirty = False
+    ctrl._curation_dirty = False
+    ctrl._save_in_flight = False
+    from packages.epicycle_annotator.curation_undo import CurationUndoStack
+    ctrl._curation_undo_stack = CurationUndoStack(max_depth=20)
     ctrl._workflow_shell = None
     ctrl.logs = []
     ctrl._append_log = lambda msg: ctrl.logs.append(msg)

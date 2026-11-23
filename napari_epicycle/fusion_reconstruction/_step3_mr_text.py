@@ -202,9 +202,15 @@ PRESET_DESCRIPTIONS: Dict[str, str] = {
         "stays in as training signal."),
     "stratified_epithelia": (
         "500 epochs, learning rate 0.01, channels green (segment) and "
-        "red (auxiliary). Changes nothing if you have not moved the "
+        "red (helper). Changes nothing if you have not moved the "
         "channel defaults."),
 }
+
+# ── Training Configuration › Advanced: the two Cellpose channel boxes ──
+#: the same words as Step 2's Advanced block and Step 3's Settings: the
+#: channel the model segments, and an optional helper
+MR_CHAN1_LABEL = "Channel to segment:"
+MR_CHAN2_LABEL = "Helper channel:"
 
 # ── Model Output ─────────────────────────────────────────────────────────
 MR_OUT_TITLE = "Model Output"

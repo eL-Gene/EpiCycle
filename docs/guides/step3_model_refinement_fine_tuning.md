@@ -20,13 +20,13 @@ The “go” button — run training on the extracted pairs with the configured 
 You need both of these in place:
 
 1. **Training pairs extracted** for at least one view (**Patch Selection** and **Extraction Settings**). The line under each row and the Will-train-on line under the list tell you what is ready.
-2. **Channel mapping** configured (**Training Configuration** → Advanced Parameters). Default `[2, 1]` works for green=membrane / red=nuclei; adjust if your stains differ.
+2. **Channel mapping** configured (**Training Configuration** → Advanced Parameters). Default `[2, 1]` works for green to segment, red as the helper; adjust if your stains differ.
 
 If nothing is extracted yet, **Start Training** does not run; the line under the bar says why:
 
 "Nothing to train on yet — finalize a patch in Curation, then extract its pairs."
 
-When it can run, that line reads like this: "Ready · lateral + axial · 4,480 pairs". Other refusals are written there too, in amber:
+When it can run, that line reads like this: "Ready · both models · 4,480 pairs". Other refusals are written there too, in amber:
 
 "Busy — finish the current operation before training."
 
@@ -42,7 +42,7 @@ The progress bar starts ticking through epochs, the fields lock (an amber line a
 
 Internally:
 1. All `*_img.tif` and `*_mask.tif` pairs for the selected mode are loaded into memory
-2. Train / val sets are split deterministically by stem hash (so re-runs with the same data give the same split)
+2. Train / val sets are split at random, afresh on every run (so two runs on the same data hold back different slices), following the **Train / Validation Split** settings under **Extraction Settings**
 3. A Cellpose trainer is instantiated with the channels + init-mode + hyperparameter settings from **Training Configuration**, all read once at the click (editing a field during the run changes nothing)
 4. Training runs for the configured number of epochs
 5. The trained model gets saved in its bundle folder, `models/{model_name}/`, under the `refinement` folder of the current run (`{workspace}/artifacts/step3/`)
@@ -79,7 +79,7 @@ Click **Cancel** next to Start Training any time; it stops the run within about 
 
 ## When training finishes
 
-The line under the bar reports it: "Complete: refined_03 · lateral + axial (lateral 0.41, axial 0.38) [24:10]". If a pass failed, the line says which one and where, in red: "Training failed in the lateral pass at epoch 412: CUDA out of memory. Details in Diagnostics."
+The line under the bar reports it: "Complete: refined_03 · both models (lateral 0.41, axial 0.38) [24:10]". If a pass failed, the line says which one and where, in red: "Training failed in the lateral pass at epoch 412: CUDA out of memory. Details in Diagnostics."
 
 **Model Output** shows the result card — "The model this run just trained." — with what it was trained on, where it started from, the lateral and axial loss, how long it took and its folder. Before anything is trained it says "No model trained in this run yet." Two actions sit in the card:
 
@@ -118,7 +118,7 @@ Stop iterating when predictions look “good enough out of the box” — usuall
 ## Troubleshooting
 
 ### Training crashes with `CUDA out of memory`
-Lower **Batch size** in Training Configuration (try 2, then 1 if needed). If still hitting it, the patches are unusually large — consider re-extracting with a higher **Min distance between slices** to thin the training set.
+Lower **Batch size** in Training Configuration (try 2, then 1 if needed). If still hitting it, the patches are unusually large — consider re-extracting with a higher **Min distance** to thin the training set.
 
 ### Trained model is worse than the starting model
 - **Too few training cells** — add more finalized patches
@@ -127,10 +127,10 @@ Lower **Batch size** in Training Configuration (try 2, then 1 if needed). If sti
 - **Curation issues** — if your finalized masks have systematic errors (e.g. consistent under-segmentation), the model learned them. Re-curate and retrain.
 
 ### Loss plot stays flat from epoch 1
-The model isn't learning. Most common cause: channel indices don't match your data (e.g. you picked channel 2 but the image only has 2 channels). Cancel, fix channels in **Training Configuration**, restart.
+The model isn't learning. Most common cause: the channel boxes don't match your data (e.g. **Channel to segment** is `3: blue` on a two-channel image, which has no blue channel; or it names the nuclear stain while you train a cell model). Cancel, fix channels in **Training Configuration**, restart.
 
 ### Trained model expects different image shape than what I'm running on
-Shouldn't happen — refinement always trains on full-resolution data (even if you curated on downsampled patches, the save step lifts to full-res before training). If you see shape mismatch errors, something's off in the workspace state; check that the patch's `labels_path` matches the source image's original resolution.
+Shouldn't happen — refinement always trains on full-size files (half-size detail if the patch was curated at 2×: the save step writes the mask back at full size, with its boundaries in 2-voxel steps). If you see shape mismatch errors, something's off in the workspace state; check that the patch's `labels_path` matches the source image's original resolution.
 
 ---
 

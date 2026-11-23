@@ -46,6 +46,7 @@ from . import _step3_manifests as _s3m  # the prediction manifest (R2c)
 from . import _step3_cell_width as _s3cw  # the cell width's lines (R2b)
 from . import _step3_rows as _s3rows  # the Patches rows' records (V1)
 from . import _step3_forget as _s3forget  # Forget this patch
+from . import _step3_channels as _s3ch  # a new run's channels, one channel
 from . import _model_provenance as _mp  # the model provenance
 from ..data_preparation._voxel_spacing import (  # one patch's voxel size (R2b)
     _rel_to,
@@ -54,8 +55,210 @@ from ..data_preparation._voxel_spacing import (  # one patch's voxel size (R2b)
 )
 from ..ui_shell import _recon_settings_text as _rs_text
 from ..ui_shell._recon_presets import (
-    STEP4_PRESET_EPICYCLE, step3_recon_preset, useg3d_preset,
+    MODEL_PRESET_OVERLAYS, STEP4_PRESET_EPICYCLE, model_overlay,
+    step3_recon_preset, useg3d_preset,
 )
+
+
+def _say_in_plot_status(controller, text: str) -> None:
+    """Show *text* as a warning in the plot area's status slot: pinned under
+    the plot, so it is read in the Histogram view as well as in the others
+    (the card is hidden in the Histogram view).  Never raises."""
+    fn = getattr(controller, "_set_plot_status", None)
+    if callable(fn):
+        try:
+            fn(text, "warn")
+        except Exception:      # noqa: BLE001
+            pass
+
+
+def _annotator_widget_of(controller):
+    """The open 3D curation annotator widget, or None (also for a controller
+    stand-in that has no lookup).  Never raises."""
+    fn = getattr(controller, "_get_curation_annotator_widget", None)
+    if not callable(fn):
+        return None
+    try:
+        return fn()
+    except Exception:      # noqa: BLE001
+        return None
+
+
+def _read_plot_colour_dict(controller, pw=None):
+    """The plot's colour per label as ``{id: RGBA}``, or None when the
+    Colour box is off or the plot cannot say."""
+    ui = getattr(controller, "ui", None)
+    cb = getattr(ui, "sync_viewer_colors_cb", None)
+    try:
+        if cb is not None and not cb.isChecked():
+            return None
+    except RuntimeError:
+        return None
+    pw = pw if pw is not None else getattr(ui, "qc_plot_widget", None)
+    if (pw is None or not hasattr(pw, "viewer_colours")
+            or getattr(pw, "_layout_mode", "workbench") != "workbench"
+            or getattr(pw, "_df", None) is None):
+        return None
+    try:
+        ids, rgba = pw.viewer_colours()
+    except Exception as exc:      # noqa: BLE001
+        print(f"[QC-COLOUR] plot colours not read for the annotator: {exc!r}")
+        return None
+    ids = np.asarray(ids, dtype=np.int64)
+    rgba = np.nan_to_num(np.asarray(rgba, dtype=np.float32))
+    return dict(zip(ids.tolist(), rgba))
+
+
+def _plot_colours_unchanged_for(widget, new) -> bool:
+    """True when the cells the annotator isolates keep the colours it
+    already holds (the plot redraws often; most redraws change nothing
+    that is isolated).  False when unsure, e.g. nothing is listed."""
+    try:
+        from napari_epicycle.annotator.curation_3d_widget import (
+            _PLOT_CMAP_UNSET)
+        prev = getattr(widget, "_plot_cmap", None)
+        if prev is None or prev is _PLOT_CMAP_UNSET:
+            return False
+        live = {int(i) for i in widget._iso_live_ids()}
+        if not live:
+            # 2D single cell: the shader flag on main, no layers.
+            main = widget._layer_by_name(
+                widget.viewer.layers, widget._active_labels_name)
+            if main is not None and getattr(
+                    main, "show_selected_label", False):
+                live = {int(main.selected_label)}
+        if not live:
+            # Nothing isolated (an edit has it suspended): the whole map.
+            if set(prev) != set(new):
+                return False
+            return all(np.array_equal(prev[k], new[k]) for k in new)
+        for i in live:
+            a, b = prev.get(i), new.get(i)
+            if (a is None) != (b is None):
+                return False
+            if a is not None and not np.array_equal(a, b):
+                return False
+        return True
+    except Exception:               # noqa: BLE001
+        return False
+
+
+def _push_plot_cmap_to_annotator(controller, plot_dict):
+    """Hand the open annotator the plot's colours (None = Colour box off).
+    Returns *plot_dict* when an annotator took it, else None.  Silent for a
+    controller stand-in with no annotator lookup."""
+    widget = _annotator_widget_of(controller)
+    if widget is None:
+        return None
+    try:
+        widget._plot_cmap = plot_dict
+    except Exception:               # noqa: BLE001
+        return None
+    return plot_dict if plot_dict is not None else {}
+
+
+def _say_in_session(controller, text: str) -> None:
+    """Show *text* on Session's own status line.  Never raises."""
+    fn = getattr(controller, "_session_say", None)
+    if callable(fn):
+        try:
+            fn(text)
+        except Exception:      # noqa: BLE001
+            pass
+
+
+def _report_save_failed(controller, exc=None) -> None:
+    """Say that the save guarding a move failed.  The move can start from
+    Session, Predict + Reconstruct or Curation, and only the open section
+    is on screen, so the sentence goes to all three places (and the log).
+    Never raises."""
+    try:
+        controller._append_log("[SAVE-FAILED] " + _pr_text.S3_SAVE_FAILED
+                               + (f" [{exc}]" if exc is not None else ""))
+    except Exception:      # noqa: BLE001
+        pass
+    _say_in_plot_status(controller, _pr_text.S3_SAVE_FAILED)
+    _say_in_session(controller, _pr_text.S3_SAVE_FAILED)
+    show = getattr(controller, "_pr_status", None)
+    if callable(show):
+        try:
+            show(_pr_text.S3_SAVE_FAILED, "warn")
+        except Exception:      # noqa: BLE001
+            pass
+
+
+def _undo_extra(pre_layers=None, **extra) -> dict:
+    """The ``extra`` of an undo entry that folds several stages of one edit.
+
+    ``pre_layers`` is ``[(roi, snapshot), ...]``, oldest first: the volume
+    regions as they were before each later stage.  Undo puts them back
+    newest first and then the entry's own region.
+    """
+    out = dict(extra)
+    layers = [(r, d) for (r, d) in (pre_layers or []) if r is not None]
+    if layers:
+        out["pre_layers"] = layers
+    return out
+
+
+def _union_roi(first, others):
+    """Bounding box of *first* and the ROIs of *others* (``[(roi, data)]``).
+
+    Falls back to *first* when any ROI is not three slices with integer
+    bounds (a plane ROI, for one, is not).
+    """
+    rois = [first] + [r for (r, _d) in (others or [])]
+    try:
+        lo = [None, None, None]
+        hi = [None, None, None]
+        for roi in rois:
+            if len(roi) != 3:
+                return first
+            for ax, sl in enumerate(roi):
+                if not isinstance(sl, slice) or sl.start is None or sl.stop is None:
+                    return first
+                a, b = int(sl.start), int(sl.stop)
+                lo[ax] = a if lo[ax] is None else min(lo[ax], a)
+                hi[ax] = b if hi[ax] is None else max(hi[ax], b)
+        return tuple(slice(a, b) for a, b in zip(lo, hi))
+    except TypeError:
+        return first
+
+
+def _refuse_if_staged(controller, door: str, where: str = "plot") -> bool:
+    """True (after saying the one sentence) while an edit is open in the
+    annotator.  Called at the top of a door, before it writes anything,
+    changes a flag or takes a lock.
+
+    ``where`` picks the place the user is looking at: ``"plot"`` (the
+    plot status), ``"session"`` (Session's own line), ``"pr"`` (the
+    Predict + Reconstruct status) or ``"three"`` (all of Session,
+    Predict + Reconstruct and the plot status, for a move that can start
+    from any of them).  Never raises.
+    """
+    try:
+        if not controller._staged_annotator_work():
+            return False
+    except Exception:      # noqa: BLE001
+        return False
+    text = _pr_text.S3_STAGED_WORK_OPEN
+    print(f"[STAGED-OP] {door} refused - an edit is open in the annotator")
+    try:
+        controller._append_log(f"[STAGED-OP] {door}: {text}")
+    except Exception:      # noqa: BLE001
+        pass
+    if where in ("plot", "three"):
+        _say_in_plot_status(controller, text)
+    if where in ("session", "three"):
+        _say_in_session(controller, text)
+    if where in ("pr", "three"):
+        show = getattr(controller, "_pr_status", None)
+        if callable(show):
+            try:
+                show(text, "warn")
+            except Exception:      # noqa: BLE001
+                pass
+    return True
 
 
 def _area_call(controller, name, *args, **kwargs):
@@ -159,8 +362,8 @@ def _newest_recon_manifest(root) -> Optional[dict]:
 
 def _extract_autosave_will_run(controller, patch_name) -> bool:
     """Will ``_on_qc_extract_finished`` rewrite the patch's CSV (the
-    re-extract auto-save)?  Only when its guards pass -- the same run epoch,
-    the patch in view (or none) -- and a table is in memory (A2 fold).
+    auto-save)?  Only when its guards pass -- the same run epoch and the
+    patch in view (or none).
     Module-level so the harnesses that bind a subset of methods resolve
     it."""
     launch = getattr(controller, "_qc_extract_launch_epoch", None)
@@ -169,7 +372,9 @@ def _extract_autosave_will_run(controller, patch_name) -> bool:
     active = getattr(controller, "_qc_view_patch_name", "") or ""
     if patch_name and active and patch_name != active:
         return False
-    return getattr(controller, "_qc_features_df", None) is not None
+    # the final table of this extraction is saved whether or not an older
+    # table was in memory (a first extraction has none)
+    return True
 
 
 def _active_qc_patch(controller) -> str:
@@ -191,6 +396,302 @@ def _active_qc_patch(controller) -> str:
             if name:
                 return name
     return ""
+
+
+def _file_key(path):
+    """``(mtime_ns, size)`` of *path*, or None when it cannot be stat'ed:
+    a cache key that changes whenever the file is rewritten."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _match_notes_inputs(controller, patch: str):
+    """``(ctx, other)`` for the QC plot's match notes: *patch*'s
+    extraction-context sidecar in the active run and the CURRENT name of
+    the run its match values were measured against (the run listing; the
+    name the sidecar recorded when that run is no longer listed).
+
+    Both are cached on *controller* and read again only when the sidecar,
+    the state file or that run's manifest changed (a stat of each, no
+    read): the plot asks on every redraw, a tier-line drag included.
+    Module-level (as ``_active_qc_patch``) so the test harnesses that bind
+    a subset of the controller's methods resolve it."""
+    from . import _paths
+    from ._qc_extraction_context import _legacy_sidecar_path, _sidecar_path
+    from .qc_pairing_group import read_run_listing, run_display_name
+    from packages.epicycle_io.step3_run_manifest import RUN_MANIFEST_FILENAME
+
+    ws = getattr(controller, "working_dir", "") or ""
+    run_pid = _active_run_path_id(controller)
+    side_key = None
+    if ws and patch:
+        try:
+            csv = _paths.qc_features_csv(ws, Path(patch).stem,
+                                         run_id=run_pid)
+            side_key = (_file_key(_sidecar_path(csv)),
+                        _file_key(_legacy_sidecar_path(csv)))
+        except Exception:      # noqa: BLE001 -- read every time instead
+            side_key = None
+    cache = getattr(controller, "_match_notes_cache", None) or {}
+    ctx_key = (ws, run_pid, patch, side_key)
+    if side_key is None or cache.get("ctx_key") != ctx_key:
+        ctx = controller._patch_extraction_context(patch) or {}
+        cache = {"ctx_key": ctx_key if side_key is not None else None,
+                 "ctx": ctx}
+    ctx = cache["ctx"]
+    slug = str(ctx.get("match_run") or "")
+    name_key = None
+    if ws and slug:
+        manifest = (Path(_paths.step3_runs_root(ws)) / slug
+                    / RUN_MANIFEST_FILENAME)
+        name_key = (slug, _file_key(_paths.state_json_path(ws)),
+                    _file_key(manifest))
+    if name_key is None or cache.get("name_key") != name_key:
+        name = ""
+        if ws and slug:
+            name = run_display_name(read_run_listing(ws), slug)
+        cache["name_key"] = name_key
+        cache["name"] = name
+    try:
+        controller._match_notes_cache = cache
+    except AttributeError:      # an object that takes no attributes
+        pass
+    other = str(cache.get("name") or ctx.get("match_run_display_name")
+                or slug)
+    return ctx, other
+
+
+def _deleted_ids_above(prev_df, df) -> set:
+    """The ids ``prev_df`` holds a removed row for (``deleted`` or
+    ``superseded``) that are above the highest id of ``df``.  A
+    re-extraction keeps a removed row for each, so the id floor -- the
+    highest id over every row -- never falls below an id that was removed,
+    through a Save, a re-extraction and a restart."""
+    from ._step3_tier_counts import INACTIVE_STATUSES
+
+    if prev_df is None or "label" not in getattr(prev_df, "columns", ()) \
+            or "label_status" not in prev_df.columns:
+        return set()
+    import pandas as pd
+
+    top = (pd.to_numeric(df["label"], errors="coerce").max()
+           if "label" in df.columns and len(df) else float("nan"))
+    top = 0 if pd.isna(top) else int(top)
+    lab = pd.to_numeric(prev_df["label"], errors="coerce")
+    hit = prev_df["label_status"].isin(INACTIVE_STATUSES) & (lab > top)
+    return {int(v) for v in lab[hit].dropna()}
+
+
+def _carry_cleared_rows(prev_df, df, cleared_ids):
+    """``df`` plus one removed row per id of ``cleared_ids`` that
+    ``prev_df`` holds as ``deleted`` or ``superseded`` and ``df`` does not
+    hold at all (its last deleted row, else its last superseded row, the
+    status kept; only ``df``'s columns).  ``df`` itself, unchanged, when
+    there is nothing to carry.
+
+    The kept rows hold the old objects' values; the QC plot's PCA fit
+    leaves removed rows out, so they never move the live points."""
+    from ._step3_tier_counts import INACTIVE_STATUSES
+
+    if prev_df is None or not cleared_ids or "label" not in getattr(
+            prev_df, "columns", ()) or "label_status" not in prev_df.columns:
+        return df
+    import pandas as pd
+
+    present = set(pd.to_numeric(df["label"], errors="coerce").dropna()
+                  .astype("int64")) if "label" in df.columns else set()
+    want = {int(i) for i in cleared_ids} - present
+    if not want:
+        return df
+    rows = prev_df[prev_df["label_status"].isin(INACTIVE_STATUSES)
+                   & prev_df["label"].isin(sorted(want))]
+    if rows.empty:
+        return df
+    # an id with a deleted row keeps that one (its object's last state; a
+    # superseded row is an older copy of it), else its last superseded row
+    gone = rows[rows["label_status"] == "deleted"].drop_duplicates(
+        subset="label", keep="last")
+    older = rows[~rows["label"].isin(gone["label"])].drop_duplicates(
+        subset="label", keep="last")
+    rows = pd.concat([gone, older]).sort_index()
+    status = rows["label_status"].to_numpy()
+    rows = rows.reindex(columns=df.columns).copy()
+    rows["label_status"] = status      # even when ``df`` has no such column
+    return pd.concat([df, rows], ignore_index=True)
+
+
+def _reshape_flag_where(controller, patch_name=None):
+    """``(workspace, patch stem, run id)`` of the reshape-verdict sidecar,
+    or ``None`` with no workspace or patch.  The ONE place its key is made:
+    every reader and writer goes through here, so a patch name with or
+    without its extension names the same file.  ``patch_name`` ``None`` is
+    the patch in curation; the workspace and the run come from the reshape
+    context, as the reshape's own write takes them."""
+    ctx_fn = getattr(controller, "_on_annotator_reshape_context", None)
+    ctx = (ctx_fn() if callable(ctx_fn) else None) or {}
+    ws = str(ctx.get("workspace") or "")
+    pn = ctx.get("patch_name") if patch_name is None else patch_name
+    if not ws or not pn:
+        return None
+    return ws, Path(str(pn)).stem, ctx.get("run_id")
+
+
+#: the map columns a kept row cannot be placed on again (no basis to
+#: project into): emptied on the rows a re-extraction keeps
+_KEPT_ROW_MAP_COLUMNS = ("UMAP_1", "UMAP_2", "tSNE_1", "tSNE_2")
+
+
+def _reproject_kept_rows(df, settings) -> None:
+    """Put the removed rows a re-extraction kept into the NEW basis, in
+    place.  They arrive with the PC / UMAP / t-SNE values of the extraction
+    they were measured in.  Their PCs are re-projected with a fit on the
+    live rows only (the live rows' PCs come out as the extraction wrote
+    them; only the kept rows are written); their UMAP / t-SNE cells, which
+    cannot be re-projected, are emptied, so no stale map position is drawn.
+    With fewer than two live rows there is no basis: their PCs are emptied
+    too.  ``settings`` are the QC settings the extraction ran with."""
+    import re
+
+    from ._step3_tier_counts import INACTIVE_STATUSES
+
+    if df is None or "label_status" not in df.columns:
+        return
+    kept = df["label_status"].isin(INACTIVE_STATUSES).to_numpy()
+    if not kept.any():
+        return
+    maps = [c for c in _KEPT_ROW_MAP_COLUMNS if c in df.columns]
+    if maps:
+        df.loc[kept, maps] = np.nan
+    pcs = sorted((c for c in df.columns if re.fullmatch(r"PC\d+", str(c))),
+                 key=lambda c: int(str(c)[2:]))
+    if not pcs:
+        return
+    if int((~kept).sum()) < 2:
+        df.loc[kept, pcs] = np.nan
+        return
+    from .qc_features import compute_pca_full
+
+    settings = settings or {}
+    out = compute_pca_full(
+        df, n_components=len(pcs), features=settings.get("pca_features"),
+        exclude_border=settings.get("exclude_border", False), mode="qc",
+        exclude_inactive=True)
+    proj = out["projected"]
+    for j, col in enumerate(pcs):
+        df.loc[kept, col] = proj[kept, j]
+
+
+def _qc_write_patch(controller) -> str:
+    """The patch a write of the QC table in memory may name, or "" when the
+    write must be refused.
+
+    The table belongs to the patch it was loaded for (``_qc_table_patch``);
+    the patch in view (``_qc_view_patch_name``) is blank after the view's
+    layers are cleared while the table is still held.  A write goes to the
+    patch in view, else the table's own patch, and is refused when that is
+    not the table's patch -- the Curation or Session selection never names
+    a write.  A table with no recorded patch (one set outside the loaders)
+    keeps the old order: view, Curation selection, Session highlight."""
+    owner = getattr(controller, "_qc_table_patch", "") or ""
+    view = getattr(controller, "_qc_view_patch_name", "") or ""
+    if owner:
+        name = view or owner
+        return name if name == owner else ""
+    if view:
+        return view
+    for getter in ("_selected_curation_patch", "_selected_patch_name"):
+        fn = getattr(controller, getter, None)
+        if callable(fn):
+            name = fn() or ""
+            if name:
+                return name
+    return ""
+
+
+def _qc_spacing_numbers(settings) -> Optional[tuple]:
+    """The ``(z, y, x)`` QC Settings' spacing boxes hold: ``spacing_values``
+    (the only key the dialog fills its boxes from), else the boxes' 1.0
+    default.  ``None`` when the value cannot be read as three numbers."""
+    if not isinstance(settings, dict):
+        return (1.0, 1.0, 1.0)
+    raw = settings.get("spacing_values")
+    if raw is None:
+        return (1.0, 1.0, 1.0)
+    try:
+        vals = tuple(float(v) for v in raw)
+    except (TypeError, ValueError):
+        return None
+    return vals if len(vals) == 3 else None
+
+
+def _qc_spacing_edited(before, after) -> bool:
+    """True when the spacing boxes' numbers changed between the dialog's
+    open and its OK (typed, or filled by Auto): the user gave a voxel size.
+    Numbers within half a box step (the boxes hold 3 decimals) are the same
+    number.  An unreadable side is never an edit (the safe answer: the
+    spacing stays unknown)."""
+    if before is None or after is None:
+        return False
+    return any(abs(b - a) > 0.5e-3 for b, a in zip(before, after))
+
+
+def _reset_per_patch_state(controller) -> None:
+    """Forget everything Step 3 holds about the patch in view: the QC table
+    and its owner, the view name and layers, the unsaved flags, the plot
+    area, the pictures' and tier counts' batches; then bump the tokens of
+    the patch-scoped jobs and the run epoch so a result still in flight is
+    discarded.  Shared by a run switch, a layout conversion and a change of
+    the Session folder.  It does NOT re-point the run (that is
+    ``state_manager.switch_active_run``).  Each step is guarded so a partial
+    controller never raises."""
+    c = controller
+    for name in ("_stop_step3_thumbs", "_stop_tier_counts"):
+        fn = getattr(c, name, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception as exc:      # noqa: BLE001
+                print(f"[STEP3-RESET] {name} failed: {exc!r}")
+    c._qc_features_df = None
+    c._qc_table_patch = ""
+    c._qc_view_patch_name = ""
+    sync = getattr(c, "_sync_loaded_patch_marker", None)
+    if callable(sync):
+        try:
+            sync()
+        except Exception:      # noqa: BLE001
+            pass
+    # The QC plot area shows nothing of the old patch -- AFTER the table is
+    # gone, so the gates it derives see no table.
+    _area_call(c, "_reset_qc_plot_area", _plot_text.PLOT_NO_PATCH,
+               _plot_text.SEE_NO_PATCH, blank_patch=True)
+    c._qc_view_layers = []
+    c._cached_source_path = ""
+    c._curation_dirty = False
+    c._tiers_dirty = False
+    for tok in ("_compute_dispatch_token", "_patch_load_token",
+                "_commit_triage_token", "_save_curation_token"):
+        setattr(c, tok, getattr(c, tok, 0) + 1)
+    c._run_epoch = getattr(c, "_run_epoch", 0) + 1
+
+
+def _report_table_other_patch(controller, what: str) -> None:
+    """A write of the table was refused because the table belongs to
+    another patch than the one named: log it, say it, leave the edits
+    marked unsaved.  Never raises."""
+    try:
+        controller._append_log(
+            f"[TABLE-OWNER] {what} refused: the QC table in memory is "
+            f"{getattr(controller, '_qc_table_patch', '')!r}, the patch "
+            f"in view is {getattr(controller, '_qc_view_patch_name', '')!r}")
+    except Exception:      # noqa: BLE001
+        pass
+    sentence = _pr_text.S3_SAVE_REFUSED_OTHER_PATCH.format(
+        patch=getattr(controller, "_qc_table_patch", "") or "another patch")
+    _say_in_plot_status(controller, sentence)
 
 
 def _active_run_path_id(controller) -> Optional[str]:
@@ -286,6 +787,120 @@ def _atomic_tiff_write(path, data: np.ndarray, dtype=None) -> None:
         raise
 
 
+def _halfsize_save_note(ds_factor, n_gone) -> str:
+    """The clause a save log line gets when the mask was saved from a
+    half-size session ("" at full size)."""
+    try:
+        if int(ds_factor) <= 1:
+            return ""
+        n = int(n_gone)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return f" ({int(ds_factor)}×: boundaries re-quantized)"
+    cells = "cell" if n == 1 else "cells"
+    return (f" ({int(ds_factor)}×: boundaries re-quantized, "
+            f"{n} small {cells} gone)")
+
+
+def _ids_present_in_labels(labels) -> np.ndarray:
+    """The label IDs a label array holds (0 included when present)."""
+    flat = np.asarray(labels).reshape(-1)
+    if not flat.size:
+        return np.zeros(0, dtype=np.int64)
+    # bincount only for integer arrays it can read without loss (not
+    # uint64, not floats); everything else sorts
+    if flat.dtype.kind not in "ui" or flat.dtype == np.uint64:
+        return np.unique(flat)
+    top = int(flat.max())
+    if int(flat.min()) >= 0 and top < (1 << 20):
+        # linear passes in slices (bincount copies its input to int64, so a
+        # slice at a time keeps that copy small); far cheaper than sorting
+        # the whole volume
+        seen = np.zeros(top + 1, dtype=bool)
+        step = 1 << 22
+        for i in range(0, flat.size, step):
+            seen |= np.bincount(flat[i:i + step], minlength=top + 1) > 0
+        return np.flatnonzero(seen)
+    return np.unique(flat)
+
+
+def _row_labels(df) -> np.ndarray:
+    """The ``label`` column as floats: text that reads as a number counts,
+    anything else is NaN (and is never matched)."""
+    import pandas as _pd
+    return _pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
+
+
+def _ids_missing_from_labels(df, labels) -> list:
+    """The labels (sorted ints) of the ACTIVE rows of ``df`` that the label
+    array ``labels`` does not hold.  Label 0 and unreadable labels are never
+    named.  A frame with no ``label_status`` column counts every row as
+    active.  PURE: ``df`` is not changed."""
+    if df is None or "label" not in df.columns or not len(df):
+        return []
+    lab = _row_labels(df)
+    if "label_status" in df.columns:
+        active = (df["label_status"] == "active").to_numpy()
+    else:
+        active = np.ones(len(df), dtype=bool)
+    ok = active & np.isfinite(lab)
+    ok[ok] &= (lab[ok] != 0) & (lab[ok] == np.floor(lab[ok]))
+    cand = lab[ok]
+    missing = cand[~np.isin(cand, _ids_present_in_labels(labels))]
+    return sorted({int(v) for v in missing})
+
+
+def _live_status_mask(df) -> np.ndarray:
+    """The rows of ``df`` that stand for an object: every ``label_status``
+    but ``deleted`` and ``superseded`` (a missing or unknown status counts
+    as active).  ``df`` must have the column."""
+    from ._step3_tier_counts import INACTIVE_STATUSES
+
+    return (~df["label_status"].isin(INACTIVE_STATUSES)).to_numpy()
+
+
+def _mark_ids_deleted(df, ids) -> int:
+    """Turn ``label_status`` to ``"deleted"`` on the active rows of ``df``
+    whose label is in ``ids`` (in place; the column is added, all active,
+    when missing).  Active = not deleted and not superseded.  Returns how
+    many labels were marked."""
+    if df is None or ids is None or len(ids) == 0 or "label" not in df.columns:
+        return 0
+    if "label_status" not in df.columns:
+        df["label_status"] = "active"
+    lab = _row_labels(df)
+    hit = (_live_status_mask(df)
+           & np.isin(lab, np.asarray(list(ids), dtype=float)))
+    if not hit.any():
+        return 0
+    df.loc[hit, "label_status"] = "deleted"
+    return len({int(v) for v in lab[hit]})
+
+
+def _active_label_set(df) -> set:
+    """The labels (ints) that have an active row in ``df``.  A frame with no
+    ``label_status`` column counts every row as active."""
+    if df is None or "label" not in df.columns or not len(df):
+        return set()
+    lab = _row_labels(df)
+    ok = np.isfinite(lab)
+    if "label_status" in df.columns:
+        ok &= (df["label_status"] == "active").to_numpy()
+    return {int(v) for v in lab[ok]}
+
+
+def _undo_recheck_candidates(before_df, restored_df) -> list:
+    """The labels an Undo turns active again: active in the restored table
+    and not active in the table it replaces (sorted ints, 0 left out).
+    Only these can be cells the half-size mask lacks, so only these are
+    checked against the layer."""
+    if before_df is None:
+        return []
+    return sorted((_active_label_set(restored_df)
+                   - _active_label_set(before_df)) - {0})
+
+
 def _commit_triage_persist(
     *,
     df,
@@ -305,7 +920,10 @@ def _commit_triage_persist(
         5a. Stage the CSV to a tempfile in ``csv_dir`` via ``df.to_csv`` (NOT
             ``save_patch_csv`` — kept as a direct ``to_csv`` so the existing
             CSV-failure tests that patch ``pd.DataFrame.to_csv`` still bite).
-        5b. Write the (already-lifted) mask via ``_atomic_tiff_write``.
+        5b. Copy the mask on disk to a ``<mask>.bak.saving`` temp, write the
+            (already-lifted) mask via ``_atomic_tiff_write``, then move the
+            temp onto ``<mask>.bak`` (non-fatal; a failed write leaves the
+            previous ``.bak`` untouched).
         5c. Promote the staged CSV via ``os.replace`` AFTER the mask write.
 
     Transactional invariants (tested):
@@ -353,11 +971,14 @@ def _commit_triage_persist(
             legacy ``mask_saved`` flow where a missing path keeps dirty flags).
           ``csv_path`` (str): echoed back for the log line.
           ``n_garbage`` (int), ``n_labels`` (int): for the success log line.
+          ``warnings`` (list[str]): non-fatal notes (a failed ``.bak`` copy
+            of the mask on disk, taken before it is overwritten) for the
+            main thread to log.
     """
     import os as _os
     import tempfile as _tempfile
     from pathlib import Path as _Path
-    from .qc_features import active_rows
+    from .qc_features import active_rows, drop_display_only
 
     result = {
         "ok": False,
@@ -368,6 +989,7 @@ def _commit_triage_persist(
         "csv_path": str(csv_path),
         "n_garbage": len(garbage_ids),
         "n_labels": int(len(df)) if df is not None else 0,
+        "warnings": [],
     }
 
     # 4. Build triage map from active rows only (ghosts excluded).
@@ -381,12 +1003,13 @@ def _commit_triage_persist(
     csv_dir = _Path(csv_dir)
     csv_dir.mkdir(parents=True, exist_ok=True)
 
-    # 5a. Stage CSV to a temp file (direct to_csv — NOT save_patch_csv).
+    # 5a. Stage CSV to a temp file (direct to_csv — NOT save_patch_csv),
+    # without the display-only columns, as save_patch_csv writes it.
     csv_staging = None
     try:
         fd, csv_staging = _tempfile.mkstemp(suffix=".csv", dir=str(csv_dir))
         _os.close(fd)
-        df.to_csv(csv_staging, index=False)
+        drop_display_only(df).to_csv(csv_staging, index=False)
     except Exception as exc:
         if csv_staging:
             try:
@@ -400,18 +1023,61 @@ def _commit_triage_persist(
     # 5b. Persist label volume (already lifted on the main thread).
     mask_saved = False
     if labels_path and lifted_mask is not None:
+        # Keep the mask on disk as <mask>.bak, as Save does: COPY it to a
+        # temp next to the .bak first, and move the temp onto the .bak only
+        # once the new mask is written, so a failed write leaves the
+        # previous .bak as it was.  A failed copy or move is a warning,
+        # never a failure.
+        _labels_obj = _Path(labels_path)
+        _bak = _labels_obj.with_suffix(_labels_obj.suffix + ".bak")
+        _bak_tmp = _bak.with_suffix(_bak.suffix + ".saving")
+        _have_bak_tmp = False
+        # a temp left by an earlier interrupted commit goes first
+        try:
+            if _bak_tmp.exists():
+                _bak_tmp.unlink()
+        except OSError:
+            pass
+        if _labels_obj.exists():
+            import shutil as _shutil
+            try:
+                _shutil.copy2(str(_labels_obj), str(_bak_tmp))
+                _have_bak_tmp = True
+            except Exception as bak_exc:
+                result["warnings"].append(
+                    f".bak rotation failed: {bak_exc}. "
+                    f"Continuing with the commit (no rollback available)."
+                )
+                try:
+                    _bak_tmp.unlink()
+                except OSError:
+                    pass
         try:
             _atomic_tiff_write(labels_path, lifted_mask, dtype=np.uint32)
             mask_saved = True
         except Exception as exc:
             result["stage"] = "mask"
             result["error"] = f"Failed to save label volume: {exc}"
-            # Mask failed — discard staged CSV, no promote.
-            try:
-                _os.remove(csv_staging)
-            except OSError:
-                pass
+            # Mask failed — discard staged CSV + the .bak temp, no promote.
+            for _left in ((csv_staging, _bak_tmp) if _have_bak_tmp
+                          else (csv_staging,)):
+                try:
+                    _os.remove(str(_left))
+                except OSError:
+                    pass
             return result
+        if _have_bak_tmp:
+            try:
+                _os.replace(str(_bak_tmp), str(_bak))
+            except Exception as bak_exc:
+                result["warnings"].append(
+                    f".bak rotation failed: {bak_exc}. "
+                    f"The commit went through (no rollback available)."
+                )
+                try:
+                    _bak_tmp.unlink()
+                except OSError:
+                    pass
 
     if not mask_saved:
         # No labels_path / no mask → skip mask write entirely.  Legacy flow
@@ -1296,12 +1962,15 @@ class _QCFeatureWorker(QObject):
                  metric: str = "euclidean",
                  patch_status: str = "unknown",
                  spacing_from_file: bool = False,
-                 spacing_workspace: str = ""):
+                 spacing_workspace: str = "",
+                 match_labels: Optional[dict] = None):
         super().__init__()
         # R7: read the patch file's voxel tags on this thread when
         # the patch has no voxel size of its own
         self._spacing_from_file = bool(spacing_from_file)
         self._spacing_workspace = spacing_workspace or ""
+        # the other run to compare with (the pairing check), or None
+        self._match_labels = match_labels
         self._labels_path = labels_path
         self._patch_name = patch_name
         self._csv_path = csv_path
@@ -1396,6 +2065,7 @@ class _QCFeatureWorker(QObject):
                 log=lambda msg: self._safe_log(msg),
                 spacing_from_file=self._spacing_from_file,
                 spacing_workspace=self._spacing_workspace,
+                match_labels=self._match_labels,
             )
             # Re-read from the just-written CSV so the df handed to the
             # controller matches the subprocess path's re-read exactly.
@@ -1403,6 +2073,8 @@ class _QCFeatureWorker(QObject):
             df.attrs["_adjacency_list"] = list(
                 summary.get("adjacency_list") or []
             )
+            # the pairing check's floors and links (or its refusal)
+            df.attrs["_pairing"] = summary.get("pairing")
             if summary.get("spacing_found"):
                 self.spacing_found.emit(self._patch_name,
                                         summary["spacing_found"],
@@ -1516,7 +2188,9 @@ class _QCSubprocessReader(QThread):
 
 class _QCFeatureBatchWorker(QObject):
     """Extracts QC features for multiple patches sequentially in a background thread."""
-    patch_done = Signal(str, int)         # (patch_name, n_labels)
+    #: (patch_name, n_labels, info) -- ``info`` is a dict: ``"pairing"``
+    #: holds what the pairing check returned for that patch (or None)
+    patch_done = Signal(str, int, object)
     all_finished = Signal(int, int)       # (n_patches, total_labels)
     error = Signal(str)
     log = Signal(str)
@@ -1546,6 +2220,9 @@ class _QCFeatureBatchWorker(QObject):
         = voxel units) wins over the batch-wide *spacing*; with
         ``spacing_from_file`` the patch file's tags are read here first and
         the result is emitted on ``spacing_found``.
+
+        A dict's ``match_labels`` (the bundle naming another run of that
+        patch, or None) adds the pairing check for that patch only.
         """
         super().__init__()
         self._configs = patch_configs
@@ -1587,8 +2264,10 @@ class _QCFeatureBatchWorker(QObject):
                 persist_qc_artifacts,
             )
             from napari_epicycle.segmentation.feature_registry import (
-                build_registry, run_extraction,
+                build_registry, run_extraction, with_cross_run_pairing,
             )
+            from .qc_pairing_group import pairing_outcome
+            from ._qc_pairing_text import pairing_log_line
 
             total_labels = 0
             for cfg in self._configs:
@@ -1632,6 +2311,12 @@ class _QCFeatureBatchWorker(QObject):
                         available["exclude_border"] = True
                     if self._invert_z:
                         available["invert_z"] = True
+                    # the pairing check for this patch (a copy: the group's
+                    # result never lands in the dispatch's dict)
+                    p_bundle = cfg.get("match_labels")
+                    p_bundle = dict(p_bundle) if p_bundle else None
+                    if p_bundle is not None:
+                        available["match_labels"] = p_bundle
 
                     src_path = cfg.get("source_stack_path", "")
                     if src_path and Path(src_path).exists():
@@ -1657,6 +2342,8 @@ class _QCFeatureBatchWorker(QObject):
                         checked_channels=self._channel_configs or None,
                     )
                     registry = [g for g in registry if g.name != "composite"]
+                    if p_bundle is not None:
+                        registry = with_cross_run_pairing(registry)
 
                     self.log.emit(
                         f"[{patch_name}] Extracting "
@@ -1666,6 +2353,10 @@ class _QCFeatureBatchWorker(QObject):
                         registry, available,
                         progress_cb=lambda pct: None,
                     )
+                    pairing = pairing_outcome(p_bundle)
+                    _pair_line = pairing_log_line(pairing)
+                    if _pair_line:
+                        self.log.emit(f"[{patch_name}] {_pair_line}")
 
                     available.pop("prob_volume", None)
                     available.pop("raw_stack", None)
@@ -1761,7 +2452,8 @@ class _QCFeatureBatchWorker(QObject):
                         )
                     total_labels += len(df)
                     self.log.emit(f"[{patch_name}] Done — {len(df)} labels")
-                    self.patch_done.emit(patch_name, len(df))
+                    self.patch_done.emit(patch_name, len(df),
+                                         {"pairing": pairing})
                 except Exception as exc:
                     tb = traceback.format_exc()
                     self.log.emit(f"[{patch_name}] ERROR: {exc}")
@@ -2003,7 +2695,7 @@ def _prov_window_alive(dlg, *, visible: bool = True) -> bool:
 class _ProvenanceNotesSaver:
     """The details window's ``on_save``: a plain object whose BOUND method
     the window keeps (never a lambda), remembering the patch and the
-    workspace / run it was opened in (R6)."""
+    workspace / run it was opened in."""
 
     def __init__(self, controller, patch_name: str):
         self._controller = controller
@@ -2014,6 +2706,70 @@ class _ProvenanceNotesSaver:
     def save(self, notes: str):
         return self._controller._save_provenance_notes(
             self.patch_name, notes, self.workspace, self.run_id)
+
+
+class _PredictionLink:
+    """One prediction window's link to the controller: its patch, the
+    workspace / run / run epoch it was opened in, the newest image and map
+    tokens (an older answer is dropped), and the two BOUND methods the
+    window keeps (``choice``, ``details``; never lambdas)."""
+
+    __slots__ = ("ctrl", "patch_name", "workspace", "run_id", "epoch",
+                 "image_token", "map_token", "inflight", "pending",
+                 "__weakref__")
+
+    def __init__(self, ctrl, patch_name: str):
+        self.ctrl = ctrl
+        self.patch_name = patch_name
+        self.workspace = getattr(ctrl, "working_dir", "") or ""
+        self.run_id = _active_run_path_id(ctrl)
+        self.epoch = getattr(ctrl, "_run_epoch", 0)
+        self.image_token = 0
+        self.map_token = 0
+        #: the window's one loader in flight (or None), and the newest
+        #: Pass / Map choice waiting for it to finish
+        self.inflight = None
+        self.pending = None
+
+    def choice(self, pass_: str, kind: str):
+        self.ctrl._on_prediction_choice(self, pass_, kind)
+
+    def details(self):
+        self.ctrl._on_pr_info_requested(self.patch_name)
+
+
+class _PredictionLoad:
+    """One loader thread of a prediction window: its (thread, worker), the
+    window link and the tokens it was started with.  The controller keeps
+    it in ``_pred_threads`` until the thread's ``finished``; its BOUND
+    methods are the worker's and the thread's slots."""
+
+    __slots__ = ("ctrl", "link", "what", "image_token", "map_token",
+                 "thread", "worker", "__weakref__")
+
+    def __init__(self, ctrl, link, what: str, image_token: int,
+                 map_token: int):
+        self.ctrl = ctrl
+        self.link = link
+        self.what = what
+        self.image_token = int(image_token)
+        self.map_token = int(map_token)
+        self.thread = None
+        self.worker = None
+
+    def loaded(self, result):
+        self.ctrl._on_prediction_preview_loaded(self, result)
+
+    def failed(self, error):
+        self.ctrl._on_prediction_preview_failed(self, error)
+
+    def finished(self):
+        self.ctrl._on_prediction_thread_finished(self)
+
+
+#: the two signals the prediction window's loader declares (shutdown cuts
+#: them before the join)
+_PREDICTION_WORKER_SIGNALS = ("loaded", "failed")
 
 
 class FusionReconstructionController:
@@ -2079,6 +2835,8 @@ class FusionReconstructionController:
 
         # QC state
         self._qc_features_df = None  # current patch features DataFrame
+        # the patch the table above was loaded for (blank when none is held)
+        self._qc_table_patch: str = ""
         # 2026-05-31 (fix/qc-stale-notice): tracks whether the spacing or
         # downsample factor has drifted from what was active at QC feature
         # extraction time.  Set by _check_qc_extraction_staleness() on patch
@@ -2092,6 +2850,10 @@ class FusionReconstructionController:
         # re-extract.  Keyed by (patch_name, reason_signature) so a new
         # kind of drift on the same patch re-prompts.
         self._qc_staleness_notified: set = set()
+        # True while the features table on disk disagrees with the labels in
+        # memory (set on patch load, cleared by a fresh extraction).  Kept
+        # apart from ``_qc_extraction_stale``, which the spacing check owns.
+        self._qc_table_mismatch: bool = False
         # ── QC-extract subprocess state (2026-06-07, step3-extract-subprocess) ──
         # The QC feature extraction now runs in a SEPARATE PROCESS so the
         # GIL-bound compute can't freeze the napari UI.  These track the live
@@ -2204,6 +2966,13 @@ class FusionReconstructionController:
         self._init_selection_sync_trace()
 
         from .qc_features import PCA_FEATURES
+        # True once the user CHANGED the spacing boxes of QC Settings and
+        # pressed OK: its spacing is then an entered voxel size even at
+        # 1 / 1 / 1 (the dialog stores that as spacing=None, like the
+        # factory default).  An OK that left the boxes alone does not set
+        # it; a change of workspace or Session folder clears it.  Never
+        # persisted.
+        self._qc_spacing_entered = False
         self._qc_settings: dict = {
             "spacing": None,
             "spacing_values": (1.0, 1.0, 1.0),
@@ -2218,9 +2987,25 @@ class FusionReconstructionController:
             "n_cluster_components": 5,
             "pca_features": list(PCA_FEATURES),
         }
+        # The pairing check: what each extraction was dispatched with (the
+        # other run, its file's mtime and size, the patch file's) and what
+        # it returned (the floors), by patch name, until the sidecar is
+        # written; and whether the table's match values predate an edit
+        self._qc_launch_pairing: dict = {}
+        self._qc_pairing_outcome: dict = {}
+        self._match_values_predate_edits = False
 
         # Pipeline mutex state
         self._predicting_patches: set = set()
+        #: the patches of the running Predict not yet done (filled at
+        #: launch; a patch leaves it when it is done or fails; cleared when
+        #: the run's thread ends or its launch fails)
+        self._pred_launch_set: set = set()
+        #: the prediction windows ({patch: (window, link)}), their loader
+        #: threads (until each one's finished) and the token counter
+        self._pred_windows: dict = {}
+        self._pred_threads: set = set()
+        self._pred_token = 0
         # (done, total) once the worker reports a Cancel; None otherwise
         self._pipeline_cancelled = None
         self._reconstructing_patches: set = set()
@@ -2277,7 +3062,7 @@ class FusionReconstructionController:
         # the annotator through on_reshape_lock, OR'd into _refresh_step3_lock +
         # the patch-switch guard exactly like _add_mode_running.
         #
-        # DELIBERATE BEHAVIOUR CHANGE (grill A6): the MANUAL
+        # DELIBERATE BEHAVIOUR CHANGE: the MANUAL
         # split has NO controller-level lock today (_split_running is a
         # widget-local flag and never reaches _refresh_step3_lock's OR), so
         # while a manual split is staged with the target punched out of the
@@ -2409,6 +3194,9 @@ class FusionReconstructionController:
         _tick_link = getattr(ui, "pr_tick_all_link", None)
         if hasattr(_tick_link, "clicked"):
             _tick_link.clicked.connect(self._on_pr_tick_all_unprocessed)
+        _untick_link = getattr(ui, "pr_untick_all_link", None)
+        if hasattr(_untick_link, "clicked"):
+            _untick_link.clicked.connect(self._on_pr_untick_all)
         # V1 (row 27): a missing row's menu offers Forget
         ui._patch_state_list.customContextMenuRequested.connect(
             self._on_pr_list_menu)
@@ -2418,6 +3206,10 @@ class FusionReconstructionController:
             _row_delegate = getattr(ui, _dname, None)
             if _row_delegate is not None:
                 _row_delegate.menu_requested.connect(self._on_pr_row_menu)
+        # the Patches rows' eye: a prediction, or the labels (as View)
+        _pr_delegate = getattr(ui, "_pr_row_delegate", None)
+        if _pr_delegate is not None and hasattr(_pr_delegate, "eye_clicked"):
+            _pr_delegate.eye_clicked.connect(self._on_pr_eye)
         # R7: Session's ⋯ and right-click offer Set
         # spacing… (and Forget on a missing patch); the button under the
         # list acts on the highlighted rows
@@ -2567,6 +3359,12 @@ class FusionReconstructionController:
         if hasattr(ui, "refine_patch_list"):
             ui.refine_patch_list.itemChanged.connect(
                 self._on_refine_panel_inputs_changed)
+            # Ctrl+A in the list ticks every row with signals blocked (the
+            # list's own slot, connected first), so the gates follow here
+            _sel_all_req = getattr(ui.refine_patch_list,
+                                   "select_all_requested", None)
+            if _sel_all_req is not None:
+                _sel_all_req.connect(self._on_refine_panel_inputs_changed)
         ui.refine_save_config_btn.clicked.connect(self._save_refinement_config)
         ui.refine_load_config_btn.clicked.connect(self._load_refinement_config)
         ui.refine_import_browse_btn.clicked.connect(self._browse_refinement_model)
@@ -2604,6 +3402,11 @@ class FusionReconstructionController:
             ui.qc_plot_widget.tier_drag_finished.connect(self._on_tier_drag_finished)
             ui.qc_plot_widget.category_selected.connect(self._on_category_selected)
             ui.qc_plot_widget.set_pca_features(self._qc_settings.get("pca_features"))
+            # the pairing check: the plot asks for its match notes
+            _set_notes = getattr(ui.qc_plot_widget,
+                                 "set_match_notes_provider", None)
+            if callable(_set_notes):
+                _set_notes(self._match_plot_notes)
         # Phase 2C 2026-05-04: triage histogram panel reuses the same
         # tier-threshold handlers as the right plot.  Both plots'
         # drags route through the canonical assign_qc_tiers flow.
@@ -2721,6 +3524,11 @@ class FusionReconstructionController:
             self._close_provenance_windows()
         except Exception:      # noqa: BLE001
             pass
+        # the prediction windows too
+        try:
+            self._close_prediction_windows()
+        except Exception:      # noqa: BLE001
+            pass
         # Brick A (I10, L9, L10): the Model Refinement loss curves and the
         # "last refined model" belong to the old workspace / run.  This
         # method runs on a run switch, a layout conversion and a workspace
@@ -2746,6 +3554,10 @@ class FusionReconstructionController:
             "_curation_undo_stack",
             # R7: the spacing each extraction launched with, by patch name
             "_qc_launch_spacing",
+            # the pairing check's dispatch facts and returned floors, by
+            # patch name
+            "_qc_launch_pairing",
+            "_qc_pairing_outcome",
             # V2: a picture that failed, by patch name (a same-named patch
             # of the next workspace must be drawn, not refused)
             "_s3_thumb_failed",
@@ -2756,6 +3568,11 @@ class FusionReconstructionController:
                     coll.clear()
                 except Exception:
                     pass
+        # the pairing check's picks are per patch of the old run / workspace
+        _qs = getattr(self, "_qc_settings", None)
+        if isinstance(_qs, dict):
+            _qs.pop("match_run", None)
+        self._match_values_predate_edits = False
         # A2 fold: the tier counts of the old workspace / run leave the rows
         # before the rebuild that follows a run switch or a Browse
         try:
@@ -2834,8 +3651,11 @@ class FusionReconstructionController:
         try:
             if not self._guard_unsaved_changes():
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            # A guard that fails (a save that raised) stops the switch: the
+            # edits it was to save are still only in memory.
+            _report_save_failed(self, exc)
+            return
 
         if safety == _switch_run_guard.SwitchSafety.NEEDS_CONFIRMATION:
             # Annotator-close confirmation runs AFTER the unsaved-changes guard.
@@ -2908,46 +3728,23 @@ class FusionReconstructionController:
             except Exception:
                 pass
 
-            # d. Reset per-patch in-memory state + bump the
-            #    patch-scoped dispatch tokens so any in-flight result is stale.
-            self._qc_features_df = None
-            self._qc_view_patch_name = ""
-            self._sync_loaded_patch_marker()
-            # The QC plot area shows nothing of the old run (P2) --
-            # AFTER the df is gone, so the gates it derives see no table.
-            _area_call(self, "_reset_qc_plot_area", _plot_text.PLOT_NO_PATCH,
-                       _plot_text.SEE_NO_PATCH, blank_patch=True)
-            if hasattr(self, "_qc_view_layers"):
-                try:
-                    self._qc_view_layers = []
-                except Exception:
-                    pass
-            try:
-                self._cached_source_path = ""
-            except Exception:
-                pass
-            try:
-                self._curation_dirty = False
-                self._tiers_dirty = False
-            except Exception:
-                pass
-            for tok in (
-                "_compute_dispatch_token",
-                "_patch_load_token",
-                "_commit_triage_token",
-                "_save_curation_token",
-            ):
-                try:
-                    setattr(self, tok, getattr(self, tok, 0) + 1)
-                except Exception:
-                    pass
+            # d + e. Reset the per-patch in-memory state, bump the
+            #    patch-scoped dispatch tokens so any in-flight result is
+            #    stale, and bump the run epoch (the async finish handlers
+            #    discard cross-run results by it).
+            _reset_per_patch_state(self)
 
-            # e. Bump the run-epoch (B — 3c captures+checks this in the 9
-            #    async worker finish handlers to discard cross-run results).
+            # f0. The run being LEFT keeps what it was last used with: a run
+            #     that has no channel memory yet (made before runs
+            #     remembered them) gets its current boxes and specks, so a
+            #     switch back does not hand it the other run's values.  The
+            #     one memory write of the switch path, made before the state
+            #     is re-pointed; nothing is written for the incoming run.
             try:
-                self._run_epoch = getattr(self, "_run_epoch", 0) + 1
-            except Exception:
-                pass
+                self._seed_outgoing_run_memory()
+            except Exception as exc:      # noqa: BLE001
+                print(f"[STEP3-SETTINGS] outgoing run memory not written: "
+                      f"{exc!r}")
 
             # f. Re-point the state manager (flush → save → load new run flat).
             try:
@@ -2955,6 +3752,14 @@ class FusionReconstructionController:
             except Exception as exc:
                 print(f"[STEP3-RUNS] switch_active_run failed: {exc}")
                 return
+
+            # f1. The foot's bar and line were the run being left's (its
+            #     last Predict's "100 %"): cleared; the new run's gates
+            #     write its own line below.
+            try:
+                self._reset_pr_foot()
+            except Exception as exc:      # noqa: BLE001
+                print(f"[STEP3-RUNS] foot reset failed: {exc!r}")
 
             # g. Re-scan artifacts + refresh the UI (mirrors _browse_workdir tail).
             try:
@@ -3196,6 +4001,15 @@ class FusionReconstructionController:
         except Exception:
             active = None
         summaries = self._list_runs_for_ui()
+        # the active run's patch count is the one in memory: its state on
+        # disk is saved a moment later (a debounced save), so a run just
+        # created or switched to would read "(0 patches)"
+        counts = self._active_run_counts()
+        if counts is not None:
+            summaries = [dict(s, patch_counts=counts)
+                         if s.get("run_id") == active else s
+                         for s in summaries]
+        self._run_picker_summaries = {s.get("run_id"): s for s in summaries}
         combo.blockSignals(True)
         try:
             combo.clear()
@@ -3219,6 +4033,41 @@ class FusionReconstructionController:
                 combo.setCurrentIndex(active_idx)
         finally:
             combo.blockSignals(False)
+
+    def _active_run_counts(self):
+        """The active run's ``patch_counts`` from the state in memory, or
+        None when it cannot be read."""
+        try:
+            from ._run_management import _count_patch_statuses
+            statuses = self.state_manager.get_all_patch_statuses()
+            return _count_patch_statuses(
+                {n: {"status": s} for n, s in dict(statuses).items()})
+        except Exception:      # noqa: BLE001
+            return None
+
+    def _refresh_active_run_count(self) -> None:
+        """The run combo's active item again, with its patch count from
+        memory (after a Predict or a Reconstruct): one item's text, no run
+        folder walked."""
+        combo = getattr(self.ui, "run_picker_combo", None)
+        summaries = getattr(self, "_run_picker_summaries", None) or {}
+        if combo is None or not summaries:
+            return
+        try:
+            active = self.state_manager.get_active_run_id()
+        except Exception:      # noqa: BLE001
+            return
+        summary = summaries.get(active)
+        idx = combo.findData(active)
+        counts = self._active_run_counts()
+        if summary is None or idx < 0 or counts is None:
+            return
+        summary = dict(summary, patch_counts=counts)
+        summaries[active] = summary
+        text = self._format_run_picker_label(summary)
+        if summary.get("archived"):
+            text += "  [archived]"
+        combo.setItemText(idx, text)
 
     def _on_run_combo_changed(self, index: int) -> None:
         """User picked a run in the combo → switch to it (wired via ``activated``)."""
@@ -3417,6 +4266,12 @@ class FusionReconstructionController:
                 result.get("init_spec"),
                 target=result.get("target", "") or "",
             )
+            # A new run starts from EpiCycle's defaults for ITS model, never
+            # from the previous run's widgets: the Start from key, the two
+            # channel codes its model was trained on (or a blank "Channel
+            # to segment" when the model records none) and the specks value
+            # are stored with the run; the run switch applies them.
+            seed_c1, seed_c2, seed_specks = self._new_run_seed(model_sel)
             self.state_manager.create_run(
                 slug,
                 display_name=result.get("display_name", slug),
@@ -3432,6 +4287,9 @@ class FusionReconstructionController:
                 model_source_mode=_run_management.map_model_source_mode_to_state(
                     model_sel.get("model_source_mode")
                 ),
+                start_from="epicycle",
+                channels=[seed_c1, seed_c2],
+                specks=seed_specks,
             )
         except Exception as exc:
             try:
@@ -3442,6 +4300,8 @@ class FusionReconstructionController:
             return
         try:
             self._append_log(f"[STEP3-RUNS] Created run: {slug}")
+            self._log_new_run_seed(slug, seed_c1, seed_c2, seed_specks,
+                                   model_sel)
         except Exception:
             pass
         if result.get("activate"):
@@ -3732,8 +4592,9 @@ class FusionReconstructionController:
         try:
             if not self._guard_unsaved_changes():
                 return False
-        except Exception:
-            pass
+        except Exception as exc:
+            _report_save_failed(self, exc)
+            return False
 
         # 4. Close the 3D annotator + clear Step-3 layers (clean slate for
         #    the data move + the post-convert reload).
@@ -3836,33 +4697,7 @@ class FusionReconstructionController:
             self._reset_workspace_scoped_caches()
         except Exception:
             pass
-        try:
-            self._qc_features_df = None
-            self._qc_view_patch_name = ""
-            self._sync_loaded_patch_marker()
-        except Exception:
-            pass
-        _area_call(self, "_reset_qc_plot_area", _plot_text.PLOT_NO_PATCH,
-                   _plot_text.SEE_NO_PATCH, blank_patch=True)
-        try:
-            self._curation_dirty = False
-            self._tiers_dirty = False
-        except Exception:
-            pass
-        for tok in (
-            "_compute_dispatch_token",
-            "_patch_load_token",
-            "_commit_triage_token",
-            "_save_curation_token",
-        ):
-            try:
-                setattr(self, tok, getattr(self, tok, 0) + 1)
-            except Exception:
-                pass
-        try:
-            self._run_epoch = getattr(self, "_run_epoch", 0) + 1
-        except Exception:
-            pass
+        _reset_per_patch_state(self)
 
         # 8. Re-drive the _browse_workdir reload tail (state reload + scan +
         #    UI refresh) so every read now routes through the nested layout.
@@ -3924,9 +4759,16 @@ class FusionReconstructionController:
                 or getattr(self, "_extraction_running", False)):
             self._set_refinement_status(_MRT.MR_STATUS_BUSY, "warn")
             return
+        if self._folder_change_blocked():
+            return
         dir_path = QFileDialog.getExistingDirectory(None, "Select Workspace Folder")
         if not dir_path:
             return
+        if not self._prepare_folder_change():
+            return
+        # The old folder's edits are saved or discarded and the annotator is
+        # closed: forget the patch in view before the new folder is adopted.
+        _reset_per_patch_state(self)
         # the migration prompt is Browse-only.
         # It has to run BEFORE state_manager.load (which expects the new
         # layout's ``step3_state.json``), so it sits between setting the path
@@ -4034,9 +4876,12 @@ class FusionReconstructionController:
         # else stale per-patch entries from the PREVIOUS workspace bleed into
         # the new one (patch names collide across workspaces).
         self._reset_workspace_scoped_caches()
-        # ...and the QC plot area shows nothing of the old workspace (P2).
-        _area_call(self, "_reset_qc_plot_area", _plot_text.PLOT_NO_PATCH,
-                   _plot_text.SEE_NO_PATCH, blank_patch=True)
+        # ...and so does everything held about the patch in view (the table,
+        # the unsaved flags, the plot area, the tokens and the run epoch).
+        _reset_per_patch_state(self)
+        # a 1 / 1 / 1 entered in QC Settings was for the old workspace's
+        # images: unknown again until entered for these
+        self._qc_spacing_entered = False
 
         pre_v3 = self._state_file_is_pre_v3(dir_path)
         if pre_v3:
@@ -4371,10 +5216,65 @@ class FusionReconstructionController:
         print(f"[WORKSPACE] Step 3 patch folder defaulted to {default}")
         return True
 
+    def _folder_change_blocked(self) -> bool:
+        """True (and one status sentence, no dialog) while a Step 3 job
+        runs: the folder cannot change under a worker."""
+        from . import _switch_run_guard
+        try:
+            safety, _reasons = _switch_run_guard.check_switch_safety(
+                self, self.viewer)
+        except Exception:      # noqa: BLE001
+            return False
+        if safety == _switch_run_guard.SwitchSafety.BLOCKED:
+            self._append_log(f"[STEP3-BROWSE] {_pr_text.S3_BROWSE_LOCKED}")
+            _say_in_session(self, _pr_text.S3_BROWSE_LOCKED)
+            return True
+        return False
+
+    def _prepare_folder_change(self) -> bool:
+        """The interactive half of changing the Session folder, run after
+        the folder was picked and while the OLD folder is still the working
+        one (a Save writes through it): refuse over staged annotator work,
+        ask about unsaved edits, confirm closing an open annotator, close
+        it.  False means nothing changes."""
+        from napari_epicycle.ui_shell.theme import themed_confirm
+        if self._staged_annotator_work():
+            self._append_log(f"[STEP3-BROWSE] {_pr_text.S3_STAGED_WORK_OPEN}")
+            _say_in_session(self, _pr_text.S3_STAGED_WORK_OPEN)
+            return False
+        try:
+            if not self._guard_unsaved_changes():
+                return False
+        except Exception as exc:      # noqa: BLE001
+            _report_save_failed(self, exc)
+            return False
+        if self._get_curation_annotator_widget() is not None:
+            if not themed_confirm(
+                self.ui, _pr_text.S3_BROWSE_CONFIRM_TITLE,
+                _pr_text.S3_BROWSE_CONFIRM_BODY,
+                confirm_text=_pr_text.S3_BROWSE_CONFIRM,
+                accent="red",
+            ):
+                return False
+        try:
+            self._close_3d_curation_annotator(clear_layers=True)
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3-BROWSE] annotator close failed: {exc!r}")
+        return True
+
     def _browse_stack_dir(self):
+        if self._folder_change_blocked():
+            return
         stack_dir = QFileDialog.getExistingDirectory(None, "Select Stack Directory")
         if not stack_dir:
             return
+        if not self._prepare_folder_change():
+            return
+        # the old folder's table (edits the user chose to discard included)
+        # must not survive to be written under a patch of the new folder
+        _reset_per_patch_state(self)
+        # nor a 1 / 1 / 1 entered in QC Settings for the old folder's images
+        self._qc_spacing_entered = False
         self._load_stack_dir(stack_dir)
 
     def _load_stack_dir(self, stack_dir: str, *, persist: bool = True) -> None:
@@ -4393,6 +5293,10 @@ class FusionReconstructionController:
         # R6: a details window belongs to the folder it was opened in
         try:
             self._close_provenance_windows()
+        except Exception:      # noqa: BLE001
+            pass
+        try:
+            self._close_prediction_windows()
         except Exception:      # noqa: BLE001
             pass
         self.loaded_stack_dir = stack_dir
@@ -5207,9 +6111,19 @@ class FusionReconstructionController:
             for sub in step2_root.iterdir():
                 if sub.is_dir() and sub.name.startswith("round_"):
                     subdirs_to_scan.append((sub, None))  # legacy: filename-based
+        # Refined bundles: a bundle's own ``models`` sub-folder holds the
+        # checkpoints of a training run in progress (a Both-mode run keeps
+        # the first pass's there), never a finished model.
+        refined_bundles = set()
         if step3_refinement_root.exists():
             for sub in step3_refinement_root.iterdir():
                 if sub.is_dir():
+                    if ((sub / "models").is_dir()
+                            and not (sub / "manifest.json").is_file()):
+                        print(f"[STEP3-DISCOVER] skip {sub.name}: it has "
+                              f"a models folder but no manifest.json")
+                        continue
+                    refined_bundles.add(sub)
                     subdirs_to_scan.append((sub, None))  # legacy: filename-based
 
         # Phase B.2 (2026-05-25): dual-path Step 2 reader.
@@ -5301,6 +6215,11 @@ class FusionReconstructionController:
 
             for f in sub.rglob("*"):
                 if not f.is_file():
+                    continue
+                if (sub in refined_bundles
+                        and "models" in f.relative_to(sub).parts[:-1]):
+                    print(f"[STEP3-DISCOVER] skip {sub.name}: "
+                          f"{f.name} is a checkpoint under models/")
                     continue
                 name_lower = f.name.lower()
                 # Exclude companion artifacts (loss arrays, diameter
@@ -5601,6 +6520,14 @@ class FusionReconstructionController:
                 )
             except Exception:
                 pass
+        # A model PICK names its mode (Browse, a built-in, the registry's
+        # Use, Use for re-prediction); the restore's re-save of healed
+        # paths does not, and must not rewrite a setting.
+        if mode is not None:
+            try:
+                self._reapply_model_overlay()
+            except Exception as exc:      # noqa: BLE001
+                print(f"[STEP3-SETTINGS] model overlay failed: {exc!r}")
 
     # ------------------------------------------------------------------
     # Model source wiring
@@ -5925,7 +6852,7 @@ class FusionReconstructionController:
         return out
 
     def _session_spacing(self, names) -> dict:
-        """``{patch: {"zyx", "source"}}`` for Session's rows (R7) -- the
+        """``{patch: {"zyx", "source"}}`` for Session's rows -- the
         STORED ``patch_spacing`` (kept current by the three triggers and the
         workers); no file is opened, nothing is resolved here."""
         getter = getattr(self.state_manager, "get_all_patch_spacing", None)
@@ -5979,6 +6906,20 @@ class FusionReconstructionController:
                 out[name] = list(shape)
         return out
 
+    def _one_channel_patches(self, names) -> list:
+        """The patches of *names* that have one channel, by the cached axes
+        and header shapes (no file opened; ``_step3_channels`` holds the
+        one rule Predict uses too).  Never raises."""
+        names = list(names or ())
+        if not names:
+            return []
+        try:
+            return _s3ch.one_channel_names(
+                names, self._session_axes(names), self._session_shapes(names))
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3-PR] one-channel lookup failed: {exc!r}")
+            return []
+
     def _refresh_patch_state_list(self):
         """Refresh the unified patch state list and curation bucket."""
         all_statuses = self.state_manager.get_all_patch_statuses()
@@ -5999,6 +6940,7 @@ class FusionReconstructionController:
             all_statuses,
             predicting=self._predicting_patches,
             reconstructing=self._reconstructing_patches,
+            queued=getattr(self, "_pred_launch_set", None),
             axes_by_patch=axes_by_patch,
             info_by_patch=payloads,
             ticked=self._pr_stored_ticks(),
@@ -6039,6 +6981,9 @@ class FusionReconstructionController:
             measured_by_patch=self._session_measured(curation_names))
         # R3: the rebuild dropped the highlight; the foot follows
         self._refresh_pr_foot_gates()
+        # the run combo's count follows the list (Predict, Reconstruct,
+        # Forget, a folder change): one item's text
+        self._refresh_active_run_count()
 
     #: the statuses whose patch has a reconstruction manifest to read
     _PR_SHAPE_STATUSES = ("reconstructed", "curating", "accepted",
@@ -6071,7 +7016,7 @@ class FusionReconstructionController:
 
     def _pr_row_made_by(self, all_statuses: dict, payloads: dict) -> dict:
         """``{patch: (chip text, active)}`` for the rows' "made by" chip
-        (R6): the reconstruction manifest's copy of the block when
+        (which model made it): the reconstruction manifest's copy of the block when
         the patch is reconstructed (*payloads*, already read by
         ``_pr_row_manifests``), else the prediction manifest's
         (``_pr_prediction_block``, cached by mtime), else the unknown
@@ -6236,6 +7181,331 @@ class FusionReconstructionController:
             print(f"[PROVENANCE] closed {n} window(s)")
         self._prov_windows = {}
 
+    # -- the Patches rows' eye and the prediction window ---------------
+    def _pr_has_made_by(self, patch_name: str) -> bool:
+        """Does the row have model details to show (the made-by chip's
+        rule): predicted or later, not being predicted, its file there."""
+        if not patch_name:
+            return False
+        if patch_name in getattr(self, "_missing_patches", set()):
+            return False
+        if patch_name in (getattr(self, "_predicting_patches", ()) or ()):
+            return False
+        status = self.state_manager.get_all_patch_statuses().get(
+            patch_name, "unprocessed")
+        return status in self._PR_MADE_BY_STATUSES
+
+    def _on_pr_eye(self, name: str) -> None:
+        """A Patches row's eye: a reconstructed patch (curating, accepted,
+        finalized) is viewed through Session's eye (the same gate as
+        View); a predicted one opens its prediction window; an unprocessed
+        one has nothing to show yet."""
+        if not name:
+            return
+        self._pr_eye_say(None)
+        status = self.state_manager.get_all_patch_statuses().get(
+            name, "unprocessed")
+        if status in _s3rows.EYE_STATUSES:
+            self._on_session_eye(name)
+        elif status == "predicted":
+            self._on_show_prediction(name)
+        elif name in (set(getattr(self, "_predicting_patches", ()) or ())
+                      | set(getattr(self, "_pred_launch_set", ()) or ())):
+            print(f"[STEP3-PRED] eye {name}: being predicted")
+            self._pr_eye_say(_pr_text.S3_PRED_REFUSED_RUNNING.format(
+                patch=name))
+        else:
+            print(f"[STEP3-PRED] eye {name}: nothing to show ({status})")
+            self._pr_eye_say(_pr_text.S3_PR_EYE_NOTHING)
+
+    def _pr_eye_say(self, text) -> None:
+        """An eye's (or "Show prediction…"'s) refusal where it can be read:
+        while Predict or Reconstruct runs, their line owns the foot, so it
+        goes on the line under the list for that click; otherwise on the
+        foot.  ``None`` gives the line under the list its own sentence
+        back (a new click)."""
+        ui = self.ui
+        note = getattr(ui, "show_pr_list_note", None)
+        if text is None:
+            if callable(note):
+                note(None)
+            return
+        if getattr(ui, "_pr_surface_locked", False) and callable(note):
+            note(text)
+        else:
+            self._pr_status(text)
+
+    def _prediction_refusal(self, name: str):
+        """The sentence that refuses the prediction window now, or None:
+        View's lock rule (live while Predict or Reconstruct runs), the
+        patch being predicted (or still waiting in the running Predict),
+        no prediction on disk."""
+        flag = self._pr_lock_flag()
+        if flag is not None and not self._pr_ticks_locked():
+            return dict(_pr_text.S3_LOCK_SENTENCES).get(flag, "")
+        busy = set(getattr(self, "_predicting_patches", ()) or ()) | set(
+            getattr(self, "_pred_launch_set", ()) or ())
+        if name in busy:
+            return _pr_text.S3_PRED_REFUSED_RUNNING.format(patch=name)
+        if not self._prediction_cache_exists(name):
+            return _pr_text.S3_PRED_GONE.format(patch=name)
+        return None
+
+    def _active_run_display_name(self) -> str:
+        """The active run as the run combo names it ("Nuclei Fixed"), from
+        the combo's last summaries; the folder name when there are none."""
+        try:
+            slug = self.state_manager.get_active_run_id()
+        except Exception:      # noqa: BLE001
+            return ""
+        summary = (getattr(self, "_run_picker_summaries", None) or {}).get(
+            slug)
+        if summary is not None:
+            return (summary.get("display_name") or "").strip() or slug
+        return self._run_display_name_for(slug) or slug
+
+    def _live_prediction_windows(self) -> dict:
+        """``{patch: (window, link)}`` of the prediction windows still
+        alive; the dead are dropped."""
+        wins = getattr(self, "_pred_windows", None)
+        if wins is None:
+            wins = self._pred_windows = {}
+        for name in list(wins):
+            if not _prov_window_alive(wins[name][0]):
+                del wins[name]
+        return wins
+
+    def _on_show_prediction(self, name: str) -> None:
+        """Open the prediction window of *name* (ONE per patch: a second
+        open raises it), loading on a worker: the size limit, the manifest,
+        the patch as the model saw it and the XY probability."""
+        if not name or not getattr(self, "working_dir", None):
+            return
+        self._pr_eye_say(None)
+        refusal = self._prediction_refusal(name)
+        if refusal is not None:
+            print(f"[STEP3-PRED] {name}: refused")
+            self._pr_eye_say(refusal)
+            return
+        wins = self._live_prediction_windows()
+        if name in wins:
+            dlg = wins[name][0]
+            dlg.raise_()
+            dlg.activateWindow()
+            print(f"[STEP3-PRED] {name}: window raised")
+            return
+        from ._prediction_preview_dialog import PredictionPreviewDialog
+        link = _PredictionLink(self, name)
+        dlg = PredictionPreviewDialog(
+            self.ui, title=_pr_text.PRED_TITLE.format(patch=name),
+            texts=_pr_text.PRED_TEXTS, on_choice=link.choice,
+            on_details=link.details, details=self._pr_has_made_by(name))
+        wins[name] = (dlg, link)
+        dlg.show()
+        self._pred_token = getattr(self, "_pred_token", 0) + 1
+        link.image_token = link.map_token = self._pred_token
+        from . import _prediction_preview as _pp
+        pass_, kind = dlg.current_choice()
+        stem = Path(name).stem
+        cache = self._prediction_cache_dir()
+        args = (cache, stem, str(Path(self.loaded_stack_dir or "") / name),
+                _s3m.prediction_manifest_path(cache, name),
+                self._active_run_display_name(), pass_, kind)
+        self._start_prediction_load(link, "open", _pp.load_open, args)
+        print(f"[STEP3-PRED] {name}: window opened, loading")
+
+    def _on_prediction_choice(self, link, pass_: str, kind: str) -> None:
+        """The window's Pass or Map changed: read ONLY that file, on a
+        worker (a newer choice's token wins)."""
+        entry = self._live_prediction_windows().get(link.patch_name)
+        if entry is None or entry[1] is not link:
+            return
+        dlg = entry[0]
+        name = link.patch_name
+        if (link.workspace != (getattr(self, "working_dir", "") or "")
+                or link.run_id != _active_run_path_id(self)):
+            return
+        refusal = self._prediction_refusal(name)
+        if refusal is not None:
+            dlg.set_map_failed(refusal)
+            self._pr_eye_say(refusal)
+            return
+        self._pred_token = getattr(self, "_pred_token", 0) + 1
+        link.map_token = self._pred_token
+        if link.inflight is not None:
+            # one read at a time per window: only the newest choice waits
+            link.pending = (pass_, kind)
+            print(f"[STEP3-PRED] {name}: {pass_} {kind} waits for the "
+                  f"read in flight")
+            return
+        self._start_prediction_map(link, pass_, kind)
+
+    def _start_prediction_map(self, link, pass_: str, kind: str) -> None:
+        from . import _prediction_preview as _pp
+        args = (self._prediction_cache_dir(), Path(link.patch_name).stem,
+                pass_, kind)
+        self._start_prediction_load(link, "map", _pp.load_map, args)
+        print(f"[STEP3-PRED] {link.patch_name}: loading {pass_} {kind}")
+
+    def _start_prediction_load(self, link, what: str, fn, args) -> None:
+        """One loader thread; kept in ``_pred_threads`` until finished."""
+        from ._prediction_preview_dialog import PredictionPreviewWorker
+        load = _PredictionLoad(self, link, what, link.image_token,
+                               link.map_token)
+        try:
+            worker = PredictionPreviewWorker(fn, args)
+            thread = QThread()
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run)
+            worker.loaded.connect(load.loaded)
+            worker.failed.connect(load.failed)
+            # both exits end the thread's event loop
+            worker.loaded.connect(thread.quit)
+            worker.failed.connect(thread.quit)
+            thread.finished.connect(load.finished)
+            load.thread, load.worker = thread, worker
+            self._pred_threads.add(load)
+            link.inflight = load
+            thread.start()
+        except Exception as exc:      # noqa: BLE001
+            self._pred_threads.discard(load)
+            if link.inflight is load:
+                link.inflight = None
+            print(f"[STEP3-PRED] loader launch failed: {exc!r}")
+            self._on_prediction_preview_failed(load, ("error", repr(exc)))
+
+    def _prediction_load_current(self, load):
+        """The window a loader's answer is for, or None: still open, the
+        same window, the same workspace, run and run epoch."""
+        link = load.link
+        if (link.workspace != (getattr(self, "working_dir", "") or "")
+                or link.run_id != _active_run_path_id(self)
+                or link.epoch != getattr(self, "_run_epoch", 0)):
+            return None
+        entry = self._live_prediction_windows().get(link.patch_name)
+        if entry is None or entry[1] is not link:
+            return None
+        return entry[0]
+
+    def _on_prediction_preview_loaded(self, load, result) -> None:
+        dlg = self._prediction_load_current(load)
+        if dlg is None:
+            print(f"[STEP3-PRED] {load.link.patch_name}: a late answer "
+                  f"dropped")
+            return
+        link = load.link
+        try:
+            if load.what == "open":
+                if load.image_token != link.image_token:
+                    return
+                payload = dict(result)
+                if load.map_token != link.map_token:
+                    payload["map"] = None       # a newer choice is coming
+                dlg.set_image(payload)
+                if payload.get("shape_changed"):
+                    print(f"[STEP3-PRED] {link.patch_name}: the patch's "
+                          f"shape changed since its Predict")
+            elif load.map_token == link.map_token:
+                dlg.set_map(result)
+        except RuntimeError:
+            pass
+
+    def _on_prediction_preview_failed(self, load, error) -> None:
+        dlg = self._prediction_load_current(load)
+        if dlg is None:
+            return
+        if isinstance(error, (tuple, list)) and len(error) >= 2:
+            kind, detail = str(error[0]), error[1]
+        else:
+            kind, detail = "error", str(error)
+        if kind == "too_large":
+            from . import _prediction_preview as _pp
+            sentence = _pp.too_large_sentence(detail)
+        else:
+            sentence = _pr_text.PRED_FAILED.format(error=detail)
+        link = load.link
+        try:
+            if load.what == "open" and load.image_token == link.image_token:
+                dlg.set_failed(sentence)
+            elif load.what == "map" and load.map_token == link.map_token:
+                dlg.set_map_failed(sentence)
+        except RuntimeError:
+            pass
+
+    def _on_prediction_thread_finished(self, load) -> None:
+        """A loader's thread ended: let go of it (after its last moment; a
+        thread still running then is parked, never collected), then start
+        the window's newest waiting choice."""
+        thread = load.thread
+        try:
+            if thread is not None and thread.isRunning():
+                if not thread.wait(2000):
+                    _LIVE_STEP3_THREADS.add((thread, load.worker))
+                    print("[STEP3-PRED] a loader still running after its "
+                          "finished; parked")
+        except RuntimeError:
+            pass
+        self._pred_threads.discard(load)
+        link = load.link
+        if link.inflight is load:
+            link.inflight = None
+        pending, link.pending = link.pending, None
+        if pending is None or getattr(self, "_shutdown_done", False):
+            return
+        entry = self._live_prediction_windows().get(link.patch_name)
+        if entry is None or entry[1] is not link:
+            return
+        if (link.workspace != (getattr(self, "working_dir", "") or "")
+                or link.run_id != _active_run_path_id(self)):
+            return
+        self._start_prediction_map(link, *pending)
+
+    def _close_prediction_windows(self, names=None) -> None:
+        """Every prediction window (or those of *names*) goes, closed and
+        deleted; a loader still running is not waited for -- its answer is
+        dropped (the window is gone from the map)."""
+        wins = getattr(self, "_pred_windows", None) or {}
+        targets = list(wins) if names is None else [
+            n for n in names if n in wins]
+        n_closed = 0
+        for name in targets:
+            dlg, _link = wins.pop(name)
+            if not _prov_window_alive(dlg, visible=False):
+                continue
+            try:
+                dlg.close()
+                dlg.deleteLater()
+                n_closed += 1
+            except RuntimeError:
+                pass
+        if names is None:
+            self._pred_windows = {}
+        if n_closed:
+            print(f"[STEP3-PRED] closed {n_closed} window(s)")
+
+    def _sweep_prediction_threads(self) -> None:
+        """Shutdown: each loader's signals cut, its thread's finished cut,
+        joined, and parked in ``_LIVE_STEP3_THREADS`` if still running."""
+        for load in list(getattr(self, "_pred_threads", ()) or ()):
+            thread, worker = load.thread, load.worker
+            try:
+                _disconnect_worker_signals(worker, _PREDICTION_WORKER_SIGNALS)
+                if thread is None:
+                    continue
+                try:
+                    thread.finished.disconnect()
+                except Exception:      # noqa: BLE001
+                    pass
+                if thread.isRunning():
+                    thread.quit()
+                    if not thread.wait(5000):
+                        _LIVE_STEP3_THREADS.add((thread, worker))
+                        print("[STEP3] shutdown: a prediction window loader "
+                              "still running after 5 s; parked")
+            except RuntimeError:
+                pass
+        self._pred_threads = set()
+
     # Sentinel distinguishing "no axes cached yet" from a legitimately
     # cached value, without reaching into the state manager's private dict.
     _AXES_UNSET = object()
@@ -6361,9 +7631,21 @@ class FusionReconstructionController:
             return
 
         # Check for re-reconstruction (already reconstructed+)
+        # A patch predicted again from curating is back at "predicted" but
+        # its 3D reconstruction (and the curation built on it) is still on
+        # disk: the run folder's manifest says so whatever the status is.
+        def _has_reconstruction(name: str) -> bool:
+            try:
+                return _paths.patch_run_manifest_path(
+                    self.working_dir, name,
+                    run_id=_active_run_path_id(self)).exists()
+            except Exception:      # noqa: BLE001
+                return False
+
         already_recon = [
             n for n in patch_names
             if all_statuses.get(n) in ("reconstructed", "curating")
+            or _has_reconstruction(n)
         ]
         if already_recon:
             # 2026-05-21 Tier 2a: enumerated destructive-action dialog
@@ -6488,15 +7770,19 @@ class FusionReconstructionController:
         )
 
     def _persist_prediction_cache(self, views: dict, patch_name: str = "",
-                                  *, manifest: Optional[dict] = None):
+                                  *, manifest: Optional[dict] = None) -> bool:
         """Save prediction flows/probs/masks to disk for resume capability.
+
+        Runs on the prediction worker's thread, so it prints and never
+        touches the log widget; it returns True once the arrays are
+        written (the main-thread handler logs the line).
 
         R2c: *manifest* -- the patch's prediction manifest -- is
         written AFTER the arrays, atomically (meta written last), as
         ``{stem}_prediction_manifest.json``; the restore never needs it,
         and every deleter of the arrays (``{stem}_*``) takes it too."""
         if not self.working_dir:
-            return
+            return False
         cache_dir = self._prediction_cache_dir()
         cache_dir.mkdir(parents=True, exist_ok=True)
         if not patch_name:
@@ -6522,7 +7808,8 @@ class FusionReconstructionController:
             _s3m.write_json_atomic(
                 _s3m.prediction_manifest_path(cache_dir, patch_name),
                 manifest)
-        self._append_log(_pr_text.S3_LOG_CACHE_SAVED.format(stem=stem))
+        print(f"[PREDICT] {_pr_text.S3_LOG_CACHE_SAVED.format(stem=stem)}")
+        return True
 
     def _prediction_cache_exists(self, patch_name: str) -> bool:
         """Are the three views' flows and probabilities of *patch_name* on
@@ -6567,7 +7854,7 @@ class FusionReconstructionController:
 
     def _patch_spacing_record(self, patch_name: str) -> Optional[dict]:
         """The patch's own record for the resolver's first rule (a voxel
-        size the user set): ``{"spacing": <its patch_spacing entry>}`` (R7).  A
+        size the user set): ``{"spacing": <its patch_spacing entry>}``.  A
         fake state manager without the map gives ``None``."""
         getter = getattr(getattr(self, "state_manager", None),
                          "get_patch_spacing", None)
@@ -6844,8 +8131,13 @@ class FusionReconstructionController:
         for f in cache_dir.glob(f"{stem}_*"):
             try:
                 f.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                # e.g. held open by another program (Windows): the next
+                # save overwrites it, but say it was left
+                line = _pr_text.S3_LOG_CACHE_KEPT.format(file=f.name,
+                                                         error=exc)
+                print(line)
+                self._append_log(line)
 
     def _predict_all(self):
         """Run dense 2D prediction on selected patches from the patch state list."""
@@ -6888,6 +8180,15 @@ class FusionReconstructionController:
         if skipped_missing:
             self._append_log(_pr_text.S3_LOG_SKIPPED_MISSING.format(
                 n=len(skipped_missing)))
+        # The foot's gate, again here (a stray call): a blank "Channel to
+        # segment" runs only patches that have one channel
+        chan1 = getattr(self.ui, "chan1_combo", None)
+        if (chan1 is not None and chan1.currentIndex() < 0 and patch_names
+                and len(self._one_channel_patches(patch_names))
+                < len(patch_names)):
+            self._append_log(_pr_text.S3_GATE_PICK_CHANNEL)
+            self._refresh_pr_foot_gates()
+            return
         # Patches that already have results: the confirm NAMES each one
         # and its status (row 20)
         non_unprocessed = [
@@ -6906,6 +8207,9 @@ class FusionReconstructionController:
                 accent="red",
             ):
                 return
+            # their prediction windows go BEFORE the cache files do (the
+            # window holds no file open; a loader's answer is dropped)
+            self._close_prediction_windows(non_unprocessed)
             # Clear caches and reset status
             for name in non_unprocessed:
                 self._clear_prediction_cache(name)
@@ -6916,6 +8220,9 @@ class FusionReconstructionController:
         if not patch_names:
             self._append_log(_pr_text.S3_GATE_NONE_RUNNABLE)
             return
+        # an unprocessed patch can still have an old cache on disk (and a
+        # window on it, opened from the menu): it is written again now
+        self._close_prediction_windows(patch_names)
 
         seg_config = self._collect_seg_config()
         # 2026-06-07: the global Axes combo was removed.  `_predict_single_patch`
@@ -7039,8 +8346,10 @@ class FusionReconstructionController:
 
             self._serial_prediction_thread = thread
             self._serial_prediction_worker = worker
+            self._pred_launch_set = {cfg["patch_name"] for cfg in configs}
             thread.start()
         except Exception as exc:
+            self._pred_launch_set = set()
             self._prediction_running = False
             self._update_button_states()
             self._append_log(f"[ERROR] prediction launch failed: {exc}")
@@ -7117,17 +8426,45 @@ class FusionReconstructionController:
             print(f"[PREDICT-WIDTH] patch {patch_name!r}: width "
                   f"{cell_width_um:g} um -> diameter {diameter} "
                   f"({diameter_from})")
+        # One channel (no C axis, or C of length 1): Cellpose reads such an
+        # image as gray whatever the codes say, so it runs as [0, 0] on its
+        # own copy; the record keeps the codes the user ASKED for and says
+        # one_channel.  A blank "Channel to segment" is never a number:
+        # a one-channel patch records None, any other patch is refused.
+        one_channel = _s3ch.is_one_channel(resolved_axes,
+                                           getattr(image, "shape", None))
+        requested = seg_config
+        run_config = seg_config
+        one_channel_line = None
+        try:
+            asked = list(getattr(seg_config, "channels", None) or [])
+        except TypeError:
+            asked = []
+        blank = (bool(asked) and isinstance(asked[0], int)
+                 and asked[0] < 0)
+        if one_channel:
+            run_config = _s3m.with_channels(seg_config, [0, 0])
+            if blank:
+                requested = _s3m.with_channels(seg_config, None)
+            one_channel_line = _pr_text.S3_LOG_ONE_CHANNEL.format(
+                patch=patch_name,
+                seg=self._channel_word(
+                    None if (blank or not asked) else asked[0],
+                    _pr_text.S3_CHAN1_ITEMS))
+            print(f"[STEP3-SETTINGS] {one_channel_line}")
+        elif blank:
+            raise ValueError(_pr_text.S3_GATE_PICK_CHANNEL)
         views = segment_views(
             image, lateral_path, axial_path,
-            seg_config, axes=resolved_axes,
+            run_config, axes=resolved_axes,
             progress_cb=progress_cb,
         )
         # R2c: the record of what Cellpose got, written after the
         # arrays by the persist below
         manifest = _s3m.build_prediction_manifest(
             patch_name=patch_name, axes=resolved_axes,
-            seg_config=seg_config, cell_width_um=cell_width_um,
-            diameter_from=diameter_from)
+            seg_config=requested, cell_width_um=cell_width_um,
+            diameter_from=diameter_from, one_channel=one_channel)
         if isinstance(model_provenance, dict):
             manifest[_mp.PROVENANCE_KEY] = _s3m.json_safe(
                 copy.deepcopy(model_provenance))
@@ -7136,15 +8473,20 @@ class FusionReconstructionController:
         manifest["spacing"] = _s3m.json_safe(copy.deepcopy(spacing)) \
             if isinstance(spacing, dict) else None
         # Persist cache in worker thread to avoid GUI freeze
-        self._persist_prediction_cache(views, patch_name=patch_name,
-                                       manifest=manifest)
+        cache_saved = self._persist_prediction_cache(
+            views, patch_name=patch_name, manifest=manifest)
         return {"views": views, "patch_name": patch_name,
+                "cache_saved": bool(cache_saved),
                 "diameter": getattr(seg_config, "diameter", None),
                 "diameter_from": diameter_from,
-                "spacing_found": spacing_found, "workspace": workspace}
+                "spacing_found": spacing_found, "workspace": workspace,
+                "one_channel_line": one_channel_line}
 
     def _on_serial_pred_started(self, patch_name: str, idx: int, total: int):
         self._predicting_patches.add(patch_name)
+        # a refusal under the list named the previous patch: the line's
+        # own sentence comes back with the next patch
+        self._pr_eye_say(None)
         elapsed = _time.monotonic() - self._pipeline_start_time
         slices_done = self._pipeline_slices_done
         total_slices = self._pipeline_total_slices
@@ -7208,6 +8550,7 @@ class FusionReconstructionController:
 
     def _on_serial_pred_patch_done(self, patch_name: str, result: dict):
         self._predicting_patches.discard(patch_name)
+        getattr(self, "_pred_launch_set", set()).discard(patch_name)
         # R7: a voxel size the worker read from the file is stored
         # here, on the main thread (workspace-level: kept across a run
         # switch, refused across a workspace change)
@@ -7247,6 +8590,11 @@ class FusionReconstructionController:
         self._refresh_patch_state_list()
         self._update_button_states()
         self._append_log(f"Predicted: {patch_name}")
+        if isinstance(result, dict) and result.get("one_channel_line"):
+            self._append_log(result["one_channel_line"])
+        if isinstance(result, dict) and result.get("cache_saved"):
+            self._append_log(_pr_text.S3_LOG_CACHE_SAVED.format(
+                stem=Path(patch_name).stem))
         if result.get("diameter_from") == _s3m.DIAMETER_AS_PIXELS:
             self._append_log(_pr_text.S3_LOG_WIDTH_IN_PIXELS.format(
                 patch=patch_name, px=f"{result.get('diameter'):g}"))
@@ -7256,6 +8604,10 @@ class FusionReconstructionController:
         # not overwrite the summary below.
         self.ui.pipeline_cancel_btn.setEnabled(False)
         self._predicting_patches.clear()
+        # the run is over: a patch it cut or never reached is not "being
+        # predicted" any more -- emptied BEFORE the rows are rebuilt below
+        # (the thread's cleanup empties it again, after)
+        self._pred_launch_set = set()
         # Phase 3c (B) RUN-EPOCH guard: if the run changed mid-prediction,
         # discard the summary/refresh (it would describe the OLD run).  The
         # running flag is cleared independently by
@@ -7306,8 +8658,11 @@ class FusionReconstructionController:
 
     def _on_serial_pred_cancelled(self, done: int, total: int):
         self._pipeline_cancelled = (int(done), int(total))
+        # Cancel ends the run: nothing is queued any more
+        self._pred_launch_set = set()
 
     def _on_serial_pred_error(self, patch_name: str, error_msg: str):
+        getattr(self, "_pred_launch_set", set()).discard(patch_name)
         self._pipeline_errors += 1
         self._append_log(_pipe.PIPE_ERROR_PREDICT.format(
             name=patch_name, msg=error_msg))
@@ -7329,6 +8684,7 @@ class FusionReconstructionController:
             self._append_log("Cancel requested: stopping after the current slice")
 
     def _cleanup_serial_prediction_thread(self):
+        self._pred_launch_set = set()
         self._serial_prediction_thread = None
         self._serial_prediction_worker = None
         self._prediction_running = False
@@ -7551,12 +8907,117 @@ class FusionReconstructionController:
         if key and key != "custom":
             self._apply_start_from(key)
 
+    def _new_run_seed(self, model_sel) -> tuple:
+        """``(channel to segment, helper, specks)`` a new run starts with.
+
+        The codes are the ones both of the run's models were trained on,
+        read from the training config copied beside the run's own model
+        (a Step 2 model or a refined bundle); a Cellpose built-in records
+        none, so "Channel to segment" starts blank (``None``) and the
+        helper at 0.  The specks are EpiCycle's value for that model."""
+        from ..ui_shell._model_files import read_trained_channels
+        sel = model_sel if isinstance(model_sel, dict) else {}
+        codes = []
+        for key in ("lateral_model_path", "axial_model_path"):
+            path = sel.get(key)
+            try:
+                is_file = bool(path) and Path(str(path)).is_file()
+            except (OSError, ValueError):
+                is_file = False
+            codes.append(read_trained_channels(path) if is_file else None)
+        c1, c2 = _s3ch.seed_codes(*codes)
+        values = dict(STEP4_PRESET_EPICYCLE)
+        values.update(model_overlay(sel.get("lateral_model_path")))
+        return c1, c2, int(values["post_small_obj_sb"])
+
+    @staticmethod
+    def _channel_word(code, items) -> str:
+        """The box's item text for *code*, or the blank word."""
+        if code is None or isinstance(code, bool):
+            return _pr_text.S3_CHANNEL_BLANK
+        try:
+            i = int(code)
+        except (TypeError, ValueError):
+            return _pr_text.S3_CHANNEL_BLANK
+        if 0 <= i < len(items):
+            return items[i]
+        return _pr_text.S3_CHANNEL_BLANK
+
+    def _log_new_run_seed(self, slug, c1, c2, specks, model_sel):
+        """The log lines of a new run's channels and specks."""
+        if c1 is None:
+            line = _pr_text.S3_LOG_NEW_RUN_PICK.format(run=slug)
+        else:
+            line = _pr_text.S3_LOG_NEW_RUN_CHANNELS.format(
+                run=slug,
+                seg=self._channel_word(c1, _pr_text.S3_CHAN1_ITEMS),
+                helper=self._channel_word(c2, _pr_text.S3_CHAN2_ITEMS))
+        print(f"[STEP3-SETTINGS] {line}")
+        self._append_log(line)
+
+    @staticmethod
+    def _overlay_widget_names() -> list:
+        """Step 3 widget names of every key a model overlay can set."""
+        to_step3 = {v: k for k, v in _pr_text.STEP3_SETTING_KEYS.items()}
+        keys = set()
+        for over in MODEL_PRESET_OVERLAYS.values():
+            keys.update(over)
+        return sorted(to_step3[k] for k in keys if k in to_step3)
+
+    def _reapply_model_overlay(self) -> None:
+        """Another model was picked while Start from is EpiCycle defaults:
+        put the overlay keys back to EpiCycle's value for THAT model (the
+        nuclei specks go back to the cell value, and the reverse).  Only
+        those keys are written, as the program (Start from stays as it
+        is); with any other Start from choice nothing is written.  Never
+        during a run switch: the switch applies the new run's own
+        choice."""
+        if (getattr(self, "_run_switch_in_flight", False)
+                or getattr(self, "_applying_preset", False)
+                or getattr(self, "_restoring_run_memory", False)):
+            return
+        combo = getattr(self.ui, "start_from_combo", None)
+        if combo is None or combo.currentData() != "epicycle":
+            return
+        values = self._preset_values("epicycle") or {}
+        changed = []
+        self._applying_preset = True
+        try:
+            for name in self._overlay_widget_names():
+                w = getattr(self.ui, name, None)
+                if w is None or name not in values:
+                    continue
+                try:
+                    if w.value() != values[name]:
+                        self._set_preset_value(w, values[name])
+                        changed.append(name)
+                except Exception as exc:      # noqa: BLE001
+                    print(f"[STEP3-SETTINGS] model overlay: {name} "
+                          f"skipped ({exc!r})")
+        finally:
+            self._applying_preset = False
+        if "post_small_obj_sb" in changed:
+            n = int(self.ui.post_small_obj_sb.value())
+            nuclei = bool(model_overlay(
+                self.ui.lateral_model_path.text()))
+            line = (_pr_text.S3_LOG_NUCLEI_SPECKS if nuclei
+                    else _pr_text.S3_LOG_MODEL_OVERLAY).format(n=n)
+            print(f"[STEP3-SETTINGS] {line}")
+            self._append_log(line)
+
     def _preset_values(self, key) -> Optional[dict]:
         """Step 3 widget -> value for *key*.  The last-run item applies
         EpiCycle's defaults first and overlays the recorded keys; it is
-        ``None`` when that run's reconstruction is no longer on disk."""
+        ``None`` when that run's reconstruction is no longer on disk.
+        EpiCycle defaults also take the active model's overlay (the nuclei
+        model's specks)."""
         if key == "epicycle":
             shared = dict(STEP4_PRESET_EPICYCLE)
+            try:
+                lateral = self.ui.lateral_model_path.text()
+            except Exception:      # noqa: BLE001
+                lateral = ""
+            shared.update(model_overlay(lateral))
         elif key == "useg3d":
             shared = useg3d_preset()
         elif key == "last_run":
@@ -7638,8 +9099,14 @@ class FusionReconstructionController:
         print(f"[STEP3-SETTINGS] start from {key}: {len(values)} values")
         self._append_log(_pr_text.S3_LOG_PRESET_APPLIED.format(
             preset=combo.currentText()))
+        if key == "epicycle" and model_overlay(
+                self.ui.lateral_model_path.text()):
+            self._append_log(_pr_text.S3_LOG_NUCLEI_SPECKS.format(
+                n=int(self.ui.post_small_obj_sb.value())))
         if save and getattr(self, "working_dir", ""):
             self.state_manager.set_start_from(key)
+        # the channels may have changed as the program: the foot follows
+        self._refresh_pr_foot_gates()
         return True
 
     @staticmethod
@@ -7706,10 +9173,202 @@ class FusionReconstructionController:
         # R2a fold): a user's pick flips to Custom.  The writers that are
         # the program -- a Start from item, the bundle channel sync -- run
         # under ``_applying_preset``.
+        # Filling a BLANK "Channel to segment" is not a change of a value
+        # (a new run on a built-in model must be given one), so it keeps
+        # the Start from choice; a later change of a filled box flips.
+        w = getattr(self.ui, "chan1_combo", None)
+        if w is not None:
+            self._chan1_last_index = w.currentIndex()
+            w.currentIndexChanged.connect(self._on_chan1_edited)
+        w = getattr(self.ui, "chan2_combo", None)
+        if w is not None:
+            w.currentIndexChanged.connect(self._on_pr_setting_edited)
+        # The run remembers its two channels and its specks: connected
+        # AFTER the Custom slot above, so a hand edit first flips the list.
         for name in ("chan1_combo", "chan2_combo"):
             w = getattr(self.ui, name, None)
             if w is not None:
-                w.currentIndexChanged.connect(self._on_pr_setting_edited)
+                w.currentIndexChanged.connect(self._remember_run_channels)
+        w = getattr(self.ui, "post_small_obj_sb", None)
+        if w is not None:
+            w.valueChanged.connect(self._remember_run_specks)
+
+    def _seed_outgoing_run_memory(self) -> None:
+        """Write the boxes and the specks into the ACTIVE run's memory where
+        it has none stored (each of the two on its own).  Called by the run
+        switch before it re-points the state, so this is the run being
+        left; a run that already remembers keeps its memory as it is."""
+        sm = self.state_manager
+        if not getattr(self, "working_dir", ""):
+            return
+        get_c = getattr(sm, "get_run_channels", None)
+        get_s = getattr(sm, "get_run_specks", None)
+        if not (callable(get_c) and callable(get_s)):
+            return
+        ui = self.ui
+        if get_c() is None:
+            # the codes the restore showed: the run's own newest record
+            # first (so the seed and the restore never disagree), else the
+            # boxes as they are
+            found = self._run_record_codes()
+            if found is not None:
+                sm.set_run_channels(list(found[0]))
+            else:
+                c1 = ui.chan1_combo.currentIndex()
+                sm.set_run_channels(
+                    [None if c1 < 0 else int(c1),
+                     max(int(ui.chan2_combo.currentIndex()), 0)])
+        if get_s() is None:
+            sm.set_run_specks(int(ui.post_small_obj_sb.value()))
+
+    def _memory_writes_blocked(self) -> bool:
+        """No channel memory is written while a run switch is in flight
+        (the boxes then still hold the previous run's values, or are being
+        filled with the new run's), while the run's own memory is being
+        restored, or with no workspace."""
+        return bool(getattr(self, "_run_switch_in_flight", False)
+                    or getattr(self, "_restoring_run_memory", False)
+                    or not getattr(self, "working_dir", ""))
+
+    def _remember_run_channels(self, *_):
+        """A change of either channel box, by hand or by the program (a
+        Start from item, the bundle sync), is remembered for this run."""
+        if self._memory_writes_blocked():
+            return
+        try:
+            c1 = self.ui.chan1_combo.currentIndex()
+            c2 = self.ui.chan2_combo.currentIndex()
+            self.state_manager.set_run_channels(
+                [None if c1 < 0 else int(c1), max(int(c2), 0)])
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3-SETTINGS] channel memory not written: {exc!r}")
+            return
+        if not getattr(self, "_applying_preset", False):
+            self._refresh_pr_foot_gates()
+
+    def _remember_run_specks(self, *_):
+        """A change of "Remove specks smaller than" is remembered for this
+        run."""
+        if self._memory_writes_blocked():
+            return
+        try:
+            self.state_manager.set_run_specks(
+                int(self.ui.post_small_obj_sb.value()))
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3-SETTINGS] specks memory not written: {exc!r}")
+
+    def _apply_run_memory(self) -> None:
+        """Put this run's remembered channels (for every Start from choice)
+        and specks (only for Custom or no stored choice; a preset is the
+        truth otherwise) back into the boxes, as the program.  A run with
+        nothing remembered keeps the widgets."""
+        sm = self.state_manager
+        getter = getattr(sm, "get_run_channels", None)
+        codes = getter() if callable(getter) else None
+        if codes is None and callable(getter):
+            # a run made before runs remembered their channels: the codes
+            # its own newest record asked for, shown but NOT stored (the
+            # first change, or the first switch away, stores them)
+            found = self._run_record_codes()
+            if found is not None:
+                codes = list(found[0])
+                print(f"[STEP3-SETTINGS] run with no channel memory: "
+                      f"{codes} from its newest {found[1]} record")
+        specks = None
+        if sm.stored_start_from() in (None, "custom"):
+            getter = getattr(sm, "get_run_specks", None)
+            specks = getter() if callable(getter) else None
+        if codes is None and specks is None:
+            return
+        ui = self.ui
+        was = getattr(self, "_applying_preset", False)
+        self._applying_preset = True
+        try:
+            if codes is not None:
+                c1, c2 = codes
+                if c1 is None:
+                    ui.chan1_combo.setCurrentIndex(-1)
+                elif 0 <= c1 < ui.chan1_combo.count():
+                    ui.chan1_combo.setCurrentIndex(c1)
+                if 0 <= c2 < ui.chan2_combo.count():
+                    ui.chan2_combo.setCurrentIndex(c2)
+            if specks is not None:
+                self._set_preset_value(ui.post_small_obj_sb, specks)
+        finally:
+            self._applying_preset = was
+        line = _pr_text.S3_LOG_RUN_MEMORY.format(
+            seg=self._channel_word(
+                None if ui.chan1_combo.currentIndex() < 0
+                else ui.chan1_combo.currentIndex(), _pr_text.S3_CHAN1_ITEMS),
+            helper=self._channel_word(ui.chan2_combo.currentIndex(),
+                                      _pr_text.S3_CHAN2_ITEMS),
+            n=int(ui.post_small_obj_sb.value()))
+        print(f"[STEP3-SETTINGS] {line}")
+        self._append_log(line)
+
+    def _run_record_codes(self, patch_name: str = ""):
+        """``((c1, c2), "prediction" | "reconstruction")``: the channel
+        codes this run last ASKED for, from its own records -- the newest
+        of its prediction and reconstruction manifests that has them, by
+        the time each records (``predicted_at`` / ``generated_at``; the
+        file's mtime when it has none; a reconstruction wins a tie) -- or
+        None.  A blank channel to segment (``null``) is skipped; a
+        one-channel patch's record counts (it keeps the codes asked for).
+        With *patch_name*, only that patch's two records are read.
+        Small JSON reads only (one per patch).  Never raises."""
+        from ._step3_channels import newest_recorded_codes
+        pooled = self._run_record_entries(patch_name)
+        return newest_recorded_codes(pooled) if pooled else None
+
+    def _run_record_entries(self, patch_name: str = "") -> list:
+        """``[(time, kind, record)]`` of this run's prediction and
+        reconstruction manifests (every patch, or only *patch_name*'s own
+        two), for :meth:`_run_record_codes`.  ``[]`` with no workspace or
+        when they cannot be listed.  Never raises."""
+        ws = getattr(self, "working_dir", "") or ""
+        if not ws:
+            return []
+        from ._step3_channels import record_time
+
+        def entries(paths, key, kind):
+            for path in paths:
+                try:
+                    mtime = path.stat().st_mtime
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                yield record_time(data, key, mtime), kind, data
+
+        try:
+            if patch_name:
+                pm, rm = self._pr_manifest_paths(patch_name)
+                preds, recons = [Path(pm)], [Path(rm)]
+            else:
+                cache = Path(self._prediction_cache_dir())
+                root = Path(_paths.reconstructions_dir(
+                    ws, _active_run_path_id(self)))
+                preds = cache.glob("*" + _s3m.PREDICTION_MANIFEST_SUFFIX)
+                recons = root.glob("*/manifest.json")
+            pooled = list(entries(preds, "predicted_at", "prediction"))
+            pooled += list(entries(recons, "generated_at", "reconstruction"))
+            return pooled
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3-SETTINGS] run records unreadable: {exc!r}")
+        return []
+
+    def _on_chan1_edited(self, index=None):
+        """The first channel box's own Custom slot: every change is
+        tracked; a fill of the blank box keeps Start from as it is."""
+        try:
+            index = int(self.ui.chan1_combo.currentIndex()
+                        if index is None else index)
+        except (TypeError, ValueError):
+            index = -1
+        was = getattr(self, "_chan1_last_index", None)
+        self._chan1_last_index = index
+        if was is not None and was < 0 <= index:
+            return
+        self._on_pr_setting_edited()
 
     def _on_pr_setting_edited(self, *_):
         if getattr(self, "_applying_preset", False):
@@ -7722,6 +9381,25 @@ class FusionReconstructionController:
             self.state_manager.set_start_from("custom")
 
     def _restore_start_from(self, *, on_switch: bool = False):
+        """The run's Start from choice (``_restore_start_from_choice``),
+        then the run's remembered channels and specks over it
+        (``_apply_run_memory``), on every path.  Nothing it writes is
+        remembered again: the memory is read here, never written."""
+        was = getattr(self, "_restoring_run_memory", False)
+        self._restoring_run_memory = True
+        try:
+            self._restore_start_from_choice(on_switch=on_switch)
+        finally:
+            try:
+                self._apply_run_memory()
+            except Exception as exc:      # noqa: BLE001
+                print(f"[STEP3-SETTINGS] channel memory not applied: "
+                      f"{exc!r}")
+            finally:
+                self._restoring_run_memory = was
+        self._refresh_pr_foot_gates()
+
+    def _restore_start_from_choice(self, *, on_switch: bool = False):
         """Read the run's key on workspace open and on a run switch: a key that still applies is applied (nothing saved); a
         Custom one -- or a last-run item that is gone -- keeps the widgets
         as they are and shows Custom, with a log line.  A run that never
@@ -7790,7 +9468,7 @@ class FusionReconstructionController:
         patch's Reconstruct (worker thread; reads one small JSON)."""
         pm_path = _s3m.prediction_manifest_path(
             self._prediction_cache_dir(), patch_name)
-        # one read: the inference record (R2c) and the model block (R6)
+        # one read: the inference record and the model block
         raw = _mp.read_manifest(pm_path)
         pm = raw if isinstance((raw or {}).get("seg_config"), dict) else None
         carried = self._recon_provenance_extra(raw, pm_path)
@@ -7799,6 +9477,10 @@ class FusionReconstructionController:
         if from_pm is not None:
             extra = {"cell_width_um": pm.get("cell_width_um"),
                      "seg_config_source": "prediction"}
+            if pm.get("one_channel") is True:
+                # the prediction manifest is deleted with the cache (Clean
+                # intermediates); the reconstruction keeps the flag
+                extra["one_channel"] = True
             extra.update(carried)
             return from_pm, extra
         # today's settings: their ``diameter`` is the µm number typed, not
@@ -7808,7 +9490,16 @@ class FusionReconstructionController:
                  "seg_config_source": "settings",
                  "diameter_from": "settings"}
         extra.update(carried)
-        return _s3m.with_diameter(seg_config, None), extra
+        recorded = _s3m.with_diameter(seg_config, None)
+        try:
+            asked = list(getattr(recorded, "channels", None) or [])
+        except TypeError:
+            asked = []
+        if asked and isinstance(asked[0], int) and asked[0] < 0:
+            # a blank "Channel to segment" is recorded as not recorded,
+            # never as a code
+            recorded = _s3m.with_channels(recorded, None)
+        return recorded, extra
 
     def _recon_provenance_extra(self, raw, pm_path) -> dict:
         """R6: what Reconstruct carries forward into its manifest so
@@ -7917,6 +9608,7 @@ class FusionReconstructionController:
         # Clear in-memory QC DataFrame (will be reloaded on patch selection)
         if hasattr(self, "_qc_features_df") and self._qc_features_df is not None:
             self._qc_features_df = None
+            self._qc_table_patch = ""
             # ...and the plot area that showed it (P2: today
             # nothing cleared the plot here) -- only when it is the patch
             # in view; it now has no features.
@@ -8123,6 +9815,36 @@ class FusionReconstructionController:
         # single-patch context by the time this method runs.
 
         patch_name = self._selected_curation_patch()
+        # The table in memory belongs to another patch than the one about to
+        # open (the list changed under it): its unsaved edits are asked
+        # about first, then the table is dropped so this open loads the
+        # right one.
+        _owner = getattr(self, "_qc_table_patch", "") or ""
+        if (patch_name and _owner and patch_name != _owner
+                and self._qc_features_df is not None):
+            # A staged edit would be written by the Save answer and then
+            # rejected in memory by the close: refuse before asking.
+            if self._staged_annotator_work():
+                _say_in_plot_status(self, _pr_text.S3_STAGED_WORK_OPEN)
+                self._append_log(
+                    f"[TABLE-OWNER] open refused: {_pr_text.S3_STAGED_WORK_OPEN}")
+                return
+            try:
+                if not self._guard_unsaved_changes():
+                    return
+            except Exception as exc:      # noqa: BLE001
+                _report_save_failed(self, exc)
+                return
+            self._qc_features_df = None
+            self._qc_table_patch = ""
+            _area_call(self, "_reset_qc_plot_area", _plot_text.PLOT_NO_PATCH,
+                       _plot_text.SEE_NO_PATCH, blank_patch=True)
+            # ...and the old patch's layers leave the viewer: the annotator
+            # takes every image layer and uses the first as its shape.
+            try:
+                self._close_3d_curation_annotator(clear_layers=True)
+            except Exception as exc:      # noqa: BLE001
+                print(f"[TABLE-OWNER] clearing the old patch failed: {exc!r}")
         if not patch_name:
             # No pipeline context — launch annotator empty so the user can
             # load layers manually via the Image/Labels combos.
@@ -8252,6 +9974,7 @@ class FusionReconstructionController:
                 on_label_smoothed=self._on_annotator_label_smoothed,
                 on_label_merged=self._on_annotator_label_merged,
                 on_new_label_painted=self._on_annotator_new_label_painted,
+                on_paint_stroke=self._on_annotator_paint_stroke,
                 on_batch_refined=self._on_annotator_batch_refined,
                 on_batch_refine_lock=self._on_annotator_batch_refine_lock,
                 on_add_mode_lock=self._on_annotator_add_mode_lock,
@@ -8273,6 +9996,10 @@ class FusionReconstructionController:
                 get_plot_selection=self._get_plot_selection,
                 # Add rebuild: new Add ids skip deleted ids.
                 get_label_id_floor=self._add_label_id_floor,
+                # Clear objects: the confirm's "marked Good" count and the
+                # Clears still on the undo stack.
+                get_kept_tier_count=self._add_kept_tier_count,
+                get_live_add_clears=self._live_add_clear_seqs,
                 on_recalculate=self._on_navigator_recalculate,
                 patch_ids=curation_patch_ids,
                 active_patch_id=patch_name,
@@ -8304,6 +10031,7 @@ class FusionReconstructionController:
                             self._on_navigator_label_selected_bridge
                         )
                     widget._on_isolation_cleared_cb = self._on_annotator_isolation_cleared
+                    widget._plot_cmap_pull_cb = self._read_plot_colour_dict
                     nav = getattr(widget, "_navigator_widget", None)
                     _safe_curation_debug_log(self, 
                         "annotator bridge wired "
@@ -8357,6 +10085,9 @@ class FusionReconstructionController:
         if not patch_name:
             self._append_log("[ERROR] Select a patch before accepting.")
             return
+        # An open edit is refused with its own sentence, not "save failed".
+        if _refuse_if_staged(self, "accept"):
+            return
         # Gate: persist edits before status transition.
         if not self._save_curation_checked():
             self._append_log(f"[WARN] Accept aborted — save failed for {patch_name}")
@@ -8397,6 +10128,8 @@ class FusionReconstructionController:
         # bug.  The no-op "dividing" verdict is deliberately included: it
         # records a flag on the row and still deserves an undo entry.
         "reshape",
+        # A paint stroke writes label voxels into one plane of the volume.
+        "paint_stroke",
     })
 
     def _commit_curation_action(
@@ -8410,6 +10143,7 @@ class FusionReconstructionController:
         df_updater=None,
         extra: dict = None,
         marks_stale: bool | None = None,
+        push: bool = True,
     ) -> None:
         """Universal handler for curation actions.
 
@@ -8423,13 +10157,21 @@ class FusionReconstructionController:
             Explicit override for staleness.  ``None`` (default) = infer
             from ``action_type`` — mask-mutating actions mark stale,
             tier-only actions (``mark_good``) do not.
+        push : bool
+            ``False`` records the change (df update, stale flag, dirty,
+            refresh) without an undo entry.  Used when the volume was
+            already changed and the df is only catching up with it (a
+            label found erased), or when the caller folded the change into
+            the entry above it (consecutive strokes on one plane).
         """
         from packages.epicycle_annotator.curation_undo import CurationUndoEntry
 
-        # 1. Snapshot DataFrame before mutation.
+        _was_dirty = bool(getattr(self, "_curation_dirty", False))
+
+        # 1. Snapshot DataFrame before mutation (only an entry keeps it).
         old_df = (
             self._qc_features_df.copy()
-            if self._qc_features_df is not None
+            if push and self._qc_features_df is not None
             else None
         )
 
@@ -8441,6 +10183,22 @@ class FusionReconstructionController:
         should_stale = marks_stale if marks_stale is not None else (
             action_type in self._MASK_MUTATING_ACTIONS
         )
+        if should_stale:
+            # a mask edit moves the match values of this label and of
+            # its neighbours' matches: they predate it until Extract, and
+            # the label's own read "not measured" at once (its active rows;
+            # superseded and deleted rows keep theirs)
+            self._match_values_predate_edits = True
+            _df = self._qc_features_df
+            if _df is not None and "label" in _df.columns:
+                try:
+                    from .qc_pairing_group import (
+                        active_label_rows, blank_match_columns,
+                    )
+                    blank_match_columns(
+                        _df, active_label_rows(_df, label_id))
+                except Exception as exc:  # noqa: BLE001 -- a hint only
+                    print(f"[QC-PAIR] match blank skipped: {exc!r}")
         if (
             should_stale
             and self._qc_features_df is not None
@@ -8451,17 +10209,22 @@ class FusionReconstructionController:
                 self._qc_features_df.loc[mask, "feature_state"] = "stale"
 
         # 3. Push undo entry.
-        self._curation_undo_stack.push(
-            CurationUndoEntry(
-                action_type=action_type,
-                label_id=label_id,
-                roi_slices=roi_slices,
-                old_mask_roi=old_roi_data,
-                old_df_snapshot=old_df,
-                description=description,
-                extra=extra or {},
+        if push:
+            self._curation_undo_stack.push(
+                CurationUndoEntry(
+                    action_type=action_type,
+                    label_id=label_id,
+                    roi_slices=roi_slices,
+                    old_mask_roi=old_roi_data,
+                    old_df_snapshot=old_df,
+                    description=description,
+                    extra=extra or {},
+                )
             )
-        )
+
+        # 3b. A tier-undo snapshot is the whole qc_tier column as it was: any
+        # curation action since changes rows it would put back, so it goes.
+        self._drop_tier_undo()
 
         # 4. Mark dirty (no disk write until explicit Save).  Bug 5 (2026-06-09):
         # route to the RIGHT flag.  Only ``mark_*`` (navigator tier marks:
@@ -8484,8 +10247,32 @@ class FusionReconstructionController:
                 getattr(self, "_curation_dirty_epoch", 0) + 1
             )
 
-        # 5. Refresh UI.
+        # 5. Refresh UI.  A fold into the entry above (a stroke on a label
+        # already stale and dirty) changes nothing the lists and plots show:
+        # only the Undo button needs a look.
+        if (
+            not push
+            and df_updater is None
+            and _was_dirty
+            and not action_type.startswith("mark_")
+            and self._label_rows_all_stale(label_id)
+        ):
+            _btn = getattr(getattr(self, "ui", None), "undo_curation_btn", None)
+            if _btn is not None:
+                _btn.setEnabled(bool(self._curation_undo_stack))
+            return
         self._refresh_curation_ui()
+
+    def _label_rows_all_stale(self, label_id: int) -> bool:
+        """True when there is no df, or every row of *label_id* is stale."""
+        df = self._qc_features_df
+        if df is None:
+            return True
+        if "feature_state" not in df.columns:
+            return False
+        rows = df["label"] == label_id
+        return bool(rows.any()) and bool(
+            (df.loc[rows, "feature_state"] == "stale").all())
 
     def _note_commit_without_qc(self, action_type: str) -> None:
         """Say out loud that the DataFrame half of a commit was skipped.
@@ -8662,8 +10449,11 @@ class FusionReconstructionController:
         Used as a gate before Accept/Finalize status transitions.
         Checks BOTH ``_curation_dirty`` (mask/CSV edits) and
         ``_tiers_dirty`` (tier assignments) — either blocks the
-        transition if persistence fails.
+        transition if persistence fails.  Refuses (False) while an edit is
+        open in the annotator: what is saved would be the half-edited volume.
         """
+        if _refuse_if_staged(self, "save"):
+            return False
         if not self._curation_dirty and not self._tiers_dirty:
             return True
         # Population-scope guard removed 2026-05-03 — population mode
@@ -8724,6 +10514,8 @@ class FusionReconstructionController:
         the user immediately closes; then the mask save async.  If neither flag
         is dirty there is nothing to do.
         """
+        if _refuse_if_staged(self, "save click"):
+            return
         if not getattr(self, "_curation_dirty", False) and not getattr(
             self, "_tiers_dirty", False
         ):
@@ -8747,13 +10539,12 @@ class FusionReconstructionController:
         # the patch the user was just viewing, not the new bucket
         # selection.  Same correction applied to _save_curation /
         # _get_active_labels_path.
-        patch_name = (
-            getattr(self, "_qc_view_patch_name", "")
-            or self._selected_curation_patch()
-            or self._selected_patch_name()
-        )
-        if not patch_name or self._qc_features_df is None:
+        if self._qc_features_df is None:
             return  # nothing to save — flag stays dirty
+        patch_name = _qc_write_patch(self)
+        if not patch_name:
+            _report_table_other_patch(self, "tier save")
+            return  # flag stays dirty
         # patch_name column guard removed 2026-05-03 — population mode
         # is gone; the merged DataFrame that carried that column never
         # appears in single-patch flow.  Mixed-patch / stem-mismatch
@@ -8770,10 +10561,24 @@ class FusionReconstructionController:
         self._scan_qc_df_for_duplicates(
             "before _save_tiers_csv (about to write to disk)"
         )
-        save_patch_csv(self._qc_features_df, str(csv_path))
+        try:
+            save_patch_csv(self._qc_features_df, str(csv_path))
+        except Exception as exc:      # noqa: BLE001
+            # The write failed (a locked file, a full disk): the tiers are
+            # still only in memory, so they stay marked unsaved and every
+            # caller that checks the flag sees it.
+            _report_save_failed(self, exc)
+            return
         self._tiers_dirty = False
+        # the pairing check: a CSV saved after an edit keeps saying so
+        self._record_match_predate(patch_name)
         # Re-check both flags (curation may still be dirty).
         self._refresh_save_button_state()
+        # The row's tier counts read the CSV just written.
+        try:
+            self._start_tier_counts("save tiers", [patch_name])
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3-COUNTS] save tiers: {exc!r}")
 
     def _maybe_lift_for_save(self, layer_data, patch_name: str):
         """D2 (perf push 2026-05-09): if patch was loaded with
@@ -8809,6 +10614,58 @@ class FusionReconstructionController:
             layer_data, ds_factor, target_shape=target_shape,
         )
 
+    def _halfsize_gone_ids(self, layer_data, patch_name: str) -> list:
+        """The labels of the active rows of the table in memory whose cell
+        the half-size mask ``layer_data`` does not hold; [] at full size.
+
+        Loading at half size can drop small or very thin cells (the
+        majority pooling keeps no cell that wins no 2x2x2 block), so a table
+        loaded from the full-size CSV can list cells the saved mask no
+        longer holds.  The IDs are counted on the half-size array: the
+        nearest-neighbour upsample that writes the file never adds or
+        removes an ID, so they are the IDs of the written file.  Reads only;
+        never raises (a failure is logged and gives [])."""
+        import time as _perf
+        _t0 = _perf.perf_counter()
+        try:
+            ds_factor = self.state_manager.get_patch_downsample_factor(
+                patch_name)
+            df = self._qc_features_df
+            if ds_factor <= 1 or df is None:
+                return []
+            ids = _ids_missing_from_labels(df, layer_data)
+        except Exception as exc:      # noqa: BLE001
+            self._append_log(
+                f"[WARN] Half-size patch: the table rows were not checked "
+                f"against the mask ({exc})"
+            )
+            return []
+        print(
+            f"[STEP3-PERF] half-size rows check: {len(ids)} gone, "
+            f"{(_perf.perf_counter() - _t0) * 1000:.0f} ms"
+        )
+        return ids
+
+    def _reconcile_rows_with_layer(self, layer_data, patch_name: str) -> int:
+        """Mark deleted, in the table in memory, the active rows whose cell
+        the half-size mask ``layer_data`` does not hold; return how many.
+
+        Commit Triage uses it (it already changes the table in memory at
+        prep); Save marks its CSV copy at prep and the table only once the
+        write went through; Undo checks only the labels it turns active.  A full-size patch changes nothing.  No
+        undo entry and no unsaved flag: the rows only follow the mask.
+        Never raises."""
+        ids = self._halfsize_gone_ids(layer_data, patch_name)
+        if not ids:
+            return 0
+        try:
+            return _mark_ids_deleted(self._qc_features_df, ids)
+        except Exception as exc:      # noqa: BLE001
+            self._append_log(
+                f"[WARN] Half-size rows were not marked deleted ({exc})"
+            )
+            return 0
+
     def _save_curation_prepare(self):
         """Main-thread prep for a Save Curation persist (snapshot the payload).
 
@@ -8836,11 +10693,10 @@ class FusionReconstructionController:
         """
         labels_path = self._get_active_labels_path()
         layer = self._find_active_labels_layer()
-        patch_name = (
-            getattr(self, "_qc_view_patch_name", "")
-            or self._selected_curation_patch()
-            or self._selected_patch_name()
-        )
+        patch_name = _qc_write_patch(self)
+        if self._qc_features_df is not None and not patch_name:
+            _report_table_other_patch(self, "curation save")
+            return None  # _curation_dirty stays True
 
         can_mask = bool(labels_path and layer is not None)
         can_csv = bool(patch_name and self._qc_features_df is not None)
@@ -8859,6 +10715,12 @@ class FusionReconstructionController:
         # write owns its own array (no shared mutation with the live layer).
         lifted = self._maybe_lift_for_save(layer.data, patch_name)
         lifted_mask = np.array(lifted, copy=True)
+        # a half-size save: the rows whose cell is not in this mask turn
+        # deleted in the CSV COPY written below; the table in memory follows
+        # only once the write went through (the finish handler)
+        ds_factor = self.state_manager.get_patch_downsample_factor(patch_name)
+        gone_ids = (self._halfsize_gone_ids(layer.data, patch_name)
+                    if can_csv else [])
 
         csv_df = None
         csv_path = None
@@ -8871,6 +10733,7 @@ class FusionReconstructionController:
             # COPY so the worker never shares a mutable handle with the live
             # controller df.
             csv_df = self._qc_features_df.copy()
+            _mark_ids_deleted(csv_df, gone_ids)
 
         persist_kwargs = {
             "lifted_mask": lifted_mask,
@@ -8883,9 +10746,11 @@ class FusionReconstructionController:
             "patch_name": patch_name,
             "persist_kwargs": persist_kwargs,
             "can_csv": can_csv,
+            "ds_factor": ds_factor,
+            "gone_ids": gone_ids,
         }
 
-    def _save_curation(self) -> None:
+    def _save_curation(self, *, refresh_rows_ui: bool = True) -> None:
         """SYNCHRONOUS Save Curation (prep → pure persist → finalize).
 
         Persists the current mask + CSV to disk via the stage-then-promote
@@ -8911,6 +10776,11 @@ class FusionReconstructionController:
         **Persistence safety (added 2026-05-03):** sets ``_save_in_flight``
         for the duration (refuses re-entry) + captures ``_save_dispatch_patch``
         to lock the target to the patch active when Save was dispatched.
+
+        ``refresh_rows_ui=False`` (the patch-switch guard, which rebuilds
+        nothing for the patch it leaves): rows a half-size save marks
+        deleted still follow in the table, but the plot / navigator are not
+        refreshed for it.
         """
         # Persistence safety: refuse re-entry if a save is already running.
         # ``getattr`` defensive — test harnesses may not initialise the flag.
@@ -8938,6 +10808,9 @@ class FusionReconstructionController:
             getattr(self, "_save_curation_token", 0),
             patch_name,
             _sync=True,
+            ds_factor=prep.get("ds_factor", 1),
+            gone_ids=prep.get("gone_ids", []),
+            refresh_rows_ui=refresh_rows_ui,
         )
 
     def _save_curation_async(self) -> None:
@@ -9018,8 +10891,10 @@ class FusionReconstructionController:
             worker.moveToThread(thread)
             thread.started.connect(worker.run)
             worker.finished.connect(
-                lambda res, _t=token, _p=patch_name, _e=save_run_epoch:
-                self._on_save_curation_finished(res, _t, _p, dispatch_epoch=_e)
+                lambda res, _t=token, _p=patch_name, _e=save_run_epoch,
+                _f=prep.get("ds_factor", 1), _g=prep.get("gone_ids", []):
+                self._on_save_curation_finished(
+                    res, _t, _p, dispatch_epoch=_e, ds_factor=_f, gone_ids=_g)
             )
             worker.error.connect(
                 lambda msg, _t=token, _p=patch_name:
@@ -9053,8 +10928,15 @@ class FusionReconstructionController:
         print("[SAVE-CURATION] thread cleaned up")
 
     def _on_save_curation_finished(self, result, token, dispatch_patch,
-                                   *, _sync=False, dispatch_epoch=None):
+                                   *, _sync=False, dispatch_epoch=None,
+                                   ds_factor=1, gone_ids=(),
+                                   refresh_rows_ui=True):
         """Main-thread continuation after the Save persist finishes.
+
+        ``ds_factor`` / ``gone_ids`` come from the prep of a half-size save:
+        the CSV written already has those labels' rows deleted, and on a
+        non-stale success the table in memory follows (then a row-level
+        refresh, unless ``refresh_rows_ui`` is False).
 
         Reproduces the legacy ``_save_curation`` transactional branches from
         the persist ``result``:
@@ -9157,12 +11039,14 @@ class FusionReconstructionController:
             # not in the snapshot we just wrote — keep the flag so the next Save
             # persists it.  Sync saves block the loop, so nothing can race them.
             from ._save_dirty_guard import should_clear_dirty_on_save_finish
+            edited_during_save = False
             if _sync or should_clear_dirty_on_save_finish(
                 getattr(self, "_save_dispatch_dirty_epoch", 0),
                 getattr(self, "_curation_dirty_epoch", 0),
             ):
                 self._curation_dirty = False
             else:
+                edited_during_save = True
                 self._append_log(
                     "[SAVE-CURATION] a mask edit was accepted during the save — "
                     "keeping unsaved state so the next Save writes it."
@@ -9173,6 +11057,9 @@ class FusionReconstructionController:
                 )
             if dispatch_patch:
                 self._edited_patches.add(dispatch_patch)
+                if not result.get("mask_only"):
+                    # the pairing check: the CSV saved after an edit
+                    self._record_match_predate(dispatch_patch)
             self._refresh_save_button_state()
             if result.get("mask_only"):
                 self._append_log(
@@ -9183,7 +11070,47 @@ class FusionReconstructionController:
                 self._append_log(
                     f"Saved curation: mask + CSV for "
                     f"{dispatch_patch or '(unknown patch)'}"
+                    f"{_halfsize_save_note(ds_factor, len(gone_ids or ()))}"
                 )
+            # the rows the written CSV has deleted turn deleted in the table
+            # in memory too, now that the write went through
+            n_marked = 0
+            if gone_ids and edited_during_save:
+                # an edit landed while the write ran: it may have painted one
+                # of these labels back, so keep only those still absent
+                try:
+                    _layer = self._find_active_labels_layer()
+                    if _layer is None:
+                        self._append_log(
+                            "[WARN] Half-size save: no labels layer to check "
+                            "the gone cells against after an edit during "
+                            "the save; the table rows were left as they are."
+                        )
+                        gone_ids = []
+                    else:
+                        _present = _ids_present_in_labels(_layer.data)
+                        gone_ids = [i for i in gone_ids
+                                    if not np.isin(i, _present)]
+                except Exception as exc:      # noqa: BLE001
+                    self._append_log(
+                        f"[WARN] Half-size save: the gone cells were not "
+                        f"checked again after an edit during the save "
+                        f"({exc}); the table rows were left as they are."
+                    )
+                    gone_ids = []
+            if gone_ids:
+                try:
+                    n_marked = _mark_ids_deleted(
+                        self._qc_features_df, gone_ids)
+                except Exception as exc:      # noqa: BLE001
+                    self._append_log(
+                        f"[WARN] Half-size rows were not marked deleted "
+                        f"({exc})"
+                    )
+            if n_marked and refresh_rows_ui:
+                # the row-level refresh (update_data): it keeps the plot's
+                # selection, Color-by and axes, and so the isolation
+                self._refresh_curation_ui()
         finally:
             # Persistence safety: always release the in-flight flag, no matter
             # which path was taken.  On the async path also hide the bar /
@@ -9727,6 +11654,10 @@ class FusionReconstructionController:
 
     def _undo_last_curation(self) -> None:
         """Pop the most recent curation action and restore state."""
+        # An open edit holds a snapshot of the same region: undoing under it
+        # would be overwritten (or overwrite it) at Accept / Reject.
+        if _refuse_if_staged(self, "undo"):
+            return
         # 2026-06-06 (audit FIX-2): empty-stack guard.  The unified lock
         # force-enables undo_curation_btn on UNLOCK (it's in
         # _CURATION_LOCK_WIDGETS, normally stack-gated), so the button can be
@@ -9738,11 +11669,26 @@ class FusionReconstructionController:
         if entry is None:
             return
 
-        # 1. Restore mask ROI if applicable.
-        if entry.roi_slices is not None and entry.old_mask_roi is not None:
+        # 1. Restore mask ROI if applicable.  An entry that folds several
+        # stages of one edit (Interpolate -> Refine, a Refine Further chain)
+        # lists the later stages' snapshots in ``extra["pre_layers"]``,
+        # oldest first.  They go back newest first and the entry's own ROI
+        # last, because its snapshot is the oldest state; each region
+        # is restored before the shared volume is realigned below.
+        _layers = [
+            (r, d) for (r, d) in ((entry.extra or {}).get("pre_layers") or [])
+            if r is not None and d is not None
+        ]
+        if _layers or (
+            entry.roi_slices is not None and entry.old_mask_roi is not None
+        ):
             layer = self._find_active_labels_layer()
             if layer is not None:
-                layer.data[entry.roi_slices] = entry.old_mask_roi
+                for _roi, _data in reversed(_layers):
+                    layer.data[_roi] = _data
+                if (entry.roi_slices is not None
+                        and entry.old_mask_roi is not None):
+                    layer.data[entry.roi_slices] = entry.old_mask_roi
                 layer.refresh()
                 # Also sync the annotator's subviewers.
                 try:
@@ -9752,7 +11698,29 @@ class FusionReconstructionController:
 
         # 2. Restore DataFrame.
         if entry.old_df_snapshot is not None:
+            _df_before_undo = self._qc_features_df
             self._qc_features_df = entry.old_df_snapshot
+            # A half-size patch: a snapshot taken before a save lists as
+            # active cells the save marked deleted because the mask lacks
+            # them.  Only the labels this Undo turns active again are
+            # checked, against the layer AFTER its voxels were restored
+            # above (a cell the Undo paints back stays active); none -> no
+            # scan, so an Undo before any save reads nothing.
+            try:
+                _undo_patch = _qc_write_patch(self)
+                _undo_layer = self._find_active_labels_layer()
+                if (_undo_patch and _undo_layer is not None
+                        and self.state_manager.get_patch_downsample_factor(
+                            _undo_patch) > 1):
+                    _cands = _undo_recheck_candidates(
+                        _df_before_undo, self._qc_features_df)
+                    if _cands:
+                        _present = _ids_present_in_labels(_undo_layer.data)
+                        _gone = [c for c in _cands
+                                 if not np.isin(c, _present)]
+                        _mark_ids_deleted(self._qc_features_df, _gone)
+            except Exception as exc:      # noqa: BLE001
+                print(f"[UNDO] half-size rows check skipped: {exc!r}")
 
         # Undoing a guided split must also retract its verdict from the
         # SIDECAR (AUDIT 2026-09-09).  Restoring the df snapshot clears the
@@ -9768,15 +11736,32 @@ class FusionReconstructionController:
                 _extra = getattr(entry, "extra", None) or {}
                 _drop = [int(k) for k in (_extra.get("flags") or {})]
                 _drop += [int(i) for i in (_extra.get("new_ids") or [])]
-                if _drop:
-                    _ctx = self._on_annotator_reshape_context()
-                    _rf.drop_flags(
-                        _ctx["workspace"], _ctx["patch_name"], _drop,
-                        _ctx["run_id"],
-                    )
+                _where = _reshape_flag_where(self) if _drop else None
+                if _where is not None:
+                    _rf.drop_flags(_where[0], _where[1], _drop, _where[2])
                     print(f"[RESHAPE] undo dropped sidecar flags for {_drop}")
             except Exception as exc:  # noqa: BLE001
                 print(f"[RESHAPE] undo sidecar drop skipped: {exc!r}")
+        # Undoing a Delete or a Clear puts back the verdicts it took out of
+        # the sidecar (the objects are back, and so is their reshape flag).
+        _back = (getattr(entry, "extra", None) or {}).get(
+            "dropped_reshape_flags")
+        if _back:
+            try:
+                from napari_epicycle.fusion_reconstruction import (
+                    _reshape_flags as _rf,
+                )
+
+                _where = _reshape_flag_where(self)
+                if _where is not None:
+                    _rf.merge_flags(_where[0], _where[1], _back, _where[2])
+                    print(f"[RESHAPE] undo put back sidecar flags {_back}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[RESHAPE] undo sidecar put-back skipped: {exc!r}")
+
+        # The df was just replaced by an older snapshot: a tier-undo
+        # snapshot of the newer one would put back the wrong tiers.
+        self._drop_tier_undo()
 
         # 3. Stay dirty (undo itself is an in-memory change).
         self._curation_dirty = True
@@ -9784,10 +11769,69 @@ class FusionReconstructionController:
 
         # 4. Refresh UI.
         self._refresh_curation_ui()
+        # The pieces the edit made are gone: take them out of what is
+        # isolated and isolate the original cell again.  After the table
+        # refresh, so the restored row exists (or its rebuild is pending)
+        # when the rows are selected.
+        self._reisolate_after_undo(entry)
+        # an Add Accept the Add page's review still lists: the page follows
+        # (its rows leave the list; with none left the review closes)
+        # (and an Add Clear taken back: the objects it pasted back that the
+        # review's Accepts wrote are listed again)
+        _ex = getattr(entry, "extra", None) or {}
+        if getattr(entry, "action_type", "") == "add_denovo":
+            try:
+                _w = self._get_curation_annotator_widget()
+                _hook = getattr(_w, "_add_after_accept_undone", None)
+                if callable(_hook):
+                    _hook(int(entry.label_id))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[UNDO] Add review follow-up skipped: {exc!r}")
+        elif _ex.get("add_clear_seq") is not None:
+            try:
+                _w = self._get_curation_annotator_widget()
+                _hook = getattr(_w, "_add_after_clear_undone", None)
+                if callable(_hook):
+                    _hook([int(i) for i in (_ex.get("garbage_ids") or ())])
+            except Exception as exc:  # noqa: BLE001
+                print(f"[UNDO] Add review follow-up skipped: {exc!r}")
         self._append_log(f"Undid: {entry.description}")
 
+    def _reisolate_after_undo(self, entry) -> None:
+        """After an undo removed the cells ``entry`` created, isolate the
+        original cell (and whatever else was isolated) in place of them."""
+        try:
+            new_ids = {int((i)) for i in ((entry.extra or {}).get("new_ids") or [])}
+            if not new_ids:
+                return
+            widget = self._get_curation_annotator_widget()
+            live_fn = getattr(widget, "_iso_live_ids", None)
+            handler = getattr(widget, "_on_isolation_changed", None)
+            if not callable(live_fn) or not callable(handler):
+                return
+            live = {int(i) for i in live_fn()}
+            if not (live & new_ids):
+                return
+            target = (live - new_ids) | {int(entry.label_id)}
+            widget._isolation_bridge_dispatched = True
+            try:
+                handler(set(target))
+            finally:
+                widget._isolation_bridge_dispatched = False
+            _nav = getattr(widget, "_navigator_widget", None)
+            _select = getattr(_nav, "select_rows_silently", None)
+            if callable(_select):
+                _select(set(target))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[UNDO] re-isolate after undo skipped: {exc!r}")
+
     def _refresh_annotator_subviewers(self) -> None:
-        """Ask the open annotator dock (if any) to refresh its subviewers."""
+        """Refresh the open annotator's shared volume and side views.
+
+        Only a live annotator is touched.  Once the dock-close cleanup has
+        run, its side views are gone but the hidden dock stays registered
+        until the next launch, so that annotator is left alone.
+        """
         # Population-mode no-op guard removed 2026-05-03.
         dock_name = "EpiCycle 3D Curation Annotator"
         window = getattr(self.viewer, "window", None)
@@ -9798,6 +11842,19 @@ class FusionReconstructionController:
         if dock is None:
             return
         widget = dock.widget() if hasattr(dock, "widget") else dock
+        if (getattr(widget, "_dock_close_hook_fired", False)
+                or getattr(widget, "_close_cleanup_done", False)):
+            print("[CURATION] annotator realign skipped - "
+                  "the annotator is already cleaned up")
+            return
+        # The volume was rewritten under the annotator (undo, Commit Triage,
+        # auto-discard), so the pre-draw snapshot no longer describes it and a
+        # later Clear Edits would paste stale voxels back.
+        if hasattr(widget, "_clear_draw_snapshot"):
+            try:
+                widget._clear_draw_snapshot()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[CURATION-UNDO] draw snapshot drop skipped: {exc!r}")
         # 2026-09-27: re-point the annotator's shared volume at the main
         # layer BEFORE refreshing.  On a uint32 patch the launch-time
         # int32 normalisation COPIES the volume, so shared and layer.data
@@ -9830,7 +11887,7 @@ class FusionReconstructionController:
 
     _VALID_TIERS = frozenset({"curated", "good", "review", "bad", "garbage"})
 
-    def _on_annotator_mark_tier(self, label_id: int, tier: str) -> None:
+    def _on_annotator_mark_tier(self, label_id: int, tier: str):
         """Callback from annotator: user clicked one of the five tier
         buttons in the Label Navigator.
 
@@ -9843,7 +11900,17 @@ class FusionReconstructionController:
         which only handled the "good" tier; this method handles all
         five tiers (curated / good / review / bad / garbage) via a
         single dispatch.
+
+        Returns False when the mark was refused (Commit Triage is saving
+        the table), so the navigator does not advance as if it applied.
         """
+        if getattr(self, "_commit_triage_in_flight", False):
+            self._set_plot_status(_plot_text.CARD_WARN_MARK_WHILE_SAVING,
+                                  "warn")
+            self._append_log(
+                f"[TRIAGE] mark of label {label_id} refused: "
+                f"Commit Triage is saving")
+            return False
         if self._qc_features_df is None:
             return
         if tier not in self._VALID_TIERS:
@@ -9861,6 +11928,7 @@ class FusionReconstructionController:
             df_updater=_update,
         )
         self._append_log(f"Annotator: marked label {label_id} as {tier}")
+        return True
 
     def _on_annotator_label_accepted(self, label_id: int) -> None:
         """Legacy alias: refinement-accept paths still call this with
@@ -9889,7 +11957,7 @@ class FusionReconstructionController:
         except Exception:
             return None
 
-    def _hard_clear_curation_surfaces(self) -> None:
+    def _hard_clear_curation_surfaces(self, *, keep_isolate=None) -> None:
         """Unified hard-clear for lifecycle boundaries (close / patch switch).
 
         Clears ALL curation surfaces to a neutral state:
@@ -9908,6 +11976,17 @@ class FusionReconstructionController:
         self._isolated_label_ids = set()
         self._isolated_df_indices = []
         self._colormap_authority.reset()
+        try:
+            from napari_epicycle.annotator.curation_3d_widget import (
+                _PLOT_CMAP_UNSET)
+            _w = self._get_curation_annotator_widget()
+            if _w is not None:
+                _w._plot_cmap = _PLOT_CMAP_UNSET
+                _pj = getattr(_w, "_paint_join_timer", None)
+                if _pj is not None:
+                    _pj.stop()
+        except Exception:               # noqa: BLE001
+            pass
         _ta = _time.perf_counter()
 
         # Clear plot
@@ -9921,11 +12000,14 @@ class FusionReconstructionController:
                     pass
         _tb = _time.perf_counter()
 
+        if keep_isolate is None:
+            keep_isolate = bool(
+                getattr(self, "_keep_navigator_isolate_on_clear", False))
         # Clear navigator UI
         nav = self._get_navigator_widget()
         if nav is not None and hasattr(nav, "reset_selection_ui"):
             try:
-                nav.reset_selection_ui()
+                nav.reset_selection_ui(keep_isolate=keep_isolate)
             except Exception:
                 pass
         # B5 crash fix: reset the selection coordinator's dedup key so a
@@ -10056,9 +12138,22 @@ class FusionReconstructionController:
             # points don't remain visually "selected" after isolation ends.
             if hasattr(pw, '_clear_selection'):
                 try:
-                    pw._clear_selection()
+                    if reason in ("forget", "box_untick"):
+                        # The forget comes from the annotator, so the plot
+                        # must not echo the clear back into it.
+                        pw._clear_selection(emit=False)
+                    else:
+                        pw._clear_selection()
                 except Exception:
                     pass
+        if reason in ("forget", "box_untick"):
+            # What the echo used to do that still matters: let the same row
+            # be selected again, tell the Batch count and the plot area.
+            _sync = getattr(self, "_selection_sync", None)
+            if _sync is not None:
+                _sync._last_key = None
+            self._notify_plot_selection()
+            _area_call(self, "_plot_area_push", "clear")
 
         # Re-apply viewer colors (all on invisible layers — no GPU work)
         sync_on = (
@@ -10086,38 +12181,163 @@ class FusionReconstructionController:
             )
 
     def _on_annotator_label_deleted(
-        self, label_id: int, *, roi_slices=None, old_roi_data=None
+        self, label_id: int, *, roi_slices=None, old_roi_data=None,
+        reconcile: bool = False,
     ) -> None:
         """Callback from annotator: user deleted a label (zeroed in volume).
 
         Marks the row as ``label_status="deleted"`` (ghost) so it remains
-        visible in QC plots as a history trail.
+        visible in QC plots as a history trail.  Only the ACTIVE row is
+        marked: rows a Reshape / Refine already retired stay superseded.
+
+        ``reconcile=True`` is the annotator finding a label already gone
+        from the volume (erased by hand): the df catches up, and no undo
+        entry is pushed, because there is no voxel change to put back and
+        an entry would sit on top of the entry that really changed them.
         """
-        if self._qc_features_df is None:
+        has_active = False
+        if self._qc_features_df is not None:
+            _df = self._qc_features_df
+            _rows = _df["label"] == label_id
+            if "label_status" in _df.columns:
+                has_active = bool((_rows & (_df["label_status"] == "active")).any())
+            else:
+                has_active = bool(_rows.any())
+            # Nothing to mark and nothing to restore: no row changes and no
+            # entry, but the session is still dirty (the volume changed).
+            if not has_active and (reconcile or roi_slices is None):
+                self._commit_curation_action(
+                    "delete", label_id, f"Delete label {label_id}",
+                    push=False, marks_stale=False,
+                )
+                return
+        elif reconcile:
+            self._commit_curation_action(
+                "delete", label_id, f"Delete label {label_id}",
+                push=False, marks_stale=False,
+            )
+            return
+        else:
             self._note_commit_without_qc("delete")
 
         def _update():
             if self._qc_features_df is None:
                 return
-            mask = self._qc_features_df["label"] == label_id
+            if "label_status" not in self._qc_features_df.columns:
+                self._qc_features_df["label_status"] = "active"
+            mask = (
+                (self._qc_features_df["label"] == label_id)
+                & (self._qc_features_df["label_status"] == "active")
+            )
             if mask.any():
-                if "label_status" not in self._qc_features_df.columns:
-                    self._qc_features_df["label_status"] = "active"
                 self._qc_features_df.loc[mask, "label_status"] = "deleted"
 
+        # its reshape verdict leaves the sidecar with it, once the commit
+        # landed (the entry keeps it for the Undo); a reconcile pushes no
+        # entry, so it keeps the verdict
+        # (through _area_call: a harness binds part of the class)
+        _held = {} if reconcile else (_area_call(
+            self, "_reshape_flags_of", [label_id]) or {})
         self._commit_curation_action(
             "delete", label_id, f"Delete label {label_id}",
             roi_slices=roi_slices, old_roi_data=old_roi_data,
-            df_updater=_update,
+            df_updater=_update, push=not reconcile,
+            extra=({"dropped_reshape_flags": _held} if _held else None),
         )
+        if _held:
+            _area_call(self, "_drop_reshape_flags", _held)
         self._append_log(f"Annotator: deleted label {label_id}")
 
-    def _on_annotator_discard_garbage(
-        self, garbage_ids: list, *, roi_slices=None, old_roi_data=None
-    ) -> None:
-        """Callback from annotator: user discarded all garbage labels.
+    def _reshape_flags_of(self, ids) -> dict:
+        """The reshape verdicts the patch's sidecar holds for ``ids``,
+        ``{id: flag}`` (read only).  A Delete or a Clear records them in its
+        undo entry, then takes them out (``_drop_reshape_flags``) once the
+        commit landed: the sidecar is re-applied by id at every
+        re-extraction, so a verdict left behind would land on a later
+        object with the same number.  A failure is printed, never raised."""
+        try:
+            from napari_epicycle.fusion_reconstruction import (
+                _reshape_flags as _rf,
+            )
 
-        Marks all garbage rows as ``label_status="deleted"`` (ghost).
+            where = _reshape_flag_where(self)
+            if where is None:
+                return {}
+            stored = _rf.read_flags(*where)
+            hit = {}
+            for i in ids or ():
+                try:
+                    k = int(i)
+                except (TypeError, ValueError):
+                    continue
+                if k in stored:
+                    hit[k] = stored[k]
+            return hit
+        except Exception as exc:  # noqa: BLE001 - a record, never a block
+            print(f"[RESHAPE] verdict read skipped: {exc!r}")
+            return {}
+
+    def _drop_reshape_flags(self, flags) -> None:
+        """Take ``flags``' ids out of the patch's sidecar (after the commit
+        of the Delete or Clear that removed them)."""
+        try:
+            from napari_epicycle.fusion_reconstruction import (
+                _reshape_flags as _rf,
+            )
+
+            where = _reshape_flag_where(self)
+            if where is None or not flags:
+                return
+            _rf.drop_flags(where[0], where[1], list(flags), where[2])
+            print(f"[RESHAPE] verdicts of removed ids dropped: {dict(flags)}")
+        except Exception as exc:  # noqa: BLE001 - a record, never a block
+            print(f"[RESHAPE] verdict drop skipped: {exc!r}")
+
+    def _put_back_flags_after_revert(self) -> None:
+        """A Discard reloaded the saved mask, undoing every Delete and
+        Clear made since the Save.  The verdicts those took out of the
+        sidecar go back -- for the ids the reloaded mask holds again (an
+        object whose removal was saved stays without one).  Read from the
+        undo entries, before the Discard empties the stack."""
+        try:
+            stack = getattr(self, "_curation_undo_stack", None)
+            back = {}
+            for e in list(stack or ()):
+                back.update((getattr(e, "extra", None) or {}).get(
+                    "dropped_reshape_flags") or {})
+            if not back:
+                return
+            layer = self._find_active_labels_layer()
+            if layer is None:
+                return
+            present = _ids_present_in_labels(layer.data)
+            back = {int(k): v for k, v in back.items()
+                    if np.isin(int(k), present)}
+            where = _reshape_flag_where(self)
+            if not back or where is None:
+                return
+            from napari_epicycle.fusion_reconstruction import (
+                _reshape_flags as _rf,
+            )
+
+            _rf.merge_flags(where[0], where[1], back, where[2])
+            print(f"[RESHAPE] Discard put back sidecar flags {back}")
+        except Exception as exc:  # noqa: BLE001 - a record, never a block
+            print(f"[RESHAPE] Discard put-back skipped: {exc!r}")
+
+    def _on_annotator_discard_garbage(
+        self, garbage_ids: list, *, roi_slices=None, old_roi_data=None,
+        description=None, extra=None,
+    ) -> None:
+        """Callback from annotator: objects were zeroed in the volume -- the
+        navigator's Discard All Garbage, or Add's Clear objects.
+
+        Marks the ACTIVE rows of ``garbage_ids`` ``label_status="deleted"``
+        (ghost); an older superseded row with the same id keeps its status.
+        ``description`` is the undo entry's text (the navigator passes none
+        and keeps its words); ``extra`` is merged into the entry's extra.
+        A Clear (``extra["add_clear_seq"]``) also records its ids for this
+        patch and run, so a re-extraction keeps their deleted rows.
         """
         if not garbage_ids:
             return
@@ -10127,28 +12347,95 @@ class FusionReconstructionController:
         def _update():
             if self._qc_features_df is None:
                 return
-            if "label_status" not in self._qc_features_df.columns:
-                self._qc_features_df["label_status"] = "active"
-            mask = self._qc_features_df["label"].isin(garbage_ids)
-            self._qc_features_df.loc[mask, "label_status"] = "deleted"
+            _mark_ids_deleted(self._qc_features_df, garbage_ids)
 
+        _extra = {"garbage_ids": garbage_ids}
+        _extra.update(dict(extra or {}))
+        _held = _area_call(self, "_reshape_flags_of", garbage_ids) or {}
+        if _held:
+            _extra["dropped_reshape_flags"] = _held
         self._commit_curation_action(
             "discard_garbage",
             garbage_ids[0],
-            f"Discard {len(garbage_ids)} garbage labels",
+            description or f"Discard {len(garbage_ids)} garbage labels",
             roi_slices=roi_slices,
             old_roi_data=old_roi_data,
             df_updater=_update,
-            extra={"garbage_ids": garbage_ids},
+            extra=_extra,
         )
+        if _held:                    # once the commit landed
+            _area_call(self, "_drop_reshape_flags", _held)
+        if _extra.get("add_clear_seq") is not None:
+            try:
+                key = (_qc_write_patch(self), self._active_run_path_id())
+                book = getattr(self, "_add_cleared_ids", None)
+                if book is None:
+                    book = {}
+                    self._add_cleared_ids = book
+                book.setdefault(key, set()).update(
+                    int(i) for i in garbage_ids)
+            except Exception as exc:  # noqa: BLE001 - a record, never a block
+                print(f"[ADD-CLEAR] cleared ids not recorded: {exc!r}")
+            self._append_log(
+                f"Annotator: Add cleared {len(garbage_ids)} objects")
+            return
         self._append_log(
             f"Annotator: discarded {len(garbage_ids)} garbage labels"
         )
 
+    def _add_cleared_ids_for(self, patch_name, run_path_id) -> set:
+        """The ids Add's Clear objects removed on this patch and run in this
+        session (a re-extraction keeps one deleted row for each, and Add's
+        id floor stays above them with no QC table at all)."""
+        book = getattr(self, "_add_cleared_ids", None) or {}
+        return set(book.get((patch_name, run_path_id), ()))
+
+    def _live_add_clear_seqs(self) -> set:
+        """The numbers of the Clear objects entries still on the curation
+        undo stack (an undone, evicted or emptied entry is gone)."""
+        stack = getattr(self, "_curation_undo_stack", None)
+        if stack is None:
+            return set()
+        try:
+            entries = list(stack)
+        except TypeError:
+            return set()
+        out = set()
+        for e in entries:
+            seq = (getattr(e, "extra", None) or {}).get("add_clear_seq")
+            if seq is not None:
+                out.add(int(seq))
+        return out
+
+    def _add_kept_tier_count(self, ids) -> int:
+        """How many of ``ids`` have an ACTIVE row marked good or curated
+        (the Clear confirm's "marked Good" count); 0 with no table."""
+        df = getattr(self, "_qc_features_df", None)
+        if df is None or "label" not in df.columns \
+                or "qc_tier" not in df.columns:
+            return 0
+        try:
+            rows = df[df["label"].isin([int(i) for i in ids])]
+            if "label_status" in rows.columns:
+                rows = rows[_live_status_mask(rows)]
+            kept = rows[rows["qc_tier"].isin(["good", "curated"])]
+            return int(kept["label"].nunique())
+        except Exception as exc:  # noqa: BLE001 - a count on a confirm
+            print(f"[ADD-CLEAR] good count skipped: {exc!r}")
+            return 0
+
     def _on_annotator_interpolation_accepted(
-        self, label_id: int, *, roi_slices=None, old_roi_data=None
+        self, label_id: int, *, roi_slices=None, old_roi_data=None,
+        pre_layers=None, steps=None, recipes=None,
     ) -> None:
         """Callback from annotator: user accepted an interpolation.
+
+        ``pre_layers`` (oldest first) are the snapshots of the Refine
+        Further stages that followed the interpolation; they ride in the
+        one undo entry, which restores them newest first and then
+        ``roi_slices`` / ``old_roi_data`` (the state before the
+        interpolation).  ``steps`` / ``recipes`` are the refine chain's
+        debug trail, as on :meth:`_on_annotator_label_smoothed`.
 
         Snapshots the pre-curation row as ``label_status="superseded"``
         (ghost), then updates the active row with tier="curated" and
@@ -10191,13 +12478,25 @@ class FusionReconstructionController:
                     self._qc_features_df.loc[active_mask, "qc_tier"] = "curated"
             # Bounded: the accept ROI provably contains the whole label
             # (see _update_label_basic_stats).  Same numbers, no full scan.
-            self._update_label_basic_stats(label_id, roi_slices=roi_slices)
+            # A refine stage can grow past the interpolation's ROI: measure
+            # over the union so the bounded path keeps holding.
+            self._update_label_basic_stats(
+                label_id, roi_slices=(
+                    _union_roi(roi_slices, pre_layers)
+                    if roi_slices is not None else None),
+            )
 
         self._commit_curation_action(
             "interpolation", label_id,
             f"Accept interpolation for label {label_id}",
             roi_slices=roi_slices, old_roi_data=old_roi_data,
             df_updater=_update,
+            extra=_undo_extra(
+                pre_layers,
+                **({"steps": list(steps or []),
+                    "recipes": [str(r) for r in (recipes or [])]}
+                   if (steps or recipes) else {}),
+            ),
         )
         self._scan_qc_df_for_duplicates(
             f"after _on_annotator_interpolation_accepted(label={label_id})"
@@ -10206,7 +12505,74 @@ class FusionReconstructionController:
             f"Annotator: accepted interpolation for label {label_id} → curated"
         )
 
-    def _on_annotator_new_label_painted(self, label_id: int) -> None:
+    def _on_annotator_paint_stroke(
+        self, label_id: int, *, roi_slices=None, old_roi_data=None,
+        discard: bool = False, draw_session=None,
+    ) -> None:
+        """Callback from annotator: one paint / erase / fill stroke landed.
+
+        A stroke is exactly one plane of the volume; ``old_roi_data`` is
+        that plane before the stroke.  Consecutive strokes of one label on
+        one plane fold into the entry already on top (its snapshot is the
+        older one), so a long editing session on a single slice does not
+        push real entries out of the stack.
+        """
+        if discard:
+            # Clear Edits took the strokes of this label out of the volume:
+            # their entries (one, since consecutive strokes fold) go with
+            # them.
+            stack = self._curation_undo_stack
+            while (
+                stack.peek() is not None
+                and stack.peek().action_type in (
+                    "paint_stroke", "new_label_painted")
+                and stack.peek().label_id == label_id
+                and (stack.peek().extra or {}).get("draw_session") == draw_session
+            ):
+                gone = stack.pop()
+                before = gone.old_df_snapshot
+                if (
+                    gone.action_type == "new_label_painted"
+                    and before is not None
+                    and self._qc_features_df is not None
+                    and label_id not in set(before["label"])
+                ):
+                    # The cell never existed before this session: no row of
+                    # it, in any status, should be left behind.
+                    df = self._qc_features_df
+                    self._qc_features_df = df[
+                        df["label"] != label_id].reset_index(drop=True)
+            self._refresh_curation_ui()
+            return
+        top = self._curation_undo_stack.peek()
+        fold = (
+            top is not None
+            and top.action_type in ("paint_stroke", "new_label_painted")
+            and top.label_id == label_id
+            and (top.extra or {}).get("draw_session") == draw_session
+            and top.roi_slices is not None
+            and roi_slices is not None
+            and old_roi_data is not None
+        )
+        if fold:
+            # Outlining a cell plane after plane is ONE edit: a stroke on
+            # another plane joins the entry as a further layer (a plane
+            # the entry already covers keeps its older snapshot).
+            covered = [top.roi_slices] + [
+                r for (r, _d) in (top.extra.get("pre_layers") or [])]
+            if roi_slices not in covered:
+                top.extra.setdefault("pre_layers", []).append(
+                    (roi_slices, old_roi_data))
+        self._commit_curation_action(
+            "paint_stroke", label_id, f"Paint on label {label_id}",
+            roi_slices=roi_slices, old_roi_data=old_roi_data,
+            push=not fold, extra={"draw_session": draw_session},
+        )
+
+    def _on_annotator_new_label_painted(
+        self, label_id: int, *, roi_slices=None, old_roi_data=None,
+        draw_session=None,
+    ) -> None:
         """Callback from annotator: user painted a new cell via enclosed-
         fill + auto-increment in a subviewer.
 
@@ -10243,13 +12609,25 @@ class FusionReconstructionController:
                 f"Annotator: new label {label_id} painted (no QC DataFrame)"
             )
         else:
-            # Idempotent check — skip if already in the DataFrame.
+            # Idempotent check — skip if an ACTIVE row already exists.  A
+            # ghost row (deleted / superseded / merged) keeps its id as
+            # history; a fresh paint on that id still gets its own row.
             existing_mask = self._qc_features_df["label"] == label_id
+            if "label_status" in self._qc_features_df.columns:
+                existing_mask = existing_mask & (
+                    self._qc_features_df["label_status"] == "active"
+                )
             if existing_mask.any():
                 self._append_log(
                     f"Annotator: paint over existing label {label_id} "
-                    "(row already registered, no-op)"
+                    "(row already registered)"
                 )
+                if roi_slices is not None:
+                    # The stroke still wrote voxels: it gets its own entry.
+                    self._on_annotator_paint_stroke(
+                        label_id, roi_slices=roi_slices,
+                        old_roi_data=old_roi_data, draw_session=draw_session,
+                    )
                 return
 
         import pandas as pd
@@ -10280,6 +12658,10 @@ class FusionReconstructionController:
             row["label"] = label_id
             row["qc_tier"] = ""  # untriaged — promoted to "curated" on interp-accept
             row["feature_state"] = "stale"
+            # the pairing check: unknown for a painted label until Extract
+            from .qc_pairing_group import blank_match_row
+            blank_match_row(row, self._qc_features_df.columns)
+            self._match_values_predate_edits = True
             row["label_status"] = "active"
             row["area"] = int(np.sum(vol_mask))
 
@@ -10302,8 +12684,8 @@ class FusionReconstructionController:
         self._commit_curation_action(
             "new_label_painted", label_id,
             f"New label {label_id} painted",
-            roi_slices=None, old_roi_data=None,
-            df_updater=_update,
+            roi_slices=roi_slices, old_roi_data=old_roi_data,
+            df_updater=_update, extra={"draw_session": draw_session},
         )
         self._scan_qc_df_for_duplicates(
             f"after _on_annotator_new_label_painted(label={label_id})"
@@ -10354,7 +12736,7 @@ class FusionReconstructionController:
 
     def _on_annotator_label_split(
         self, original_id: int, new_ids: list,
-        *, roi_slices=None, old_roi_data=None,
+        *, roi_slices=None, old_roi_data=None, pre_layers=None,
     ) -> None:
         """Callback from annotator: user split a label via assisted watershed.
 
@@ -10400,6 +12782,10 @@ class FusionReconstructionController:
                 row["label"] = new_id
                 row["qc_tier"] = "curated"
                 row["feature_state"] = "stale"
+                # a split piece never inherits the parent's match values
+                from .qc_pairing_group import blank_match_row
+                blank_match_row(row, self._qc_features_df.columns)
+                self._match_values_predate_edits = True
                 row["label_status"] = "active"
 
                 # Update area/centroid from actual volume.
@@ -10462,7 +12848,7 @@ class FusionReconstructionController:
             f"Split label {original_id} → {new_ids}",
             roi_slices=roi_slices, old_roi_data=old_roi_data,
             df_updater=_update,
-            extra={"new_ids": new_ids},
+            extra=_undo_extra(pre_layers, new_ids=new_ids),
         )
         self._scan_qc_df_for_duplicates(
             f"after _on_annotator_label_split(orig={original_id}, new={new_ids})"
@@ -10678,6 +13064,10 @@ class FusionReconstructionController:
                     "label_status": "active",
                     "area": area,
                 }
+                # the pairing check: unknown for an added label until Extract
+                from .qc_pairing_group import blank_match_row
+                blank_match_row(row, self._qc_features_df.columns)
+                self._match_values_predate_edits = True
                 if ds_factor > 1:
                     centroid = centroid * ds_factor
                 for i, col in enumerate(
@@ -10723,6 +13113,8 @@ class FusionReconstructionController:
             top = stack.peek()
             if top is None or getattr(top, "action_type", "") != "add_denovo":
                 break
+            if self._staged_annotator_work():
+                break      # the undo below would be refused: count nothing
             self._undo_last_curation()
             undone += 1
         return undone
@@ -10748,7 +13140,7 @@ class FusionReconstructionController:
         (bare / test instance) never raises mid-op.
 
         Note the deliberate difference from the MANUAL split, which holds no
-        controller lock at all (grill A6): this flag is taken
+        controller lock at all: this flag is taken
         BEFORE the target label is punched out of the volume, so Save Curation
         and Commit Triage are unavailable for the whole staged window and can
         never persist a volume with a hole in it.
@@ -10790,7 +13182,7 @@ class FusionReconstructionController:
         half-initialised controller yields safe defaults rather than killing the
         annotator's mode start.
 
-        Returns a dict with exactly these keys:
+        Returns a dict with exactly these keys (``spacing_source`` last):
 
         ``workspace``
             ``str(self.working_dir)`` or ``""``.
@@ -10805,7 +13197,7 @@ class FusionReconstructionController:
         ``run_epoch``
             ``self._run_epoch`` -- the monotonic run-switch epoch.  The Reshape
             worker captures it at launch and discards a finish whose epoch no
-            longer matches (grill A4).
+            longer matches.
         ``downsample_factor``
             ``self._current_downsample_factor()`` for the loaded patch.
         ``spacing``
@@ -10819,6 +13211,19 @@ class FusionReconstructionController:
             failing that, to ``(1.0, 1.0, 1.0)``.  So on a workspace where the
             user never touched QC Settings this value IS the default
             ``(1.0, 1.0, 1.0)`` -- isotropic voxel units, not microns.
+        ``spacing_source``
+            Where ``spacing`` came from: ``"patch"`` (the patch's own voxel
+            size: "Set spacing…", Step 1's recorded voxel size or the file's
+            tags), ``"qc_settings"`` (QC Settings: any value but 1 / 1 / 1,
+            or a 1 / 1 / 1 the user typed into its spacing boxes in this
+            workspace and Session folder) or ``"unknown"`` (the never-set
+            ``(1, 1, 1)`` fallback, also after an OK of QC Settings that
+            left its spacing boxes alone).  The ``[CONTOUR]`` line and
+            Add's Inside each cell (which refuses ``"unknown"``) read it.
+            Step 1 and the file's tags record a 1 / 1 / 1 as "no voxel
+            size", so a real 1.0 um voxel from either reaches here as the
+            fallback; "Set spacing…" (kept per patch, at 1 / 1 / 1 too) is
+            the sure way to enter it.
         """
         workspace = ""
         try:
@@ -10851,9 +13256,11 @@ class FusionReconstructionController:
             downsample_factor = 1
 
         spacing = (1.0, 1.0, 1.0)
+        spacing_source = "unknown"
         try:
             settings = getattr(self, "_qc_settings", None)
             raw = None
+            src = "unknown"
             # R7: the PATCH's own voxel size first -- the one its
             # features are measured in -- so Reshape / Refine / Add measure
             # in the features' units; QC Settings only as the fallback
@@ -10861,16 +13268,41 @@ class FusionReconstructionController:
                    else None)
             if own is not None:
                 raw = own.get("zyx")
+                if raw is not None:
+                    src = "patch"
             if raw is None and isinstance(settings, dict):
                 raw = settings.get("spacing")
                 if raw is None:
                     raw = settings.get("spacing_values")
+                if raw is not None:
+                    src = "qc_settings"
             if raw is not None:
                 vals = tuple(float(v) for v in raw)
                 if len(vals) == 3:
                     spacing = vals
+                    # the (1, 1, 1) factory default of QC Settings is
+                    # not a voxel size anyone entered -- unless the user
+                    # changed QC Settings' spacing boxes and pressed OK:
+                    # its (1, 1, 1) is then a real 1.0 um voxel (the dialog
+                    # stores an entered 1/1/1 as ``spacing=None`` like the
+                    # factory default, so the controller's mark is the
+                    # only record)
+                    entered = bool(getattr(self, "_qc_spacing_entered",
+                                           False))
+                    spacing_source = (
+                        "unknown" if src == "qc_settings"
+                        and vals == (1.0, 1.0, 1.0) and not entered
+                        else src)
         except Exception:
             spacing = (1.0, 1.0, 1.0)
+            spacing_source = "unknown"
+
+        # The stored voxel size is the full-resolution one.  When the loaded
+        # arrays were halved, one in-memory voxel spans `factor` original
+        # ones, so every micron figure measured on them needs the product.
+        # An unknown spacing is not a voxel size: leave it alone.
+        if downsample_factor > 1 and spacing_source != "unknown":
+            spacing = tuple(v * downsample_factor for v in spacing)
 
         return {
             "workspace": workspace,
@@ -10879,18 +13311,20 @@ class FusionReconstructionController:
             "run_epoch": run_epoch,
             "downsample_factor": downsample_factor,
             "spacing": spacing,
+            "spacing_source": spacing_source,
         }
 
     def _on_annotator_reshape_committed(
         self, original_id, new_ids, *, roi_slices=None, old_roi_data=None,
         flags=None, superseded=True, piece_stats=None, guide_run="", preset=None,
+        pre_layers=None,
     ) -> None:
         """Callback from the annotator: a guided Reshape was ACCEPTED.
 
         The annotator has already mutated the shared volume (safe-write); this
         only updates the QC DataFrame, records the arbiter verdict, and pushes
         the single undo entry.  Mirrors :meth:`_on_annotator_label_split` step
-        for step (grill A13) -- a reshape RETIRES the target
+        for step -- a reshape RETIRES the target
         label, so it is the split callback's shape, not Add's append-only one.
 
         Parameters
@@ -10905,7 +13339,7 @@ class FusionReconstructionController:
             ``{final_label_id: "dividing" | "low-evidence" | "split-override"}``
             -- the arbiter verdict, written into the ``reshape_flag`` df column
             AND persisted to the per-patch sidecar so it survives QC
-            re-extraction (grill A15/B4).
+            re-extraction.
         superseded : bool
             True when ``original_id`` no longer exists in the volume (every
             piece became a new cell) -- its row is marked ``"superseded"``.
@@ -11019,6 +13453,10 @@ class FusionReconstructionController:
                 row["label"] = new_id
                 row["qc_tier"] = "curated"
                 row["feature_state"] = "stale"
+                # a reshaped piece never inherits the parent's match values
+                from .qc_pairing_group import blank_match_row
+                blank_match_row(row, df.columns)
+                self._match_values_predate_edits = True
                 row["label_status"] = "active"
 
                 entry = stats_map.get(new_id)
@@ -11097,13 +13535,14 @@ class FusionReconstructionController:
             description,
             roi_slices=roi_slices, old_roi_data=old_roi_data,
             df_updater=_update,
-            extra={
-                "new_ids": ids,
-                "flags": flag_map,
-                "guide_run": str(guide_run or ""),
-                "preset": preset,
-                "superseded": superseded,
-            },
+            extra=_undo_extra(
+                pre_layers,
+                new_ids=ids,
+                flags=flag_map,
+                guide_run=str(guide_run or ""),
+                preset=preset,
+                superseded=superseded,
+            ),
         )
         # The sidecar is written AFTER the transaction (AUDIT 2026-09-09):
         # it is the copy that survives a QC re-extract, so it must never
@@ -11111,21 +13550,19 @@ class FusionReconstructionController:
         # Persist the arbiter verdict BESIDE the features CSV.  A QC
         # re-extraction preserves only qc_tier, so without this sidecar the
         # flag would silently vanish the first time the user re-extracts
-        # (grill A15/B4).  Guarded: a sidecar failure logs
+        # the features.  Guarded: a sidecar failure logs
         # and MUST NOT abort the commit - the df edit and the undo entry are
         # the user's actual work.
         if flag_map:
             try:
-                ctx = self._on_annotator_reshape_context()
-                ws = ctx.get("workspace", "")
-                pn = ctx.get("patch_name", "")
-                if ws and pn:
+                where = _reshape_flag_where(self)
+                if where is not None:
                     _reshape_flags.merge_flags(
-                        ws, Path(pn).stem, flag_map, ctx.get("run_id")
+                        where[0], where[1], flag_map, where[2]
                     )
                     print(
                         f"[RESHAPE] flag sidecar updated for patch "
-                        f"{Path(pn).stem!r}: {flag_map}"
+                        f"{where[1]!r}: {flag_map}"
                     )
                 else:
                     print(
@@ -11339,6 +13776,12 @@ class FusionReconstructionController:
                 # just flag the geometry stale on the live rows.
                 if "feature_state" in df.columns:
                     df.loc[active_touched, "feature_state"] = "stale"
+                live = active_touched
+            # the pairing check: the refined labels' match values are out
+            # of date (theirs and their neighbours'): blank the live rows
+            from .qc_pairing_group import blank_match_columns
+            blank_match_columns(df, live)
+            self._match_values_predate_edits = True
             self._qc_features_df = df
 
         self._commit_curation_action(
@@ -11401,7 +13844,10 @@ class FusionReconstructionController:
         if self._qc_features_df is None:
             self._note_commit_without_qc("merge")
 
+        _perf = {"df_rows": 0.0, "basic_stats": 0.0}
+
         def _update():
+            _t_u = _time.perf_counter()
             df = self._qc_features_df
             if df is None:
                 return
@@ -11437,8 +13883,12 @@ class FusionReconstructionController:
             # Deliberately NO roi_slices: here the ROI is the union bbox of
             # the ABSORBED labels and can miss part of keep_id; full scan
             # required — see _update_label_basic_stats.
+            _t_b = _time.perf_counter()
             self._update_label_basic_stats(keep_id)
+            _perf["basic_stats"] = (_time.perf_counter() - _t_b) * 1000.0
+            _perf["df_rows"] = (_t_b - _t_u) * 1000.0
 
+        _t_c = _time.perf_counter()
         self._commit_curation_action(
             "merge", keep_id,
             f"Merge {absorb_ids_list} into {keep_id}",
@@ -11446,9 +13896,21 @@ class FusionReconstructionController:
             df_updater=_update,
             extra={"keep_id": keep_id, "absorb_ids": absorb_ids_list},
         )
+        _t_d = _time.perf_counter()
         self._scan_qc_df_for_duplicates(
             f"after _on_annotator_label_merged(keep={keep_id}, "
             f"absorb={absorb_ids_list})"
+        )
+        _t_e = _time.perf_counter()
+        # The commit time holds the df rows + area/centroid step, the undo
+        # snapshot (a copy of the QC table) and the panel refresh
+        # (the [SW-PERF] _refresh_curation_ui line breaks that one down).
+        print(
+            "[MERGE-PERF] controller df_rows={:.0f}ms basic_stats={:.0f}ms "
+            "commit={:.0f}ms duplicate_scan={:.0f}ms".format(
+                _perf["df_rows"], _perf["basic_stats"],
+                (_t_d - _t_c) * 1000.0, (_t_e - _t_d) * 1000.0),
+            flush=True,
         )
         self._append_log(
             f"Annotator: merged labels {absorb_ids_list} into {keep_id}"
@@ -11542,6 +14004,9 @@ class FusionReconstructionController:
             extract_single_label_features,
             PCA_FEATURES,
         )
+        from napari_epicycle.fusion_reconstruction.qc_pairing_group import (
+            active_label_rows, blank_match_columns,
+        )
         import numpy as np
 
         if self._qc_features_df is None or not curated_ids:
@@ -11592,6 +14057,18 @@ class FusionReconstructionController:
                         new_row[_col] = new_row[_col] * _ds_factor
 
             old_mask = df["label"] == label_id
+            # The pairing check is never recomputed here (it reads the other
+            # run's full file; this runs on the main thread, on labels that
+            # may be downsampled) and an edit moves the match values of
+            # neighbours too: blank this label's BEFORE the copy below, and
+            # say the table's match values predate the edit.  Its active
+            # rows only (superseded and deleted rows keep theirs), plus the
+            # row the copy below makes fresh.
+            _blank = active_label_rows(df, label_id)
+            if old_mask.any():
+                _blank = _blank | (df.index == df.index[old_mask][0])
+            blank_match_columns(df, _blank)
+            self._match_values_predate_edits = True
 
             # Preserve neighbor features from original row.  patch_name
             # branch removed 2026-05-03 — population mode is gone, the
@@ -11619,6 +14096,7 @@ class FusionReconstructionController:
                 import pandas as pd
                 df = pd.concat([df, new_row], ignore_index=True)
                 self._qc_features_df = df
+                blank_match_columns(df, df["label"] == label_id)
             recalced += 1
 
         # Recompute qc_score for all curated rows using population stats
@@ -11800,7 +14278,13 @@ class FusionReconstructionController:
         # Update flagged labels from the new patch's QC features.
         flagged_ids, flagged_centroids = self._collect_flagged_labels()
         if hasattr(widget, "set_focused_refinement"):
-            widget.set_focused_refinement(flagged_ids, flagged_centroids)
+            # This can relaunch the navigator; the relaunch must not untick
+            # the user's Isolate box during a switch.
+            widget._keep_navigator_isolate = True
+            try:
+                widget.set_focused_refinement(flagged_ids, flagged_centroids)
+            finally:
+                widget._keep_navigator_isolate = False
         # Re-wire triage callbacks (stable refs, but ensures no stale refs).
         if hasattr(widget, "set_triage_callbacks"):
             widget.set_triage_callbacks(
@@ -11821,6 +14305,8 @@ class FusionReconstructionController:
                 on_reshape_committed=self._on_annotator_reshape_committed,
                 on_reshape_context=self._on_annotator_reshape_context,
                 get_label_id_floor=self._add_label_id_floor,
+                get_kept_tier_count=self._add_kept_tier_count,
+                get_live_add_clears=self._live_add_clear_seqs,
             )
         if hasattr(widget, "set_prob_volume_path"):
             widget.set_prob_volume_path(self._get_active_prob_path())
@@ -11913,6 +14399,18 @@ class FusionReconstructionController:
         ):
             self._append_log("[LOAD-LOCK] curation busy — ignoring switch request")
             print("[LOAD-LOCK] _switch_to_curation_patch ignored — curation busy")
+            _say_in_plot_status(
+                self,
+                dict(_pr_text.S3_LOCK_SENTENCES).get(
+                    self._pr_lock_flag(), _pr_text.S3_LOCK_CURATION_BUSY
+                ),
+            )
+            _say_in_session(
+                self,
+                dict(_pr_text.S3_LOCK_SENTENCES).get(
+                    self._pr_lock_flag(), _pr_text.S3_LOCK_CURATION_BUSY
+                ),
+            )
             return
 
         # Same-patch guard (skipped when force=True — the post-extract
@@ -11938,7 +14436,13 @@ class FusionReconstructionController:
 
         try:
             # Clear isolation, authority, plot highlights, and navigator.
-            self._hard_clear_curation_surfaces()
+            # The patch switch keeps the user's Isolate box; the flag is read
+            # by the clear (other callers untick it).
+            self._keep_navigator_isolate_on_clear = True
+            try:
+                self._hard_clear_curation_surfaces()
+            finally:
+                self._keep_navigator_isolate_on_clear = False
             # The QC plot area (lifecycle): "Loading {patch}…",
             # no bars, the Histogram view, an empty card, the row greyed.
             _area_call(self, "_reset_qc_plot_area",
@@ -12113,6 +14617,9 @@ class FusionReconstructionController:
         if not patch_name:
             self._append_log("[ERROR] Select a patch before finalizing.")
             return
+        # An open edit is refused with its own sentence, not "save failed".
+        if _refuse_if_staged(self, "finalize"):
+            return
         # Gate: persist edits before status transition.
         if not self._save_curation_checked():
             self._append_log(f"[WARN] Finalize aborted — save failed for {patch_name}")
@@ -12171,6 +14678,16 @@ class FusionReconstructionController:
         if not patch_names:
             return
 
+        # An open save would recreate the run folder this deletes, and a
+        # patch load still running would put layers back afterwards.
+        if _refuse_if_staged(self, "reset"):
+            return
+        if self._pr_any_block_flag():
+            msg = _pr_text.S3_RESET_BUSY
+            _say_in_plot_status(self, msg)
+            self._append_log("[WARN] " + msg)
+            return
+
         # Check for finalized patches — require explicit confirmation
         all_statuses = self.state_manager.get_all_patch_statuses()
         finalized = [n for n in patch_names if all_statuses.get(n) == "finalized"]
@@ -12208,6 +14725,13 @@ class FusionReconstructionController:
                 "assignments that will be discarded."
             )
 
+        open_patch = getattr(self, "_qc_view_patch_name", "") or ""
+        unload_open = bool(open_patch) and open_patch in patch_names
+        if unload_open:
+            warning_parts.append(
+                "• The patch open in the viewer will be closed."
+            )
+
         warning_msg = (
             f"Reset {len(patch_names)} patch(es) back to predicted status?\n\n"
             + "\n".join(warning_parts) + "\n\n"
@@ -12233,6 +14757,15 @@ class FusionReconstructionController:
             self._append_log(
                 f"[WARN] state_manager.flush() before reset failed: {exc}"
             )
+
+        # The run folder is about to be deleted.  If the patch in view is
+        # among them, unload it first: otherwise its labels path can no
+        # longer be resolved and Discard, Save and the step exit all fail.
+        if unload_open:
+            self._pr_forget_reset_view()
+            self._clear_all_undo_stacks()
+            self._hard_clear_curation_surfaces()
+            self._refresh_save_button_state()
 
         count = self._reset_patches_to_predicted(patch_names)
         self._append_log(f"Reset {count} patch(es) to predicted status")
@@ -12349,8 +14882,17 @@ class FusionReconstructionController:
             channels = sc.get("channels", [])
             if channels:
                 return channels[0]
-        # Fall back to current UI setting
-        return self.ui.chan1_combo.currentIndex()
+        # Fall back to current UI setting (a blank box is -1: never an
+        # index -- read as 0, gray, and said so)
+        index = self.ui.chan1_combo.currentIndex()
+        if index < 0:
+            print(f"[STEP3-SETTINGS] {_pr_text.S3_LOG_QC_BLANK_CHANNEL}")
+            try:
+                self._append_log(_pr_text.S3_LOG_QC_BLANK_CHANNEL)
+            except Exception:      # noqa: BLE001
+                pass
+            return 0
+        return index
 
     def _get_active_prob_path(self) -> str:
         """Derive probability volume path from the active patch's reconstruction manifest.
@@ -12431,13 +14973,31 @@ class FusionReconstructionController:
         # enable per-channel intensity by checking boxes here.
         available_channels = self._detect_available_channels()
 
+        # The pairing check: the other runs of this patch that have labels
+        # (the row is shown only when there is one) and the run its last
+        # extraction used
+        match_patch = _active_qc_patch(self) or ""
+        channel_roles = self._qc_channel_roles(available_channels,
+                                               match_patch)
+        try:
+            match_runs, match_default, match_none = (
+                self._match_picker_state(match_patch))
+        except Exception as exc:      # noqa: BLE001 -- the row stays hidden
+            print(f"[QC-PAIR] picker not filled: {exc!r}")
+            match_runs, match_default, match_none = [], None, False
+
         dlg = QCExtractionDialog(
             self.ui,
             settings=self._qc_settings,
             feature_manifest=feature_manifest,
             descriptions=descriptions,
             available_channels=available_channels,
+            channel_roles=channel_roles,
             patch_spacing_lines=self._extract_spacing_lines(),
+            match_runs=match_runs,
+            match_default=match_default,
+            match_none=match_none,
+            match_patch=match_patch,
         )
 
         # Wire auto-detect button to read from viewer layers
@@ -12453,16 +15013,32 @@ class FusionReconstructionController:
                         dlg.spacing_x_sb.setValue(scale[2])
                         return
         dlg.spacing_auto_btn.clicked.connect(_autodetect)
+        # the boxes' numbers at open: an OK counts as a voxel size only when
+        # they changed (this dialog also picks features, PCA features and
+        # the pairing run, and an OK for those is not a voxel size)
+        spacing_before = _qc_spacing_numbers(
+            getattr(self, "_qc_settings", None))
 
         if dlg.exec_() == dlg.Accepted:
             self._qc_settings = dlg.get_settings()
+            # the spacing boxes changed (typed or Auto) -> an entered voxel
+            # size, 1 / 1 / 1 too; an earlier entry stands until the
+            # workspace or the Session folder changes
+            self._qc_spacing_entered = bool(
+                getattr(self, "_qc_spacing_entered", False)
+                or _qc_spacing_edited(
+                    spacing_before, _qc_spacing_numbers(self._qc_settings)))
             n_pca = len(self._qc_settings.get("pca_features", []))
+            _pick = dlg.get_match_run()
+            _compare = (dict(match_runs).get(_pick, _pick)
+                        if _pick else "none")
             self._append_log(
                 f"QC settings updated: erosion={self._qc_settings['erosion_iters']}, "
                 f"radius={self._qc_settings['max_radius']}, "
                 f"method={self._qc_settings['composite_method']}, "
                 f"spacing={self._qc_settings['spacing']}, "
-                f"pca_features={n_pca}"
+                f"spacing entered={self._qc_spacing_entered}, "
+                f"pca_features={n_pca}, compare with={_compare}"
             )
             # Add follow-up: the Add page's amber note says
             # "set Spacing under QC Features -> Settings..." -- tell the
@@ -12553,6 +15129,38 @@ class FusionReconstructionController:
             {"index": i, "prefix": f"ch{i}_"}
             for i in range(n_channels)
         ]
+
+    def _qc_channel_roles(self, available_channels,
+                          patch_name: str = "") -> dict:
+        """``{channel index: role}`` for the QC Extraction dialog's
+        Intensity channels rows: what each channel was in the active run
+        for *patch_name* (the patch in view).  The codes of that patch's
+        own prediction and reconstruction records first; when they
+        disagree, no role.  Only a patch with no record of its own reads
+        the run's newest record (:meth:`_run_record_codes`).  Empty with
+        no channels, no recorded codes, or one channel.  Never raises."""
+        if not available_channels:
+            return {}
+        try:
+            from ._step3_channels import channel_roles, recorded_codes
+            codes = None
+            if patch_name:
+                own = {recorded_codes(record) for _when, _kind, record
+                       in self._run_record_entries(patch_name)}
+                own.discard(None)
+                if len(own) > 1:
+                    print(f"[QC-CHANNELS] {patch_name}: its records ask "
+                          f"for different channels {sorted(own)}; no role")
+                    return {}
+                if own:
+                    codes = own.pop()
+            if codes is None:
+                got = self._run_record_codes()
+                codes = got[0] if got else None
+            return channel_roles(codes, len(available_channels))
+        except Exception as exc:      # noqa: BLE001 -- plain rows instead
+            print(f"[QC-CHANNELS] roles not read: {exc!r}")
+            return {}
 
     def _confirm_reextract_themed(self, patch_name: str) -> bool:
         """Themed re-extract confirmation dialog (2026-05-17).
@@ -12651,6 +15259,14 @@ class FusionReconstructionController:
 
     def _extract_features_current(self):
         """Extract QC features for the currently selected patch (background thread)."""
+        # The extraction reads labels_3d.tif from disk: with unsaved mask
+        # edits it would measure the old labels and then its tiers and
+        # table would sit beside edits it never saw.
+        if getattr(self, "_curation_dirty", False):
+            self._set_plot_status(_plot_text.CARD_WARN_EXTRACT_UNSAVED,
+                                  "warn")
+            self._append_log(_plot_text.CARD_WARN_EXTRACT_UNSAVED)
+            return
         labels_path = self._get_active_labels_path()
         if not labels_path or not Path(labels_path).exists():
             self._append_log("[ERROR] No reconstruction labels found for active patch.")
@@ -12733,6 +15349,23 @@ class FusionReconstructionController:
             # Only "reconstructed" allows raw backup (labels are pre-curation).
             patch_status=self.state_manager.get_patch_status(patch_name),
         )
+        # The pairing check: the other run to compare with (picked in the
+        # settings, else the one this patch's last extraction recorded),
+        # and what the sidecar records of this dispatch
+        import time as _time
+        _t_pair = _time.perf_counter()
+        match_bundle, pairing_prov, pairing_note = (
+            self._resolve_extract_match(patch_name, labels_path))
+        print(f"[QC-PAIR-PERF] resolve patches=1 "
+              f"wall={(_time.perf_counter() - _t_pair) * 1000:.1f}ms")
+        self._log_match_note(pairing_note)
+        extract_kwargs["match_labels"] = match_bundle
+        self._qc_launch_pairing = dict(
+            getattr(self, "_qc_launch_pairing", None) or {})
+        self._qc_launch_pairing[patch_name] = pairing_prov
+        self._qc_pairing_outcome = dict(
+            getattr(self, "_qc_pairing_outcome", None) or {})
+        self._qc_pairing_outcome.pop(patch_name, None)
 
         # Try the SUBPROCESS path first (the whole point — keep the UI live).
         # If Popen / config-write raises (env / spawn failure), fall back to
@@ -12967,6 +15600,7 @@ class FusionReconstructionController:
                                                      False),
                 spacing_workspace=extract_kwargs.get("spacing_workspace",
                                                      ""),
+                match_labels=extract_kwargs.get("match_labels"),
             )
             worker.spacing_found.connect(self._on_qc_spacing_found)
             thread = QThread()
@@ -13047,6 +15681,7 @@ class FusionReconstructionController:
         # adjacency sidecar FIRST (before unlink) on the success path.
         adjacency_list = []
         spacing_found = None
+        pairing = None
         if config_path:
             try:
                 adj_sidecar = Path(str(config_path) + ".adjacency.json")
@@ -13064,8 +15699,16 @@ class FusionReconstructionController:
                         sp_sidecar.read_text(encoding="utf-8"))
             except Exception:
                 spacing_found = None
+            # the pairing check's floors and links (or its refusal)
+            try:
+                pr_sidecar = Path(str(config_path) + ".pairing.json")
+                if returncode == 0 and pr_sidecar.is_file():
+                    pairing = json.loads(
+                        pr_sidecar.read_text(encoding="utf-8"))
+            except Exception:
+                pairing = None
             for suffix in ("", ".cancel", ".adjacency.json",
-                           ".spacing.json"):
+                           ".spacing.json", ".pairing.json"):
                 try:
                     Path(str(config_path) + suffix).unlink(missing_ok=True)
                 except Exception:
@@ -13110,6 +15753,8 @@ class FusionReconstructionController:
             from .qc_features import load_patch_csv
             df = load_patch_csv(csv_path)
             df.attrs["_adjacency_list"] = list(adjacency_list or [])
+            df.attrs["_pairing"] = (pairing if isinstance(pairing, dict)
+                                    else None)
         except Exception as exc:
             print(f"[QC-EXTRACT] CSV re-read FAILED patch={patch_name!r}: {exc!r}")
             self._on_qc_extract_error(
@@ -13316,6 +15961,16 @@ class FusionReconstructionController:
             # adjacency_curated.csv when this re-extract path drops
             # ghosts (curation-equivalent transformation).
             worker_adjacency = list(df.attrs.get("_adjacency_list") or [])
+            # The pairing check's floors and links (or its refusal), for
+            # this patch's extraction-context sidecar; the merge below
+            # resets df.attrs too.
+            _pairing = df.attrs.get("_pairing")
+            self._qc_pairing_outcome = dict(
+                getattr(self, "_qc_pairing_outcome", None) or {})
+            if isinstance(_pairing, dict):
+                self._qc_pairing_outcome[patch_name] = dict(_pairing)
+            else:
+                self._qc_pairing_outcome.pop(patch_name, None)
 
             # Ensure label_status column on fresh extraction.
             if "label_status" not in df.columns:
@@ -13324,6 +15979,14 @@ class FusionReconstructionController:
             # Capture prior DataFrame BEFORE reassignment so we can read
             # qc_tier values from it for the left-merge below.
             prev_df = self._qc_features_df
+            _owner = getattr(self, "_qc_table_patch", "") or ""
+            if prev_df is not None and _owner and _owner != patch_name:
+                # The table in memory is another patch's: none of its tiers
+                # belong on this patch, and it is not written over this
+                # patch's file.
+                print(f"[TABLE-OWNER] extract of {patch_name!r} ignores the "
+                      f"table in memory, which belongs to {_owner!r}")
+                prev_df = None
 
             # --- qc_tier preservation (left-merge by label_id) ---
             # The fresh ``df`` from the worker has no qc_tier column.  Pull
@@ -13364,15 +16027,15 @@ class FusionReconstructionController:
                     .rename(columns={"qc_tier": "_qc_tier_prev"})
                 )
                 df = df.merge(old_tiers, on="label", how="left")
-                # Fresh worker output has no qc_tier; promote _qc_tier_prev.
-                # (Defensive: if a future worker DID emit qc_tier, prefer
-                # the fresh value where non-NaN, fall back to the carried
-                # one where NaN.)
+                # The table in memory is the newest word on a label's tier:
+                # its active row wins.  A tier the fresh frame carries (read
+                # from the file on disk) only fills a label the table has no
+                # tier for.
                 if "qc_tier" not in df.columns:
                     df["qc_tier"] = df["_qc_tier_prev"]
                 else:
-                    df["qc_tier"] = df["qc_tier"].where(
-                        df["qc_tier"].notna(), df["_qc_tier_prev"]
+                    df["qc_tier"] = df["_qc_tier_prev"].where(
+                        df["_qc_tier_prev"].notna(), df["qc_tier"]
                     )
                 df = df.drop(columns=["_qc_tier_prev"])
                 n_preserved = int(df["qc_tier"].notna().sum())
@@ -13390,7 +16053,7 @@ class FusionReconstructionController:
             # verdict -- "dividing", "low-evidence", "split-override" -- and
             # a "dividing" verdict is the tool's most important answer, so
             # losing it silently is worse than never having recorded it
-            # (grill A15/B4).  The sidecar beside the features CSV
+            # (a QC re-extraction must keep it).  The sidecar beside the features CSV
             # is the source of truth; re-applying it here is what makes it
             # survive, and it touches nothing else in the merge.
             try:
@@ -13398,9 +16061,8 @@ class FusionReconstructionController:
                     _reshape_flags as _rf,
                 )
 
-                _flags = _rf.read_flags(
-                    self.working_dir, patch_name, self._active_run_path_id()
-                )
+                _where = _reshape_flag_where(self, patch_name)
+                _flags = _rf.read_flags(*_where) if _where else {}
                 if _flags:
                     df = _rf.apply_flags_to_df(df, _flags)
                     print(
@@ -13445,7 +16107,43 @@ class FusionReconstructionController:
             # ``.copy()`` preserves ``df.attrs`` (the adjacency-curated write
             # below uses the ``worker_adjacency`` local captured earlier anyway).
             self._qc_features_df = df = df.copy()
+            self._qc_table_patch = patch_name
+            # fresh match values (or none): nothing predates an edit now
+            self._match_values_predate_edits = False
+            # A fresh table is a new starting point: the snapshots of the
+            # old table (curation and tier undo) belong to rows that were
+            # just rebuilt.
+            self._clear_all_undo_stacks()
             self._auto_assign_qc_tiers(df)
+            # Ghosts are dropped above -- except one removed row per id
+            # that Add's Clear objects removed on this patch and run in this
+            # session, and per removed (deleted or superseded) id above the
+            # fresh table's highest id: the id floor (the highest id over
+            # every row) must keep knowing those ids, or a later Add hands
+            # one out again.  The auto-save below writes them, so the next
+            # re-extraction -- after a restart too -- finds them in the
+            # table it starts from.
+            # (through _area_call: a harness that binds part of the class
+            # has no session record, and an extract never fails on it)
+            _cleared = set(_area_call(
+                self, "_add_cleared_ids_for", patch_name,
+                _active_run_path_id(self)) or ())
+            _cleared |= _deleted_ids_above(prev_df, df)
+            if _cleared:
+                _carried = _carry_cleared_rows(prev_df, df, _cleared)
+                if _carried is not df:
+                    print(f"[RE-EXTRACT] kept {len(_carried) - len(df)} "
+                          f"inactive row(s) of removed ids (cleared by Add, "
+                          f"or above the highest id)")
+                    self._qc_features_df = df = _carried
+                    # their PCs / maps belong to the extraction they were
+                    # measured in: into the new basis, fit on live rows
+                    try:
+                        _reproject_kept_rows(
+                            df, getattr(self, "_qc_settings", None))
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[RE-EXTRACT] kept rows not re-projected: "
+                              f"{exc!r}")
 
             # DUP-TRACE: scan AFTER the left-merge + ghost drop completes.
             # If active dups appear here that weren't in ENTRY, the
@@ -13473,33 +16171,40 @@ class FusionReconstructionController:
             # Best-effort: failure here is logged but does NOT propagate.
             # The in-memory df still has the merged state; the user can
             # manually save to recover.
-            if prev_df is not None:
-                try:
-                    from .qc_features import save_patch_csv
-                    stem = Path(patch_name).stem
-                    csv_dir = _paths.qc_dir(self.working_dir, run_id=_active_run_path_id(self))
-                    csv_dir.mkdir(parents=True, exist_ok=True)
-                    csv_path = csv_dir / f"{stem}_features.csv"
-                    save_patch_csv(df, str(csv_path))
+            try:
+                from .qc_features import save_patch_csv
+                stem = Path(patch_name).stem
+                csv_dir = _paths.qc_dir(self.working_dir, run_id=_active_run_path_id(self))
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                csv_path = csv_dir / f"{stem}_features.csv"
+                save_patch_csv(df, str(csv_path))
+                if prev_df is not None:
                     print(
                         f"[RE-EXTRACT] Auto-saved {len(df)} active rows "
                         f"(with preserved tiers) to disk: "
                         f"{csv_path.name}"
                     )
-                except Exception as exc:
+                else:
                     print(
-                        f"[RE-EXTRACT] Auto-save to disk FAILED: {exc!r} — "
-                        f"in-memory state still has tiers; manual save "
-                        f"will recover."
+                        f"[EXTRACT] Auto-saved {len(df)} active rows "
+                        f"to disk: {csv_path.name}"
                     )
-                # A2: the row's counts read what is on disk now -- after
-                # the auto-save, outside its try (a count failure is its
-                # own console line, never an auto-save failure)
-                try:
-                    self._start_tier_counts("extraction", [patch_name])
-                except Exception as exc:      # noqa: BLE001
-                    print(f"[STEP3-COUNTS] extraction: {exc!r}")
+            except Exception as exc:
+                _tag = "[RE-EXTRACT]" if prev_df is not None else "[EXTRACT]"
+                print(
+                    f"{_tag} Auto-save to disk FAILED: {exc!r} — "
+                    f"in-memory state still has tiers; manual save "
+                    f"will recover."
+                )
+            # The row's counts read what is on disk now -- after
+            # the auto-save, outside its try (a count failure is its
+            # own console line, never an auto-save failure)
+            try:
+                self._start_tier_counts("extraction", [patch_name])
+            except Exception as exc:      # noqa: BLE001
+                print(f"[STEP3-COUNTS] extraction: {exc!r}")
 
+            if prev_df is not None:
                 # 2026-05-20 user-reported gap (clarified): every
                 # re-extract is past the initial-snapshot state — by
                 # definition the user has touched the workspace
@@ -13684,6 +16389,7 @@ class FusionReconstructionController:
             self._record_extraction_spacing(patch_name)
             self._write_qc_extraction_context(patch_name)
             self._qc_extraction_stale = None
+            self._qc_table_mismatch = False
             # Forget any prior staleness-notified entries for this patch
             # — a fresh extraction supersedes the warning.
             self._qc_staleness_notified = {
@@ -13704,7 +16410,7 @@ class FusionReconstructionController:
 
     def _on_qc_spacing_found(self, patch_name: str, found,
                              workspace: str) -> None:
-        """An extraction read *patch_name*'s voxel size from its file (R7):
+        """An extraction read *patch_name*'s voxel size from its file:
         stored here on the main thread, and it is what the features
         were measured with.  *workspace* is the one the extraction was
         LAUNCHED in (the worker's / the subprocess's own); a result that
@@ -13765,7 +16471,229 @@ class FusionReconstructionController:
             csv_path,
             spacing=spacing,
             downsample_factor=downsample_factor,
+            pairing=self._pairing_context_for(patch_name),
         )
+        # a fresh extraction of the table in view: its match values (or
+        # none) are new, nothing predates an edit
+        if (getattr(self, "_qc_table_patch", "") or "") == patch_name:
+            self._match_values_predate_edits = False
+
+    # ------------------------------------------------------------------
+    # The pairing check (comparing with another run of the patch)
+    # ------------------------------------------------------------------
+
+    def _pairing_context_for(self, patch_name: str) -> Optional[dict]:
+        """The pairing fields of *patch_name*'s extraction for its sidecar:
+        what the dispatch recorded and what the run returned, both taken
+        (once written they are the sidecar's).  ``None`` when neither was
+        stashed (the sidecar is then what it always was)."""
+        from .qc_pairing_group import pairing_context_fields
+        launched = getattr(self, "_qc_launch_pairing", None)
+        returned = getattr(self, "_qc_pairing_outcome", None)
+        prov = launched.pop(patch_name, None) if isinstance(
+            launched, dict) else None
+        outcome = returned.pop(patch_name, None) if isinstance(
+            returned, dict) else None
+        if prov is None and outcome is None:
+            return None
+        return pairing_context_fields(prov, outcome)
+
+    def _active_run_slug(self) -> str:
+        """The active run's slug (``"default"`` when none is set)."""
+        sm = getattr(self, "state_manager", None)
+        get = getattr(sm, "get_active_run_id", None)
+        rid = get() if callable(get) else None
+        return rid if isinstance(rid, str) and rid else "default"
+
+    def _patch_extraction_context(self, patch_name: str) -> Optional[dict]:
+        """*patch_name*'s extraction-context sidecar in the active run, or
+        ``None``.  Never raises."""
+        from . import _paths
+        from ._qc_extraction_context import read_extraction_context
+        if not self.working_dir or not patch_name:
+            return None
+        try:
+            return read_extraction_context(_paths.qc_features_csv(
+                self.working_dir, Path(patch_name).stem,
+                run_id=_active_run_path_id(self)))
+        except Exception:      # noqa: BLE001 -- a default, never a crash
+            return None
+
+    def _match_plot_notes(self) -> dict:
+        """What the QC plot shows beside the match values of the table in
+        view: the other run's name as it is called now (renamed since the
+        extraction or not), the stale sentence when that run's labels file
+        changed since they were measured, and whether they predate an
+        edit.  The sidecar and the run listing are read once and cached
+        (:func:`_match_notes_inputs`); a redraw then costs a few file
+        stats, never a read or a volume.  The plot's provider; never
+        raises.  The other run's name also goes to the triage histogram,
+        which shows the table in view too and names that run in its own
+        "Overlap with ..." item."""
+        from .qc_pairing_group import (
+            file_stat, match_file_path, match_stale_reason,
+        )
+        out = {"other": "", "stale": None, "predate_edits": False,
+               "descriptions": {}}
+        try:
+            from napari_epicycle.segmentation.analysis_widget import (
+                _FEATURE_DESCRIPTIONS,
+            )
+            from .qc_pairing import COLUMNS
+            out["descriptions"] = {c: _FEATURE_DESCRIPTIONS.get(c, "")
+                                   for c in COLUMNS}
+        except Exception as exc:  # noqa: BLE001 -- a tooltip, never a crash
+            print(f"[QC-PAIR] match descriptions not read: {exc!r}")
+        try:
+            patch = getattr(self, "_qc_table_patch", "") or ""
+            ctx, out["other"] = _match_notes_inputs(self, patch)
+            path = match_file_path(ctx, self.working_dir or "")
+            # the stale sentence names the run as it is called now
+            named = (dict(ctx, match_run_display_name=out["other"])
+                     if out["other"] else ctx)
+            out["stale"] = match_stale_reason(
+                named, file_stat(path) if path else None)
+            out["predate_edits"] = self._match_values_predate(ctx)
+        except Exception as exc:  # noqa: BLE001 -- a note, never a crash
+            print(f"[QC-PAIR] plot notes not read: {exc!r}")
+        panel = getattr(getattr(self, "ui", None),
+                        "_triage_histogram_panel", None)
+        set_other = getattr(panel, "set_match_other", None)
+        if callable(set_other):
+            try:
+                set_other(out["other"])
+            except Exception as exc:  # noqa: BLE001 -- a name, never a crash
+                print(f"[QC-PAIR] histogram run name not set: {exc!r}")
+        return out
+
+    def _match_values_predate(self, ctx) -> bool:
+        """Whether the match values of the table in view predate an edit
+        of the active run.  Only with match columns, and then when this
+        session edited them, the mask holds unsaved edits, or the labels
+        file is no longer the one the extraction measured (its size or
+        mtime differs from what the sidecar *ctx* recorded)."""
+        from .qc_pairing_group import file_stat, has_match_columns
+        if not has_match_columns(getattr(self, "_qc_features_df", None)):
+            return False
+        if getattr(self, "_match_values_predate_edits", False):
+            return True
+        if getattr(self, "_curation_dirty", False):
+            return True
+        size0 = (ctx or {}).get("patch_file_size")
+        mtime0 = (ctx or {}).get("patch_file_mtime")
+        if size0 is None or mtime0 is None:
+            return False
+        try:
+            now = file_stat(self._get_active_labels_path())
+        except Exception:      # noqa: BLE001 -- cannot tell: no note
+            return False
+        if now is None:
+            return False
+        try:
+            return (int(now["size"]) != int(size0)
+                    or abs(float(now["mtime"]) - float(mtime0)) > 1e-6)
+        except (TypeError, ValueError):
+            return False
+
+    def _record_match_predate(self, patch_name: str) -> None:
+        """After *patch_name*'s features CSV was saved: when its match
+        values predate an edit, say so in its extraction-context sidecar,
+        so the note survives a restart (the next Extract writes a sidecar
+        without it).  Never raises."""
+        from .qc_pairing_group import has_match_columns
+        if not patch_name or not self.working_dir:
+            return
+        if not getattr(self, "_match_values_predate_edits", False):
+            return
+        if not has_match_columns(getattr(self, "_qc_features_df", None)):
+            return
+        try:
+            from ._qc_extraction_context import update_extraction_context
+            update_extraction_context(
+                _paths.qc_features_csv(self.working_dir,
+                                       Path(patch_name).stem,
+                                       run_id=_active_run_path_id(self)),
+                match_values_predate_edits=True)
+        except Exception as exc:      # noqa: BLE001 -- a hint, never a crash
+            print(f"[QC-PAIR] predate note not recorded: {exc!r}")
+
+    def _match_choice(self, patch_name: str, ctx=None):
+        """``(slug | None, none_chosen)``: the run *patch_name* is compared
+        with.  Its own choice in the Extract Features settings this session
+        (``None`` there = "(none)"), else the run its last extraction
+        recorded (``match_run: null`` there = "(none)" was chosen), else
+        none.  ``none_chosen`` says "(none)" was picked, not just never
+        offered."""
+        choices = (getattr(self, "_qc_settings", None) or {}).get(
+            "match_run")
+        if isinstance(choices, dict) and patch_name in choices:
+            slug = choices.get(patch_name) or None
+            return slug, slug is None
+        if ctx is None:
+            ctx = self._patch_extraction_context(patch_name) or {}
+        if "match_run" in ctx:
+            slug = ctx.get("match_run") or None
+            return slug, slug is None
+        return None, False
+
+    def _match_run_for_extract(self, patch_name: str) -> Optional[str]:
+        """The run the next extraction of *patch_name* is compared with
+        (see :meth:`_match_choice`), or ``None``."""
+        return self._match_choice(patch_name)[0]
+
+    def _resolve_extract_match(self, patch_name: str, labels_path: str, *,
+                                 listing=None):
+        """``(bundle | None, provenance, note | None)`` for one extraction
+        of *patch_name*, on the main thread at dispatch: two small JSON
+        files and two file stats, never a volume.  ``listing`` is the runs
+        read once for the whole dispatch.  A picked run that cannot be
+        compared gives no bundle and the log sentence as *note*: the caller
+        logs it once the extraction is confirmed."""
+        from .qc_pairing_group import patch_file_fields, resolve_match
+        prov = patch_file_fields(labels_path)
+        slug, none_chosen = self._match_choice(patch_name)
+        if not slug:
+            if none_chosen:
+                prov["match_run"] = None
+            return None, prov, None
+        try:
+            bundle, note, match_prov = resolve_match(
+                self.working_dir, patch_name, slug,
+                active_run_id=self._active_run_slug(),
+                active_path_id=_active_run_path_id(self),
+                listing=listing)
+        except Exception as exc:      # noqa: BLE001 -- extract without it
+            print(f"[QC-PAIR] {patch_name!r}: other run not resolved: "
+                  f"{exc!r}")
+            return None, prov, None
+        if match_prov:
+            prov.update(match_prov)
+        return bundle, prov, note
+
+    def _log_match_note(self, note: str, patch_name: str = "") -> None:
+        """A dispatch's pairing sentence into the log (``[patch]`` first
+        when the extraction runs over several patches)."""
+        if not note:
+            return
+        line = f"[{patch_name}] {note}" if patch_name else note
+        print(f"[QC-PAIR] {line}")
+        self._append_log(line)
+
+    def _match_picker_state(self, patch_name: str):
+        """``(runs, default, none_chosen)`` for the Extract Features picker:
+        the other runs of *patch_name* with reconstruction labels as
+        ``[(slug, display name)]``, the run it is compared with (its choice
+        this session, else its last extraction's record) and whether
+        "(none)" was chosen.  The dialog applies the rest of the default
+        rule."""
+        from .qc_pairing_group import list_match_runs
+        if not self.working_dir or not patch_name:
+            return [], None, False
+        runs = list_match_runs(self.working_dir, patch_name,
+                                 self._active_run_slug())
+        slug, none_chosen = self._match_choice(patch_name)
+        return ([(r["run"], r["display_name"]) for r in runs], slug,
+                none_chosen)
 
     def _check_qc_extraction_staleness(self, patch_name: str = "") -> Optional[str]:
         """Compare current spacing + downsample against the extraction
@@ -13949,6 +16877,15 @@ class FusionReconstructionController:
         all_statuses = self.state_manager.get_all_patch_statuses()
         patch_configs = []
         batch_spacing = {}
+        batch_pairing = {}
+        # the pairing check: the runs read once for every patch, and each
+        # patch's sentence kept until the re-extract question is answered
+        import time as _time
+        from .qc_pairing_group import read_run_listing
+        _t_pair = _time.perf_counter()
+        _pair_wall = 0.0
+        pair_listing = read_run_listing(self.working_dir)
+        pair_notes = []
         qc_dir = _paths.qc_dir(self.working_dir, run_id=_active_run_path_id(self))
         qc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -13982,6 +16919,15 @@ class FusionReconstructionController:
             own = self._patch_own_spacing(patch_name)
             used = own if own is not None else self._qc_fallback_spacing()
             batch_spacing[patch_name] = used
+            # the pairing check, per patch (this patch's own pick in the
+            # settings, else the run its last extraction recorded)
+            _t_one = _time.perf_counter()
+            p_bundle, p_prov, p_note = self._resolve_extract_match(
+                patch_name, labels_path, listing=pair_listing)
+            _pair_wall += _time.perf_counter() - _t_one
+            batch_pairing[patch_name] = p_prov
+            if p_note:
+                pair_notes.append((patch_name, p_note))
             patch_configs.append(dict(
                 labels_path=labels_path, patch_name=patch_name, csv_path=csv_path,
                 source_stack_path=source_stack_path,
@@ -13993,8 +16939,12 @@ class FusionReconstructionController:
                 # 2026-05-20: status gates raw-backup write in
                 # persist_qc_artifacts.  See _QCFeatureWorker.
                 patch_status=status,
+                match_labels=p_bundle,
             ))
 
+        print(f"[QC-PAIR-PERF] resolve patches={len(batch_pairing)} "
+              f"listing+resolve={_pair_wall * 1000:.1f}ms "
+              f"dispatch={(_time.perf_counter() - _t_pair) * 1000:.1f}ms")
         if not patch_configs:
             self._append_log("[INFO] No reconstructed patches to extract features from.")
             return
@@ -14018,6 +16968,8 @@ class FusionReconstructionController:
         self.ui.extract_all_features_btn.setEnabled(False)
         self.ui.extract_all_features_btn.setText("Extracting...")
         self._append_log(f"Extracting features for {len(patch_configs)} patches...")
+        for _pn, _note in pair_notes:
+            self._log_match_note(_note, _pn)
 
         # Switch-safety (B hole 1): mark the batch in flight + lock the
         # Step-3 surface (mutual exclusion + patch-switch hard-block) BEFORE
@@ -14029,6 +16981,14 @@ class FusionReconstructionController:
         self._qc_launch_spacing = dict(
             getattr(self, "_qc_launch_spacing", None) or {})
         self._qc_launch_spacing.update(batch_spacing)
+        # the pairing check: each patch's dispatch facts (its returned
+        # floors arrive with that patch's patch_done)
+        self._qc_launch_pairing = dict(
+            getattr(self, "_qc_launch_pairing", None) or {})
+        self._qc_launch_pairing.update(batch_pairing)
+        self._qc_pairing_outcome = {
+            k: v for k, v in (getattr(self, "_qc_pairing_outcome", None)
+                              or {}).items() if k not in batch_pairing}
         # Phase 3c (B): capture the run-epoch at LAUNCH so the per-patch
         # + all-finished handlers discard cross-run results (otherwise the OLD
         # run's set_patch_status writes land in the NEW run's state).
@@ -14072,7 +17032,8 @@ class FusionReconstructionController:
             thread.started.connect(worker.run)
             worker.log.connect(lambda msg: self._append_log(msg))
             worker.patch_done.connect(
-                lambda pn, nl: self._on_qc_batch_patch_done(pn, nl)
+                lambda pn, nl, info: self._on_qc_batch_patch_done(
+                    pn, nl, info)
             )
             worker.all_finished.connect(
                 lambda np_, tl: self._on_qc_batch_all_finished(np_, tl)
@@ -14099,8 +17060,11 @@ class FusionReconstructionController:
             self._append_log(f"[ERROR] Extract All launch failed: {exc}")
             print(f"[QC-EXTRACT] Extract All launch FAILED: {exc!r}")
 
-    def _on_qc_batch_patch_done(self, patch_name, n_labels):
-        """Handle one patch completing during Extract All."""
+    def _on_qc_batch_patch_done(self, patch_name, n_labels, info=None):
+        """Handle one patch completing during Extract All.
+
+        ``info`` (a dict, or None from an older caller) carries what the
+        pairing check returned for this patch under ``"pairing"``."""
         # Phase 3c (B) RUN-EPOCH guard: discard a per-patch result whose
         # run changed mid-batch BEFORE the set_patch_status write (which would
         # otherwise stamp the OLD run's qc metadata onto the NEW run's state).
@@ -14123,6 +17087,14 @@ class FusionReconstructionController:
             qc_total_labels=n_labels,
             qc_ran_at=datetime.now(timezone.utc).isoformat(),
         )
+        # the pairing check's floors and links (or its refusal), for the
+        # sidecar below
+        pairing = (info or {}).get("pairing") if isinstance(
+            info, dict) else None
+        self._qc_pairing_outcome = dict(
+            getattr(self, "_qc_pairing_outcome", None) or {})
+        if isinstance(pairing, dict):
+            self._qc_pairing_outcome[patch_name] = dict(pairing)
         # R7: what it was measured with, and its own sidecar
         try:
             self._record_extraction_spacing(patch_name)
@@ -14130,6 +17102,10 @@ class FusionReconstructionController:
         except Exception as exc:      # noqa: BLE001
             self._append_log(
                 f"[WARN] Failed to write QC extraction-context sidecar: {exc}")
+        # A fresh extraction supersedes the table-mismatch notice.
+        self._qc_staleness_notified.discard((patch_name, "table-mismatch"))
+        if _active_qc_patch(self) == patch_name:
+            self._qc_table_mismatch = False
         self._append_log(f"  {patch_name}: {n_labels} labels")
 
     def _on_qc_batch_all_finished(self, n_patches, total_labels):
@@ -14174,10 +17150,15 @@ class FusionReconstructionController:
     # all callers have been collapsed to take the single-patch path.
     # ------------------------------------------------------------------
 
-    def _guard_unsaved_changes(self) -> bool:
+    def _guard_unsaved_changes(self, *, closing: bool = False) -> bool:
         """Check for unsaved tier or curation edits before a context switch.
 
         Returns True if the switch should proceed, False if the user cancelled.
+
+        ``closing=True`` is the window-close question: napari may still keep
+        the window open after it, so Discard changes nothing (the flags, the
+        volume and the undo stack stay; the next close asks again, a real
+        close ends the process).  Save works exactly as on a switch.
 
         **Persistence safety (added 2026-05-03):** also blocks if a save
         is currently in-flight — patch switch must not race with disk
@@ -14187,6 +17168,10 @@ class FusionReconstructionController:
         # a modal here BLOCKS the click handler until the user answers it,
         # and if the napari window is minimized (the QPainter engine==0
         # warnings) the dialog is hidden → looks like a frozen GUI.
+        # An open edit refuses every move that would leave this patch: said
+        # in all three sections, before the "Save In Progress" box.
+        if _refuse_if_staged(self, "patch move", where="three"):
+            return False
         print(
             f"[SW-PERF] _guard_unsaved_changes ENTER: "
             f"save_in_flight={getattr(self, '_save_in_flight', False)} "
@@ -14235,7 +17220,7 @@ class FusionReconstructionController:
                 self._save_tiers_csv()  # cheap CSV write; clears _tiers_dirty
                 if self._tiers_dirty:   # save failed → refuse the switch
                     return False
-            else:
+            elif not closing:
                 # Discard: the target-patch load replaces the in-memory df, so
                 # the current tier edits are dropped regardless — just clear the
                 # flag so the switch proceeds.
@@ -14258,12 +17243,14 @@ class FusionReconstructionController:
             if reply == QMessageBox.Cancel:
                 return False
             if reply == QMessageBox.Save:
-                self._save_curation()
+                # no rebuild for the patch being left (see the note below)
+                self._save_curation(refresh_rows_ui=False)
                 # If save failed (still dirty), refuse the switch so the
                 # user doesn't unknowingly leave broken state.
                 if self._curation_dirty:
+                    _report_save_failed(self)
                     return False
-            else:
+            elif not closing:
                 # Discard: revert the in-memory volume to the on-disk state
                 # so that "discarded" edits cannot leak to disk via later
                 # operations (commit triage, accept, etc.).
@@ -14273,6 +17260,7 @@ class FusionReconstructionController:
                 revert_ok = self._revert_labels_from_disk()
                 if revert_ok:
                     self._curation_dirty = False
+                    _area_call(self, "_put_back_flags_after_revert")
                 else:
                     QMessageBox.critical(
                         self.ui,
@@ -14285,7 +17273,9 @@ class FusionReconstructionController:
                     return False
 
         # Clear undo stack — context changes, old entries are invalid.
-        self._curation_undo_stack.clear()
+        # Not on a close: the window may yet stay open on this patch.
+        if not closing:
+            self._curation_undo_stack.clear()
         # 2026-06-06 PERF FIX: do NOT _refresh_curation_ui() here.  This guard
         # is called ONLY from _switch_to_curation_patch, which immediately
         # hard-clears the surfaces + loads the new patch (rebuilding the UI for
@@ -14336,6 +17326,18 @@ class FusionReconstructionController:
     # itself is kept by ui.py for now (single-item placeholder) and
     # will be removed in the same commit's ui.py change below.
 
+    def _staged_annotator_work(self) -> bool:
+        """Is an operation staged in the open annotator (a preview, a split,
+        a merge before Keep, a refined fragment) that closing it would
+        reject without asking?"""
+        w = self._get_curation_annotator_widget()
+        if w is None:
+            return False
+        try:
+            return bool(w.staged_kinds())
+        except Exception:      # noqa: BLE001
+            return False
+
     def _get_open_annotator_widget(self):
         """Return the 3D curation annotator widget if open, else ``None``."""
         dock_name = "EpiCycle 3D Curation Annotator"
@@ -14377,6 +17379,7 @@ class FusionReconstructionController:
                     self._on_navigator_label_selected_bridge
                 )
             widget._on_isolation_cleared_cb = self._on_annotator_isolation_cleared
+            widget._plot_cmap_pull_cb = self._read_plot_colour_dict
             self._append_log(
                 "[SYNC] Navigator bridge re-enabled (single-patch scope)."
             )
@@ -14444,6 +17447,139 @@ class FusionReconstructionController:
             f"{(_perf.perf_counter() - _t0) * 1000:.0f} ms"
         )
 
+    def _table_volume_mismatch(self, df, vol, factor):
+        """Count the table's active rows whose saved position misses its cell.
+
+        Returns ``(misses, rows)``.  A position is the row's centroid divided
+        by *factor* (the table stores full-resolution voxels, the volume in
+        memory may be downsampled).  A row hits when a voxel equal to its
+        label lies in the 3x3x3 block around the position; a position outside
+        the volume is a miss.  Cost is 27 gathers over all rows.
+        """
+        import pandas as pd
+        from .qc_features import active_rows
+
+        rows = active_rows(df)
+        n = len(rows)
+        if n == 0 or getattr(vol, "ndim", 0) != 3:
+            return 0, n
+        cols = [
+            pd.to_numeric(rows[f"centroid-{i}"], errors="coerce").to_numpy(float)
+            for i in range(3)
+        ]
+        raw = np.stack(cols, axis=1)
+        finite = np.isfinite(raw).all(axis=1)
+        pos = np.zeros(raw.shape, dtype=np.int64)
+        pos[finite] = np.trunc(raw[finite]).astype(np.int64) // max(1, int(factor))
+        shape = np.asarray(vol.shape, dtype=np.int64)
+        inside = finite & ((pos >= 0) & (pos < shape)).all(axis=1)
+        labels = (
+            pd.to_numeric(rows["label"], errors="coerce").fillna(-1).to_numpy(np.int64)
+        )
+        found = np.zeros(n, dtype=bool)
+        for dz in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    q = pos + np.array([dz, dy, dx], dtype=np.int64)
+                    ok = inside & ((q >= 0) & (q < shape)).all(axis=1)
+                    idx = np.nonzero(ok & ~found)[0]
+                    if idx.size == 0:
+                        continue
+                    hit = vol[q[idx, 0], q[idx, 1], q[idx, 2]] == labels[idx]
+                    found[idx[hit]] = True
+        return int(n - found.sum()), int(n)
+
+    def _check_table_against_volume(self, df, patch_name, n_dropped) -> None:
+        """Flag a features table that disagrees with the labels in memory.
+
+        Skips silently (with a ``[QC-TABLE] skipped`` line) when there is no
+        labels layer for this patch, a centroid column is missing, or the
+        layer's shape is not the patch's in-memory shape.  Otherwise logs
+        ``[QC-TABLE]`` and, when more than max(10, 10 %) of the rows miss or
+        duplicate rows were dropped on load, sets ``_qc_table_mismatch``,
+        logs ``[QC-STALE]`` and schedules one non-modal napari warning.
+        """
+        self._qc_table_mismatch = False
+        layer = self._find_active_labels_layer()
+        if layer is None:
+            print("[QC-TABLE] skipped: no active labels layer")
+            return
+        key = self._patch_layer_key(patch_name)
+        if getattr(layer, "name", None) not in (
+            f"curation_3d_{key}", f"reconstruction_{key}",
+        ):
+            print("[QC-TABLE] skipped: the labels layer belongs to another patch")
+            return
+        if df is None or any(f"centroid-{i}" not in df.columns for i in range(3)):
+            print("[QC-TABLE] skipped: no centroid columns")
+            return
+        vol = layer.data
+        factor = max(1, int(self._current_downsample_factor(patch_name)))
+        if factor > 1:
+            # The table is in full-resolution voxels; the volume in memory
+            # must be the recorded full-resolution shape floor-divided by the
+            # factor, or it is not the volume this factor describes (full-
+            # resolution data under a factor record).
+            orig = self.state_manager.get_patch_original_labels_shape(patch_name)
+            if orig is not None and tuple(vol.shape) != tuple(
+                int(s) // factor for s in orig
+            ):
+                print(
+                    "[QC-TABLE] skipped: the volume shape does not match the "
+                    f"recorded downsample factor {factor}"
+                )
+                return
+        misses, rows = self._table_volume_mismatch(df, vol, factor)
+        print(
+            f"[QC-TABLE] patch={patch_name} rows={rows} misses={misses} "
+            f"dropped={n_dropped} factor={factor}"
+        )
+        misses_over = misses > max(10, 0.10 * rows)
+        if not (misses_over or n_dropped > 0):
+            return
+        self._qc_table_mismatch = True
+        if misses_over:
+            log_line = (
+                f"[QC-STALE] Patch '{patch_name}': the features table no "
+                f"longer matches the labels ({misses} of {rows} saved cell "
+                f"positions miss). Re-extract to refresh."
+            )
+            warn_text = (
+                f"Patch '{patch_name}': the features table no longer matches "
+                "the labels (edits were discarded or not saved). "
+                "Re-extract the features to refresh it."
+            )
+        else:
+            log_line = (
+                f"[QC-STALE] Patch '{patch_name}': the features table had "
+                f"{n_dropped} duplicate rows (removed on load). "
+                "Re-extract to refresh."
+            )
+            warn_text = (
+                f"Patch '{patch_name}': the features table had {n_dropped} "
+                "duplicate rows (removed on load). Re-extract to refresh."
+            )
+        print(log_line)
+        self._append_log(log_line)
+        notice_key = (patch_name, "table-mismatch")
+        if notice_key in self._qc_staleness_notified:
+            return
+
+        def _warn():
+            # The patch in view changed before the timer fired: say nothing.
+            if _active_qc_patch(self) != patch_name:
+                return
+            try:
+                from napari.utils.notifications import show_warning
+
+                show_warning(warn_text)
+                # Shown: do not show it again for this patch.
+                self._qc_staleness_notified.add(notice_key)
+            except Exception as exc:
+                self._append_log(f"[WARN] table notice failed: {exc}")
+
+        QTimer.singleShot(0, _warn)
+
     def _reload_current_patch_features(self):
         """Reload QC features for the currently selected single patch.
 
@@ -14465,6 +17601,8 @@ class FusionReconstructionController:
         csv_path = _paths.qc_dir(self.working_dir, run_id=_active_run_path_id(self)) / f"{stem}_features.csv"
         if not csv_path.exists():
             self._qc_features_df = None
+            self._qc_table_patch = ""
+            self._qc_table_mismatch = False
             self.ui.qc_summary_label.setText("No QC data")
             # Nothing to triage: no tier undo and no isolation from the last
             # patch survive (the switch's own reset), then the area says so.
@@ -14491,6 +17629,7 @@ class FusionReconstructionController:
         # row; later duplicates are bug-multiplied copies).  Logs
         # [DUP-CLEANUP] when it fires so the user knows the load
         # auto-healed something.
+        n_dropped = 0
         if "label" in df.columns:
             n_before = len(df)
             subset = ["label"]
@@ -14508,7 +17647,16 @@ class FusionReconstructionController:
                     f"Kept first occurrence per (label, label_status)."
                 )
 
+        # the match values of the table just read predate an edit when
+        # some were blanked on disk, or its sidecar says a save followed an
+        # edit (this also resets the hint after a Discard)
+        from .qc_pairing_group import values_predate_edits_on_disk
+        _pctx = self._patch_extraction_context(patch_name) or {}
+        self._match_values_predate_edits = bool(
+            values_predate_edits_on_disk(df)
+            or _pctx.get("match_values_predate_edits"))
         self._qc_features_df = df
+        self._qc_table_patch = patch_name
         # DUP-TRACE: catch pre-existing on-disk duplicates immediately
         # after load so we know whether the staleness came from disk
         # or from a session-local action.  Should be silent after the
@@ -14521,6 +17669,14 @@ class FusionReconstructionController:
         # Validate CSV labels against the volume (if loaded in viewer).
         # This catches mask/CSV divergence from partial saves or crashes.
         self._check_csv_volume_consistency(df)
+
+        # Do the saved cell positions still land on their cells?  A table
+        # extracted from edits that were later discarded does not.  Report
+        # it (log + one non-modal warning); never edit the table.
+        try:
+            self._check_table_against_volume(df, patch_name, n_dropped)
+        except Exception as exc:
+            self._append_log(f"[WARN] table/volume check failed: {exc}")
 
         self._committing_triage = True
         try:
@@ -14779,6 +17935,9 @@ class FusionReconstructionController:
     # Curation widgets disabled while a patch load is in flight.  Each is
     # getattr-guarded at use so a missing attribute never raises.
     _CURATION_LOCK_WIDGETS = (
+        # Session's two folder buttons: the folder cannot change under a job
+        "set_workdir_browse_button",
+        "set_patch_directory_button",
         "_curation_bucket",            # patch boxlist
         "tier_assign_combo",
         "assign_tier_btn",
@@ -15060,7 +18219,7 @@ class FusionReconstructionController:
             # Unlike the manual split — which has NO controller lock today — this
             # flag is taken BEFORE the target is punched out of the volume, so
             # Save Curation / Commit Triage cannot persist a volume with a hole
-            # in it while a preview is staged (grill A6).
+            # in it while a preview is staged.
             or getattr(self, "_reshape_running", False)
             # 2026-09-22 (Brick B1): the Refine tab's worker + staged window
             # (REFINE).  Same construction as `_reshape_running`:
@@ -15198,6 +18357,15 @@ class FusionReconstructionController:
                 self._refresh_save_button_state()
             except Exception:
                 pass
+            # ...and the same for Undo curation: the bulk loop lit it, but
+            # it is live only while there is something to take back.
+            btn = getattr(self.ui, "undo_curation_btn", None)
+            if btn is not None:
+                try:
+                    btn.setEnabled(bool(getattr(
+                        self, "_curation_undo_stack", None)))
+                except Exception:
+                    pass
 
         # Step 3 plot pass P2 (lifecycle): the plot
         # area's histogram controls, its card and its action row are not in
@@ -15754,6 +18922,11 @@ class FusionReconstructionController:
         cluster_id column value if present is left untouched —
         useful for visualizing their last-known cluster).
         """
+        if (getattr(self, "_curation_busy", False)
+                or getattr(self, "_compute_thread", None) is not None):
+            print("[EDA] compute refused: another compute is running")
+            _say_in_plot_status(self, _pr_text.S3_LOCK_CURATION_BUSY)
+            return
         print(
             f"[CLUSTER] _run_clustering ENTER "
             f"df_is_none={self._qc_features_df is None} "
@@ -15869,11 +19042,9 @@ class FusionReconstructionController:
             # rationale as the auto-save in _on_qc_extract_finished.
             try:
                 from .qc_features import save_patch_csv
-                patch_name = (
-                    getattr(self, "_qc_view_patch_name", "")
-                    or self._selected_curation_patch()
-                    or self._selected_patch_name()
-                )
+                patch_name = _qc_write_patch(self)
+                if not patch_name:
+                    _report_table_other_patch(self, "cluster auto-save")
                 if patch_name and self.working_dir:
                     stem = Path(patch_name).stem
                     csv_path = (
@@ -16108,6 +19279,11 @@ class FusionReconstructionController:
         Returns ``None`` to signal "abort, nothing to compute" — the
         caller should bail.  Logs to both stdout and the EpiCycle log.
         """
+        if (getattr(self, "_curation_busy", False)
+                or getattr(self, "_compute_thread", None) is not None):
+            print("[EDA] compute refused: another compute is running")
+            _say_in_plot_status(self, _pr_text.S3_LOCK_CURATION_BUSY)
+            return None
         import pandas as pd
         df_full = self._qc_features_df
         if df_full is None or df_full.empty:
@@ -16145,11 +19321,9 @@ class FusionReconstructionController:
         persist tolerates missing patch context (logs, does not raise) since
         recompute can fire before a patch is selected in some edge cases.
         """
-        patch_name = (
-            getattr(self, "_qc_view_patch_name", "")
-            or self._selected_curation_patch()
-            or self._selected_patch_name()
-        )
+        patch_name = _qc_write_patch(self)
+        if not patch_name:
+            _report_table_other_patch(self, f"{op_tag} auto-save")
         saved = False
         try:
             from .qc_features import save_patch_csv
@@ -16162,6 +19336,8 @@ class FusionReconstructionController:
                 save_patch_csv(df_full, str(csv_path))
                 print(f"[{op_tag}] Auto-saved df to disk: {csv_path.name}")
                 saved = True
+                # the pairing check: the CSV saved after an edit
+                self._record_match_predate(patch_name)
                 # Bug 4 (2026-06-09): the features CSV now holds the current
                 # qc_tier column, so the tiers are persisted to disk — identical
                 # to _save_tiers_csv, which clears _tiers_dirty after the same
@@ -16832,7 +20008,20 @@ class FusionReconstructionController:
             from .colormap_authority import ColormapOwner
             self._colormap_authority.release(ColormapOwner.CONTROLLER_QC)
 
-            if self._isolated_label_ids:
+            # Whatever isolates next must not wear the plot's old colours.
+            _push_plot_cmap_to_annotator(self, None)
+            _widget = _annotator_widget_of(self)
+            if (_widget is not None and getattr(
+                    self._colormap_authority, "current_owner", None
+            ) == ColormapOwner.ANNOTATOR_ISOLATION):
+                # The annotator's isolation holds the colours: tell it the
+                # Colour box is off and let it repaint itself.  Resetting the
+                # layers here would drop the side views' show-selected state.
+                _widget._plot_cmap = None
+                _recolour = getattr(_widget, "_iso_recolour", None)
+                if callable(_recolour):
+                    _recolour()
+            elif self._isolated_label_ids:
                 # Isolation active — revert to distinct colors
                 self._show_isolated_labels_distinct()
             else:
@@ -16852,6 +20041,15 @@ class FusionReconstructionController:
         before calling this and restore visibility via QTimer afterward.
         This method only sets colormaps — it does not manage visibility.
         """
+        try:
+            from .colormap_authority import ColormapOwner
+            if (getattr(self._colormap_authority, "current_owner", None)
+                    == ColormapOwner.ANNOTATOR_ISOLATION):
+                # The annotator's isolation is on screen; a reset would push
+                # napari's colours over it.  It repaints itself.
+                return
+        except Exception:               # noqa: BLE001
+            pass
         try:
             from napari.utils.colormaps import label_colormap
             default_cmap = label_colormap(49, seed=0.5)
@@ -17020,6 +20218,7 @@ class FusionReconstructionController:
         if cb is not None:
             try:
                 if not cb.isChecked():
+                    _push_plot_cmap_to_annotator(self, None)
                     return False
             except RuntimeError:                  # the checkbox is gone
                 return False
@@ -17037,6 +20236,28 @@ class FusionReconstructionController:
 
         from .colormap_authority import ColormapOwner
         if not self._colormap_authority.claim(ColormapOwner.CONTROLLER_QC):
+            if (getattr(self._colormap_authority, "current_owner", None)
+                    == ColormapOwner.ANNOTATOR_ISOLATION):
+                # The annotator's isolation owns the colours: give it the
+                # plot's new ones and let it repaint what it shows.
+                _widget = _annotator_widget_of(self)
+                _new = _read_plot_colour_dict(self, pw)
+                if _widget is not None and _new is not None:
+                    _same = _plot_colours_unchanged_for(_widget, _new)
+                    _push_plot_cmap_to_annotator(self, _new)
+                    _recolour = getattr(_widget, "_iso_recolour", None)
+                    if not _same and callable(_recolour):
+                        _recolour()
+                    elif _same:
+                        # Nothing isolated changed colour, but the map the
+                        # isolation puts back must still follow the plot.
+                        _saved = getattr(
+                            _widget, "_iso_refresh_saved_colormap", None)
+                        if callable(_saved):
+                            try:
+                                _saved()
+                            except Exception:   # noqa: BLE001
+                                pass
             return False
         try:
             from napari.utils.colormaps import DirectLabelColormap
@@ -17050,6 +20271,9 @@ class FusionReconstructionController:
             return False
         ids = np.asarray(ids, dtype=np.int64)
         rgba = np.nan_to_num(np.asarray(rgba, dtype=np.float32))
+        # The annotator's isolation wears the plot's colours: tell it the
+        # full map (before the isolation filter below).
+        _push_plot_cmap_to_annotator(self, dict(zip(ids.tolist(), rgba)))
         iso = getattr(self, "_isolated_label_ids", None) or None
         if iso is not None:
             keep = np.isin(ids, np.fromiter(iso, dtype=np.int64,
@@ -17149,6 +20373,16 @@ class FusionReconstructionController:
               f"stale={','.join(sorted(reasons))} "
               f"names={','.join(str(getattr(ly, 'name', '?')) for ly in to_write)}")
         return True
+
+    def _read_plot_colour_dict(self, pw=None):
+        return _read_plot_colour_dict(self, pw)
+
+    @staticmethod
+    def _plot_colours_unchanged_for(widget, new) -> bool:
+        return _plot_colours_unchanged_for(widget, new)
+
+    def _push_plot_cmap_to_annotator(self, plot_dict):
+        return _push_plot_cmap_to_annotator(self, plot_dict)
 
     def _plot_hover_properties(self, column, ids, values):
         """The labels layers' hover: the Colour by column's value per label
@@ -17452,6 +20686,10 @@ class FusionReconstructionController:
                     or patch_name != getattr(self, "_qc_view_patch_name", "")
                 ):
                     return  # user switched away mid-extract — don't yank back
+                if self._staged_annotator_work():
+                    print("[POST-EXTRACT-SWITCH] skipped (an edit is open "
+                          "in the annotator)")
+                    return
                 if getattr(self, "_tiers_dirty", False) or getattr(
                     self, "_curation_dirty", False
                 ):
@@ -17595,10 +20833,16 @@ class FusionReconstructionController:
         from .colormap_authority import ColormapOwner
 
         auth = getattr(self, "_colormap_authority", None)
-        if auth is None or auth.current_owner != ColormapOwner.ANNOTATOR_ISOLATION:
+        if auth is None:
             return False
         if getattr(sel, "source", "") == "navigator":
             return False  # already applied annotator-side; controller path no-ops
+        # With the annotator open, its isolation engine takes every request,
+        # owner or not: a controller-side isolation would leave the cells it
+        # later creates (a Reshape piece) transparent.
+        if (auth.current_owner != ColormapOwner.ANNOTATOR_ISOLATION
+                and self._get_curation_annotator_widget() is None):
+            return False
         label_ids = list(getattr(sel, "label_ids", None) or [])
 
         def _drop(reason: str) -> bool:
@@ -17634,8 +20878,11 @@ class FusionReconstructionController:
         # staged.  A raising predicate counts as "active" (refuse), never
         # as "route".
         try:
-            op_active = getattr(widget, "_refinement_op_active", None)
-            staged = bool(op_active()) if callable(op_active) else False
+            from napari_epicycle.annotator.refinement_state import (
+                ISOLATION_BLOCKING as _ISO_BLOCK)
+            kinds = getattr(widget, "staged_kinds", None)
+            staged = (bool(set(kinds()) & _ISO_BLOCK)
+                      if callable(kinds) else False)
         except Exception:
             staged = True
         # The controller's own isolation bookkeeping must not survive an
@@ -17977,7 +21224,7 @@ class FusionReconstructionController:
                 self._isolated_label_ids == {lid}:
             sel = SelectionRef(
                 scope="single_patch",
-                patch_key=self._selected_curation_patch() or self._selected_patch_name(),
+                patch_key=_active_qc_patch(self),
                 label_ids=[],
                 primary_label_id=None,
                 df_indices=[],
@@ -17992,7 +21239,7 @@ class FusionReconstructionController:
         # Population scope + patch_name column lookup removed 2026-05-03
         # (drop-population-mode Commit 4/6).  Always single-patch; the
         # column never appears in the single-patch DataFrame.
-        patch_key = self._selected_curation_patch() or self._selected_patch_name()
+        patch_key = _active_qc_patch(self)
 
         sel = SelectionRef(
             scope="single_patch",
@@ -18081,7 +21328,7 @@ class FusionReconstructionController:
         from .curation_selection_sync import SelectionRef
 
         # Population scope removed 2026-05-03 — always single_patch.
-        patch_key = self._selected_curation_patch() or self._selected_patch_name()
+        patch_key = _active_qc_patch(self)
 
         if not label_ids:
             sel = SelectionRef(
@@ -18120,17 +21367,29 @@ class FusionReconstructionController:
         """The highest label id in the QC df over ALL rows -- ``deleted`` and
         ``superseded`` ghosts included -- or 0 with no df (Add rebuild).  Add mints new ids above it, so an added object
         is never hidden behind a ghost row by the idempotence skip in
-        ``_on_annotator_add_committed``."""
+        ``_on_annotator_add_committed``.
+
+        At least the highest id Add's Clear objects removed on this patch and
+        run in this session, too: the table may hold no row of it (no table
+        at all, or an extraction that finished after a switch away)."""
+        floor = 0
+        try:
+            cleared = self._add_cleared_ids_for(
+                _qc_write_patch(self), self._active_run_path_id())
+            if cleared:
+                floor = max(0, max(int(i) for i in cleared))
+        except Exception:
+            floor = 0
         df = getattr(self, "_qc_features_df", None)
         if df is None or "label" not in getattr(df, "columns", ()):
-            return 0
+            return floor
         try:
             import pandas as pd
 
             top = pd.to_numeric(df["label"], errors="coerce").max()
-            return 0 if pd.isna(top) else max(0, int(top))
+            return floor if pd.isna(top) else max(floor, int(top))
         except Exception:
-            return 0
+            return floor
 
     def _get_plot_selection(self):
         """The ids the QC plot shows highlighted right now, for Batch Refine.
@@ -18154,8 +21413,11 @@ class FusionReconstructionController:
         pw = getattr(getattr(self, "ui", None), "qc_plot_widget", None)
         if pw is None or getattr(self, "_qc_features_df", None) is None:
             return None
-        patch_key = self._selected_curation_patch() or self._selected_patch_name()
-        plot_patch = getattr(self, "_qc_view_patch_name", "") or ""
+        # the patch the annotator shows (the table in view) against the patch
+        # the plot's table was loaded for; a Session highlight names neither
+        patch_key = _active_qc_patch(self)
+        plot_patch = (getattr(self, "_qc_table_patch", "")
+                      or getattr(self, "_qc_view_patch_name", "") or "")
         if not patch_key or patch_key != plot_patch:
             from packages.epicycle_annotator.batch_refine import (
                 PLOT_OTHER_PATCH,
@@ -18250,9 +21512,15 @@ class FusionReconstructionController:
             "session.  Existing pixel-precise work will be lost."
         )
         msg.setInformativeText(
-            "Cell IDs and tier assignments are preserved.  Saved canonical "
-            "shape is preserved.  Only sub-2-voxel boundary precision is "
-            "affected.\n\n"
+            "On load, small or very thin cells (a few voxels, or one voxel "
+            "thick) can disappear and thin gaps between neighbouring cells "
+            "can close; on save the mask is upsampled back to full size "
+            "with boundaries in 2-voxel steps.  Rows for cells that "
+            "disappear are marked deleted in the table when you save.  "
+            "Tier assignments of the remaining cells are "
+            "kept.  For smoother boundaries afterwards, reopen the patch at "
+            "full resolution and run Batch Refine once with a Smooth "
+            "step.\n\n"
             "Choose Continue to downsample anyway (won't ask again for "
             "this patch), or Cancel to load this patch at full resolution "
             "(workspace toggle stays unchanged for other patches)."
@@ -18716,6 +21984,30 @@ class FusionReconstructionController:
         series = stack.pop()
         return series, self._tier_undo_lines_map().pop(id(series), None)
 
+    def _clear_all_undo_stacks(self) -> None:
+        """Empty the curation-undo and tier-undo stacks and grey Undo."""
+        _cu = getattr(self, "_curation_undo_stack", None)
+        if _cu is not None and hasattr(_cu, "clear"):
+            _cu.clear()
+        self._drop_tier_undo()
+        btn = getattr(getattr(self, "ui", None), "undo_curation_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+        # an Add review open in the annotator lists Accepts nothing can take
+        # back now: the page closes it (the objects stay)
+        try:
+            _w = self._get_curation_annotator_widget()
+            _hook = getattr(_w, "_add_after_undo_emptied", None)
+            if callable(_hook):
+                _hook()
+        except Exception as exc:  # noqa: BLE001 - a follow-up, never a block
+            print(f"[UNDO] Add review follow-up skipped: {exc!r}")
+
+    def _drop_tier_undo(self) -> None:
+        """Empty the tier-undo stack and re-derive the Undo-assign gate."""
+        _area_call(self, "_clear_tier_undo")
+        _area_call(self, "_derive_tier_action_enables")
+
     def _clear_tier_undo(self) -> None:
         """Empty the tier-undo stack and its side table."""
         stack = getattr(self, "_tier_undo_stack", None)
@@ -18785,6 +22077,9 @@ class FusionReconstructionController:
         Step-3 lock) — a click while a commit is in flight is ignored.  The
         button itself also grays out under the lock.
         """
+        # Garbage is zeroed in the live volume: not under an open edit.
+        if _refuse_if_staged(self, "commit triage"):
+            return
         if self._qc_features_df is None:
             return
         # Re-entry guard: a commit already in flight → ignore (button is also
@@ -18886,19 +22181,27 @@ class FusionReconstructionController:
         garbage-id count etc. the finished handler logs), or ``None`` if there
         is no patch / nothing to commit.
         """
-        # A2: the table is the patch the Curation switch loaded
-        # (``_qc_view_patch_name``) -- a Session click no longer reloads it,
-        # so the Session highlight must never name the write (Save's rule).
-        patch_name = _active_qc_patch(self)
+        # The table is the patch the Curation switch loaded: neither a
+        # Session click nor a Curation selection may name the write, and a
+        # table that belongs to another patch is never written under this one.
+        patch_name = _qc_write_patch(self)
         if not patch_name:
+            _report_table_other_patch(self, "Commit Triage")
             return None
 
         # 1. Identify garbage labels.
         if "qc_tier" in self._qc_features_df.columns:
-            garbage = self._qc_features_df[
-                self._qc_features_df["qc_tier"] == "garbage"
-            ]
-            garbage_ids = set(int(row["label"]) for _, row in garbage.iterrows())
+            # Only the ACTIVE row of a label can select it for deletion: a
+            # superseded ghost row that kept an old "garbage" tier must not
+            # delete the live label that replaced it.  A frame with no
+            # label_status column counts every row as active.
+            _df = self._qc_features_df
+            if "label_status" in _df.columns:
+                _active = (_df["label_status"] == "active").to_numpy()
+            else:
+                _active = np.ones(len(_df), dtype=bool)
+            garbage_mask = (_df["qc_tier"] == "garbage").to_numpy() & _active
+            garbage_ids = set(int(v) for v in _df.loc[garbage_mask, "label"])
         else:
             garbage_ids = set()
 
@@ -18911,11 +22214,16 @@ class FusionReconstructionController:
         if garbage_ids and "qc_tier" in self._qc_features_df.columns:
             if "label_status" not in self._qc_features_df.columns:
                 self._qc_features_df["label_status"] = "active"
-            garbage_mask = self._qc_features_df["qc_tier"] == "garbage"
+            garbage_mask = (
+                (self._qc_features_df["qc_tier"] == "garbage")
+                & (self._qc_features_df["label_status"] == "active")
+            )
             self._qc_features_df.loc[garbage_mask, "label_status"] = "deleted"
 
         # 4. Clear undo stack — DataFrame shape changed, snapshots are invalid.
         _area_call(self, "_clear_tier_undo")
+        # the curation undo too: an entry would paste garbage zeroed above back
+        _area_call(self, "_clear_all_undo_stacks")
         self._tier_drag_snapshot = None
         if hasattr(self.ui, "undo_tier_btn"):
             self.ui.undo_tier_btn.setEnabled(False)
@@ -18928,12 +22236,21 @@ class FusionReconstructionController:
         labels_path = self._get_active_labels_path()
         layer = self._find_active_labels_layer()
         lifted_mask = None
+        ds_factor = 1
+        n_gone = 0
         if labels_path and layer is not None:
             try:
                 lifted = self._maybe_lift_for_save(layer.data, patch_name)
                 # COPY so the worker owns its own array (no shared mutation).
                 lifted_mask = np.array(lifted, copy=True)
+                # a half-size save: rows whose cell is not in this mask
+                # turn deleted BEFORE the df copy below, so the CSV says so
+                ds_factor = self.state_manager.get_patch_downsample_factor(
+                    patch_name)
+                n_gone = self._reconcile_rows_with_layer(
+                    layer.data, patch_name)
             except Exception as exc:
+                # (the row check never raises; a failure here is the lift)
                 # Lift failed on the main thread — log + leave lifted_mask None
                 # so the persist reports mask_skipped (dirty flags preserved).
                 self._append_log(
@@ -18966,6 +22283,8 @@ class FusionReconstructionController:
             "result_meta": {
                 "garbage_ids": garbage_ids,
                 "labels_path": labels_path,
+                "ds_factor": ds_factor,
+                "n_gone": n_gone,
             },
         }
 
@@ -19085,6 +22404,10 @@ class FusionReconstructionController:
             garbage_ids = result_meta.get("garbage_ids", set())
             labels_path = result_meta.get("labels_path", None)
 
+            # Non-fatal warnings (e.g. a failed .bak copy) always logged.
+            for warn in result.get("warnings", []):
+                self._append_log(f"[WARN] {warn}")
+
             if not result.get("ok", False):
                 # A persist step failed (or mask skipped) → keep dirty flags.
                 # The persist is transactional (it discards the staged CSV on a
@@ -19134,6 +22457,15 @@ class FusionReconstructionController:
                 )
             self._curation_dirty = False
             self._tiers_dirty = False
+            # the pairing check: the CSV saved after an edit keeps saying so
+            self._record_match_predate(dispatch_patch)
+            # The commit zeroed the garbage voxels and dropped their rows, so
+            # an Undo of either kind would now put back rows whose voxels
+            # are gone: both undo stacks start over.
+            _cu = getattr(self, "_curation_undo_stack", None)
+            if _cu is not None and hasattr(_cu, "clear"):
+                _cu.clear()
+            _area_call(self, "_drop_tier_undo")
             self.state_manager.set_patch_status(
                 dispatch_patch,
                 self.state_manager.get_patch_status(dispatch_patch),
@@ -19156,6 +22488,8 @@ class FusionReconstructionController:
                 f"Committed triage: {len(garbage_ids)} garbage discarded, "
                 f"{result.get('n_labels', len(self._qc_features_df))} labels "
                 f"remaining"
+                + _halfsize_save_note(result_meta.get("ds_factor", 1),
+                                      result_meta.get("n_gone", 0))
             )
         finally:
             # Release the lock + bar on EVERY path (async only — the sync path
@@ -19702,10 +23036,14 @@ class FusionReconstructionController:
     def _on_refine_select_all(self):
         """Tick every tickable patch (the ticks are the extraction scope)."""
         self.ui.set_refine_ticks(True)
+        # the ticks are set with the list's signals blocked: refresh the
+        # gates (Extract) and the hint by hand
+        self._on_refine_panel_inputs_changed()
 
     def _on_refine_deselect_all(self):
         """Take every tick off the refinement patch list."""
         self.ui.set_refine_ticks(False)
+        self._on_refine_panel_inputs_changed()
 
     # ------------------------------------------------------------------
     # Model Refinement — extraction
@@ -19765,6 +23103,13 @@ class FusionReconstructionController:
         if not manifest:
             return set()
         stale = set()
+        file_names_by_stem: dict = {}
+        try:
+            for fname in self.state_manager.get_all_patch_statuses():
+                file_names_by_stem.setdefault(Path(fname).stem, []).append(
+                    fname)
+        except Exception:      # noqa: BLE001
+            pass
         for stem, entry in (manifest.get("per_patch") or {}).items():
             recorded_mtime = entry.get("source_mtime")
             if recorded_mtime is None:
@@ -19777,11 +23122,19 @@ class FusionReconstructionController:
             # layout file is missing (unusual but possible if the
             # workspace was migrated mid-flight).
             current_mtime = None
-            new_path = (
-                _paths.patch_run_dir(self.working_dir, stem, run_id=_active_run_path_id(self))
-                / "labels_3d.tif"
-            )
-            if new_path.is_file():
+            # The run folder is named by the patch FILE name; the manifest
+            # keys are stems, so map the stem to the file name first.
+            new_path = None
+            for fname in file_names_by_stem.get(stem, [stem]):
+                cand = (
+                    _paths.patch_run_dir(self.working_dir, fname,
+                                         run_id=_active_run_path_id(self))
+                    / "labels_3d.tif"
+                )
+                if cand.is_file():
+                    new_path = cand
+                    break
+            if new_path is not None and new_path.is_file():
                 try:
                     current_mtime = new_path.stat().st_mtime
                 except OSError:
@@ -23462,13 +26815,77 @@ class FusionReconstructionController:
         if llm is not None:
             llm.clear_step("step3")
 
+    def on_app_close(self) -> bool:
+        """Called when napari's window is about to close.
+
+        Asks the same Save / Discard / Cancel question as a patch switch
+        when tier marks or curation edits are unsaved, in its closing mode
+        (Discard changes nothing, since napari may still keep the window
+        open).  True lets the window close; False keeps it open (the user
+        cancelled, an edit is still open in the annotator, or the save
+        failed).  If the check itself fails, the user is asked whether to
+        close anyway, so the window is never trapped.
+        """
+        if self._staged_annotator_work():
+            # Said in a box: the user may be in another step, where the
+            # status lines of this one are not on screen.
+            print("[APP-CLOSE] step 3: an edit is open in the annotator")
+            QMessageBox.information(self.ui, "Open edit",
+                                    _pr_text.S3_STAGED_WORK_OPEN)
+            return False
+        print(
+            f"[APP-CLOSE] step 3 asking: "
+            f"save_in_flight={getattr(self, '_save_in_flight', False)} "
+            f"tiers_dirty={getattr(self, '_tiers_dirty', False)} "
+            f"curation_dirty={getattr(self, '_curation_dirty', False)}"
+        )
+        try:
+            return bool(self._guard_unsaved_changes(closing=True))
+        except Exception as exc:      # noqa: BLE001
+            # Not a save failure: the check itself broke.  Never trap the
+            # window over it; let the user decide.
+            print(f"[APP-CLOSE] step 3 unsaved-work check failed: {exc!r}")
+            reply = QMessageBox.question(
+                self.ui,
+                "Closing EpiCycle",
+                "EpiCycle could not check for unsaved work.\n\n"
+                "Close anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return reply == QMessageBox.Yes
+
     def on_step_exit(self):
         """Called when user navigates away from Step 3.
 
         Closes the annotator dock (if open), clears all Step 3 layers
         from the viewer, and resets view state.  The patch pictures' batch
         stops (V2).
+
+        Returns False (the shell then keeps the user in Step 3) when an
+        annotator operation is still staged or the unsaved-edits question
+        was refused or its save failed.
         """
+        # The refusals come FIRST: nothing below may stop or close anything
+        # of a step the user is about to be kept in.
+        if self._staged_annotator_work():
+            _say_in_plot_status(self, _pr_text.S3_STAGED_WORK_OPEN)
+            self._append_log(f"[STEP3-EXIT] {_pr_text.S3_STAGED_WORK_OPEN}")
+            return False
+        try:
+            if not self._guard_unsaved_changes():
+                return False
+        except Exception as exc:      # noqa: BLE001
+            # The shell reads an exception from this hook as "leave anyway":
+            # a failed save must keep the user here instead.
+            _report_save_failed(self, exc)
+            return False
+        # Guard passed: the edits were saved or discarded, so the table of
+        # this step goes the way it does on a run switch.
+        self._qc_features_df = None
+        self._qc_table_patch = ""
+        _area_call(self, "_reset_qc_plot_area", _plot_text.PLOT_NO_PATCH,
+                   _plot_text.SEE_NO_PATCH, blank_patch=True)
         try:
             self._stop_step3_thumbs()
         except Exception as exc:      # noqa: BLE001
@@ -23481,6 +26898,10 @@ class FusionReconstructionController:
             self._close_provenance_windows()     # R6
         except Exception as exc:      # noqa: BLE001
             print(f"[PROVENANCE] close on exit failed: {exc!r}")
+        try:
+            self._close_prediction_windows()
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3-PRED] close on exit failed: {exc!r}")
         self._close_3d_curation_annotator()
 
     # ------------------------------------------------------------------
@@ -23489,6 +26910,19 @@ class FusionReconstructionController:
     # status write of the section goes through ``_pr_status``; the gates are
     # Step 4's ``_refresh_segment_gates`` in Step 3's words.
     # ------------------------------------------------------------------
+
+    def _reset_pr_foot(self) -> None:
+        """The foot as built: the progress bar empty (no "100 %") and no
+        job line kept.  Never while Predict or Reconstruct runs (their bar
+        and line are live)."""
+        if (getattr(self, "_prediction_running", False)
+                or getattr(self, "_reconstruction_running", False)):
+            return
+        bar = getattr(self.ui, "pipeline_progress", None)
+        if bar is not None:
+            bar.setRange(0, 100)
+            bar.reset()
+        self._pr_status("")
 
     def _pr_status(self, text: str, kind: str = "neutral") -> None:
         """The section's ONE status line (``ui.show_pr_status``; kinds
@@ -23688,6 +27122,22 @@ class FusionReconstructionController:
         """The "Tick all unprocessed" link (row 20)."""
         self._pr_tick_rows(lambda _n, st: st == "unprocessed")
 
+    def _on_pr_untick_all(self) -> None:
+        """The "Untick all" link: every ticked row loses its tick (a
+        protected or missing row that kept one too), in one pass; refused
+        under the lock."""
+        if self._pr_ticks_locked():
+            return
+        lst = self.ui._patch_state_list
+        n = 0
+        for i in range(lst.count()):
+            item = lst.item(i)
+            if item.checkState() == Qt.Checked:
+                self._pr_set_item_ticked(item, False)
+                n += 1
+        print(f"[STEP3-TICK] unticked {n} row(s)")
+        self._on_pr_ticks_changed()
+
     def _on_pr_tick_every(self) -> None:
         """Ctrl+A on the list: every row that can be ticked."""
         self._pr_tick_rows(lambda _n, _st: True)
@@ -23747,17 +27197,41 @@ class FusionReconstructionController:
                           lst.viewport().mapToGlobal(pos))
 
     def _pr_row_menu(self, name, gpos) -> None:
-        """A missing row's menu: "Forget this patch…" (nothing else has a
-        menu on these rows)."""
-        if not name or name not in getattr(self, "_missing_patches", set()):
+        """A row's menu (the right-click, the ⋯ of a missing row, Curation's
+        list).  A missing row: "Forget this patch…".  A present row: "Show
+        prediction…" when its prediction is on disk (gated as the eye),
+        then "Model details…" when it has a made-by record (never greyed:
+        its window greys its own Save).  A row with no entry shows no
+        menu."""
+        if not name:
+            return
+        if name in getattr(self, "_missing_patches", set()):
+            menu = QMenu(self.ui)
+            act = menu.addAction(_pr_text.S3_FORGET_MENU)
+            act.setEnabled(not self._pr_any_block_flag())
+            chosen = menu.exec_(gpos)
+            menu.deleteLater()
+            if chosen is act:
+                self._forget_patch(name)
+            return
+        show = self._prediction_cache_exists(name)
+        details = self._pr_has_made_by(name)
+        if not (show or details):
             return
         menu = QMenu(self.ui)
-        act = menu.addAction(_pr_text.S3_FORGET_MENU)
-        act.setEnabled(not self._pr_any_block_flag())
+        show_act = details_act = None
+        if show:
+            show_act = menu.addAction(_pr_text.S3_SHOW_PREDICTION_MENU)
+        if details:
+            details_act = menu.addAction(_pr_text.S3_MODEL_DETAILS)
         chosen = menu.exec_(gpos)
         menu.deleteLater()
-        if chosen is act:
-            self._forget_patch(name)
+        if chosen is None:
+            return
+        if chosen is show_act:
+            self._on_show_prediction(name)
+        elif chosen is details_act:
+            self._on_pr_info_requested(name)
 
     # ------------------------------------------------------------------
     # R7: Set spacing… on Session's rows
@@ -23986,6 +27460,9 @@ class FusionReconstructionController:
                 patch=n, spacing=zyx))
         self._refresh_patch_list_colors()
         self._update_cell_width_line()
+        # an open Add page drops its never-set-spacing refusal and
+        # re-measures a placed box (as after a QC Settings OK)
+        self._notify_spacing_changed()
         # a patch in view whose features went stale: the existing notice
         pn = getattr(self, "_qc_view_patch_name", "") or ""
         if pn in stale:
@@ -24020,6 +27497,8 @@ class FusionReconstructionController:
             return False
         in_view = name in (getattr(self, "_qc_view_patch_name", "") or "",
                            self._selected_curation_patch_safe())
+        if in_view and _refuse_if_staged(self, "forget", where="three"):
+            return False
         if in_view and (getattr(self, "_curation_dirty", False)
                         or getattr(self, "_tiers_dirty", False)):
             if not self._guard_unsaved_changes():
@@ -24041,6 +27520,8 @@ class FusionReconstructionController:
                               confirm_text=_pr_text.S3_FORGET_CONFIRM,
                               accent="red"):
             return False
+        # its prediction window goes before its files move
+        self._close_prediction_windows([name])
         if in_view:
             self._pr_forget_reset_view()
         try:
@@ -24147,6 +27628,7 @@ class FusionReconstructionController:
         except Exception as exc:      # noqa: BLE001
             print(f"[STEP3-FORGET] layer clear failed: {exc!r}")
         self._qc_features_df = None
+        self._qc_table_patch = ""
         self._qc_view_patch_name = ""
         self._sync_loaded_patch_marker()
         self._curation_dirty = False
@@ -24204,6 +27686,10 @@ class FusionReconstructionController:
         eye = getattr(ui, "set_session_eye_locked", None)
         if callable(eye):
             eye(not (flag is None or running))
+        # the Patches rows' eye follows the same rule
+        pr_eye = getattr(ui, "set_pr_eye_locked", None)
+        if callable(pr_eye):
+            pr_eye(not (flag is None or running))
 
     def _refresh_refine_lock_line(self) -> None:
         """Model Refinement's amber lock line: the first set flag of
@@ -24296,8 +27782,16 @@ class FusionReconstructionController:
             setter = getattr(ui, "set_pr_ticked_lines", None)
             if callable(setter):
                 setter(len(names), len(protected), len(ready))
+            # one-channel patches run as gray on their own (the boxes are
+            # never touched); a blank "Channel to segment" is fine only
+            # when every runnable ticked patch is one of them
+            one = self._one_channel_patches(runnable)
+            chan1 = getattr(ui, "chan1_combo", None)
+            blank = chan1 is not None and chan1.currentIndex() < 0
             if not (lat and ax):
                 reason = _PRT.S3_GATE_PICK_MODEL
+            elif blank and runnable and len(one) < len(runnable):
+                reason = _PRT.S3_GATE_PICK_CHANNEL
             elif not names:
                 reason = _PRT.S3_GATE_NOTHING_TICKED
             elif not runnable:
@@ -24316,25 +27810,44 @@ class FusionReconstructionController:
                 more = ([] if ready else [_PRT.S3_GATE_NOTHING_TO_RECONSTRUCT])
                 join = _PRT.S3_GATE_JOIN.join
                 text = join([head] + more)
-                if protected:
+                full, short = [], []
+                # one sentence per state: with "Predict the ticked patches
+                # first." nothing more; with the one-channel sentence, it
+                # alone (the protected clause is left out, so the foot's
+                # two lines hold it whole)
+                one_alone = bool(one) and not more
+                if protected and not one_alone:
                     # B (board D): a ticked protected patch is skipped, said
                     # with the status each one has; M4: when the line would
                     # not fit the foot's two lines, drop the statuses, and
                     # failing that put the clause BEFORE the other one
                     k = len(protected)
-                    one = k == 1
+                    single = k == 1
                     words = _PRT.S3_GATE_STATUS_JOIN.join(
                         sorted({statuses.get(n, "") for n in protected}))
-                    full = (_PRT.S3_GATE_SKIPPED if one
-                            else _PRT.S3_GATE_SKIPPED_PLURAL).format(
-                        k=k, statuses=words)
-                    short = (_PRT.S3_GATE_SKIPPED_SHORT if one
-                             else _PRT.S3_GATE_SKIPPED_SHORT_PLURAL
-                             ).format(k=k)
+                    full.append((_PRT.S3_GATE_SKIPPED if single
+                                 else _PRT.S3_GATE_SKIPPED_PLURAL).format(
+                        k=k, statuses=words))
+                    short.append((_PRT.S3_GATE_SKIPPED_SHORT if single
+                                  else _PRT.S3_GATE_SKIPPED_SHORT_PLURAL
+                                  ).format(k=k))
+                if one_alone:
+                    # a ticked one-channel patch runs as 0: gray, said by
+                    # name (one) or by count; the same sentence in the
+                    # narrow form (it has no shorter one).  One sentence
+                    # per state: not after "Predict the ticked patches
+                    # first." (the foot has two lines)
+                    k = len(one)
+                    clause = (_PRT.S3_GATE_ONE_CHANNEL.format(patch=one[0])
+                              if k == 1 else
+                              _PRT.S3_GATE_ONE_CHANNEL_PLURAL.format(k=k))
+                    full.append(clause)
+                    short.append(clause)
+                if full:
                     fits = getattr(ui, "pr_status_fits", None)
-                    tries = [join([head] + more + [full]),
-                             join([head] + more + [short]),
-                             join([head, short] + more)]
+                    tries = [join([head] + more + full),
+                             join([head] + more + short),
+                             join([head] + short + more)]
                     text = tries[-1]
                     for cand in tries:
                         if not callable(fits) or fits(cand):
@@ -24374,6 +27887,15 @@ class FusionReconstructionController:
         if getattr(self, "_shutdown_done", False):
             return
         self._shutdown_done = True
+        # Closing napari cannot ask: say once which edits are lost.
+        _lost = [name for name, flag in (
+            ("curation edits", getattr(self, "_curation_dirty", False)),
+            ("tier edits", getattr(self, "_tiers_dirty", False))) if flag]
+        if _lost:
+            print(f"[STEP3-EXIT] napari is closing with unsaved "
+                  f"{' and '.join(_lost)} on "
+                  f"{(getattr(self, '_qc_table_patch', '') or getattr(self, '_qc_view_patch_name', '') or 'the patch in view')!r}; "
+                  f"they are not saved")
         # V2: the patch pictures' batch first (its slots write to self.ui)
         try:
             self._stop_step3_thumbs()
@@ -24388,6 +27910,17 @@ class FusionReconstructionController:
             self._close_provenance_windows()     # R6
         except Exception:      # noqa: BLE001
             pass
+        try:
+            self._close_prediction_windows()
+        except Exception:      # noqa: BLE001
+            pass
+        # their loader threads, before anything below can raise: signals
+        # cut, each thread's finished cut, joined, parked if still running
+        try:
+            self._sweep_prediction_threads()
+        except Exception as exc:      # noqa: BLE001
+            print(f"[STEP3] shutdown: prediction loader sweep failed: "
+                  f"{exc!r}")
         # Stop the training / pair-extraction workers BEFORE the thread sweep
         # below joins their threads.  quit() only ends a thread's event loop;
         # a worker inside run() never sees it, so without request_cancel() the

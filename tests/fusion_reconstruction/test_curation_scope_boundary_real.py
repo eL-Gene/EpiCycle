@@ -150,6 +150,7 @@ class TestPatchAccurateSelectionRef:
 
         harness._selected_curation_patch = MagicMock(return_value="my_patch.tif")
         harness._selected_patch_name = MagicMock(return_value="fallback.tif")
+        harness._qc_view_patch_name = ""     # no table in view yet
 
         # Create a fake QListWidget item
         from qtpy.QtCore import Qt

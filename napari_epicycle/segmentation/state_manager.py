@@ -121,7 +121,7 @@ def _good_v2(data) -> bool:
 
 
 def _merge_over_empty(data: Dict[str, Any]) -> Dict[str, Any]:
-    """A good schema-2 dict merged over the empty state (grill G1-28)."""
+    """A good schema-2 dict merged over the empty state."""
     state = _empty_state()
     state.update(data)
     if not isinstance(state.get("stacks"), dict):

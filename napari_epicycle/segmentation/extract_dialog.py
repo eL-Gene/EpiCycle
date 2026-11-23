@@ -25,6 +25,10 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_epicycle.fusion_reconstruction.qc_pairing import (
+    COLUMNS as _MATCH_COLUMNS,
+)
+
 # ---------------------------------------------------------------------------
 # Styling constants (match analysis_widget / existing dialog)
 # ---------------------------------------------------------------------------
@@ -45,6 +49,32 @@ _GROUP_HOVER = "rgba(255,255,255,0.06)"
 _SEPARATOR = "rgba(255,255,255,0.08)"
 _WARNING = "#ff9800"
 _INFO = "#80deea"
+
+
+#: left out of the "Standard" PCA preset: position and raw orientation
+#: components
+STANDARD_PCA_EXCLUDE = frozenset({
+    "centroid-0", "centroid-1", "centroid-2",
+    "major_axis_z", "major_axis_y", "major_axis_x",
+    "mid_axis_z", "mid_axis_y", "mid_axis_x",
+    "minor_axis_z", "minor_axis_y", "minor_axis_x",
+    "inertia_eigval_major", "inertia_eigval_mid",
+    "inertia_eigval_minor",
+})
+#: also left out: the pairing check's columns (a comparison with another
+#: run, not a measurement of the cell) and the word column the plot derives
+#: from them -- exactly these, not every name that starts "match_"
+STANDARD_PCA_EXCLUDE_MATCH = frozenset(_MATCH_COLUMNS) | {"match_status"}
+
+
+def standard_pca_set(features) -> set:
+    """The "Standard" preset's PCA features: every feature given, minus
+    position, raw orientation components and the match columns."""
+    return {
+        f for f in features
+        if f not in STANDARD_PCA_EXCLUDE
+        and f not in STANDARD_PCA_EXCLUDE_MATCH
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -463,17 +493,7 @@ class ExtractFeaturesDialog(QDialog):
         # Resolve feature set
         if features is None:
             # "Standard" — all numeric features (excluding position, orientation vectors)
-            pca_set = set(self._all_features)
-            # Exclude position and raw orientation components
-            _exclude = {
-                "centroid-0", "centroid-1", "centroid-2",
-                "major_axis_z", "major_axis_y", "major_axis_x",
-                "mid_axis_z", "mid_axis_y", "mid_axis_x",
-                "minor_axis_z", "minor_axis_y", "minor_axis_x",
-                "inertia_eigval_major", "inertia_eigval_mid",
-                "inertia_eigval_minor",
-            }
-            pca_set -= _exclude
+            pca_set = standard_pca_set(self._all_features)
         elif features:
             pca_set = set(features)
         else:
@@ -501,16 +521,7 @@ class ExtractFeaturesDialog(QDialog):
 
         if preset_features is None:
             # "Standard" — all numeric minus exclusions
-            _exclude = {
-                "centroid-0", "centroid-1", "centroid-2",
-                "major_axis_z", "major_axis_y", "major_axis_x",
-                "mid_axis_z", "mid_axis_y", "mid_axis_x",
-                "minor_axis_z", "minor_axis_y", "minor_axis_x",
-                "inertia_eigval_major", "inertia_eigval_mid",
-                "inertia_eigval_minor",
-            }
-            expected = self._all_features - _exclude
-            return current == expected
+            return current == standard_pca_set(self._all_features)
         else:
             # Named preset — compare against its feature list
             # Only compare features that actually exist in the manifest

@@ -46,6 +46,7 @@ CALLBACKS = {
     "on_label_smoothed": "_on_label_smoothed_cb",
     "on_recalculate": "_on_recalculate_cb",
     "on_new_label_painted": "_on_new_label_painted_cb",
+    "on_paint_stroke": "_on_paint_stroke_cb",
     "on_batch_refined": "_on_batch_refined_cb",
     "on_batch_refine_lock": "_batch_refine_lock_cb",
     "on_add_mode_lock": "_add_mode_lock_cb",
@@ -65,6 +66,10 @@ CALLBACKS = {
     "get_plot_selection": "_get_plot_selection_cb",
     # The QC df's highest id, ghosts included
     "get_label_id_floor": "_get_label_id_floor_cb",
+    # Add Clear: the kept-tier count behind the refusal, and the
+    # Clears still live in the main Undo
+    "get_kept_tier_count": "_get_kept_tier_count_cb",
+    "get_live_add_clears": "_get_live_add_clears_cb",
 }
 
 #: What `_post_switch_annotator_sync` actually passes.  The FOUR that must

@@ -2402,7 +2402,7 @@
            1,
            1
           ],
-          "widget": "QLabel#||Membrane channel:"
+          "widget": "QLabel#||Channel to segment:"
          },
          {
           "alignment": 0,
@@ -2422,7 +2422,7 @@
            1,
            1
           ],
-          "widget": "QLabel#||Nuclei channel:"
+          "widget": "QLabel#||Helper channel:"
          },
          {
           "alignment": 0,
@@ -2500,7 +2500,7 @@
     }
    },
    {
-    "id": "QLabel#||Membrane channel:",
+    "id": "QLabel#||Channel to segment:",
     "sizePolicy": [
      5,
      5,
@@ -2703,7 +2703,7 @@
     ]
    },
    {
-    "id": "QLabel#||Nuclei channel:",
+    "id": "QLabel#||Helper channel:",
     "sizePolicy": [
      5,
      5,
@@ -14411,7 +14411,7 @@
            1,
            1
           ],
-          "widget": "QLabel#||Membrane channel:"
+          "widget": "QLabel#||Channel to segment:"
          },
          {
           "alignment": 0,
@@ -14431,7 +14431,7 @@
            1,
            1
           ],
-          "widget": "QLabel#||Nuclei channel:"
+          "widget": "QLabel#||Helper channel:"
          },
          {
           "alignment": 0,
@@ -14509,7 +14509,7 @@
     }
    },
    {
-    "id": "QLabel#||Membrane channel:",
+    "id": "QLabel#||Channel to segment:",
     "sizePolicy": [
      5,
      5,
@@ -14712,7 +14712,7 @@
     ]
    },
    {
-    "id": "QLabel#||Nuclei channel:",
+    "id": "QLabel#||Helper channel:",
     "sizePolicy": [
      5,
      5,
@@ -19920,7 +19920,7 @@
       {
        "alignment": 0,
        "stretch": 0,
-       "widget": "QLabel#|model_trained_label|Trained on 2 channels: membrane (1), nuc"
+       "widget": "QLabel#|model_trained_label|Trained on segment 2: green, helper 1: r"
       },
       {
        "alignment": 0,
@@ -20077,7 +20077,7 @@
     }
    },
    {
-    "id": "QLabel#|model_trained_label|Trained on 2 channels: membrane (1), nuc",
+    "id": "QLabel#|model_trained_label|Trained on segment 2: green, helper 1: r",
     "sizePolicy": [
      5,
      5,

@@ -5,16 +5,18 @@ with controller / state_manager / patch load yet — those land in D2.
 
 The Step 3 downsample feature reduces the in-memory curation volume by an
 isotropic integer factor when the original is too big for the GPU /
-makes interactive ops sluggish.  The canonical full-resolution mask is
-preserved on disk:
+makes interactive ops sluggish.  The file on disk keeps its full-resolution
+SHAPE, not its full-resolution detail:
 
   - On patch load (D2): read full-res TIFF, downsample image + labels,
     set the downsampled arrays as ``layer.data``.  Curation, refinement,
-    QC extraction, drawing all operate on the downsampled volume.
+    QC extraction, drawing all operate on the downsampled volume.  The
+    majority pooling can drop small or very thin cells.
   - On save (D4): NN-upsample the curated downsampled mask back to the
     original full-res shape, write the full-res TIFF to disk.  Anything
     downstream (Step 4, training pair extractor, future classifier)
-    reads the canonical full-res mask from disk.
+    reads a full-size mask whose boundaries are quantized to
+    ``factor``-voxel steps and which lacks the cells the load dropped.
 
 Functions:
 
@@ -245,11 +247,12 @@ def upsample_labels_nn(
         upsample → 460, target=461 needs 1 extra): padded with
         ``np.pad(..., mode='edge')`` which duplicates the last slice.
 
-    Edge-duplicate is the correct behavior for labels — the trailing
-    voxel inherits the last block's label, not background-zero.  Used
-    by the save-lift path so the on-disk TIFF EXACTLY matches the
-    canonical full-res shape that was loaded (no data loss for non-
-    divisible dimensions).
+    Edge-duplicate is the better fill for labels — the trailing voxel
+    inherits the last block's label, not background-zero.  Used by the
+    save-lift path so the on-disk TIFF EXACTLY matches the full-res SHAPE
+    that was loaded.  The content of that trailing plane is not kept: the
+    load dropped it (floor-division) and the save refills it with a copy
+    of its neighbour.
 
     Args:
         labels: 3D integer array of label IDs.

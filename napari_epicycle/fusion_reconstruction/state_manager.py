@@ -659,6 +659,74 @@ class ReconstructionStateManager:
         self.schedule_save()
 
     # ------------------------------------------------------------------
+    # The run's channel memory
+    # ------------------------------------------------------------------
+    #
+    # The two Cellpose channel codes and "Remove specks smaller than", one
+    # pair per RUN: additive ``channels`` = [c1, c2] (c1 a code 0-3, or
+    # None for the blank "Channel to segment"; c2 a code 0-3) and
+    # ``specks`` = int voxels in the flat state, put under ``runs[active]``
+    # by the v3 wrap like ``start_from``.  A missing key means "keep the
+    # widgets".  No schema bump: an older plugin keeps unknown keys, so it
+    # round-trips them untouched.
+
+    def get_run_channels(self) -> Optional[list]:
+        """The run's remembered ``[c1, c2]`` (c1 may be None), or None when
+        the run stored none (or what it stored cannot be read)."""
+        raw = self._state.get("channels")
+        try:
+            return self._valid_run_channels(raw)
+        except ValueError:
+            return None
+
+    def set_run_channels(self, codes) -> None:
+        """Remember the run's two channel codes (debounced save); a value
+        equal to the stored one schedules nothing."""
+        new = self._valid_run_channels(codes)
+        if self._state.get("channels") == new:
+            return
+        self._state["channels"] = new
+        self.schedule_save()
+
+    def get_run_specks(self) -> Optional[int]:
+        """The run's remembered "Remove specks smaller than" (voxels), or
+        None when the run stored none."""
+        raw = self._state.get("specks")
+        try:
+            return self._valid_run_specks(raw)
+        except ValueError:
+            return None
+
+    def set_run_specks(self, n) -> None:
+        """Remember the run's "Remove specks smaller than" (debounced save);
+        a value equal to the stored one schedules nothing."""
+        new = self._valid_run_specks(n)
+        if self._state.get("specks") == new:
+            return
+        self._state["specks"] = new
+        self.schedule_save()
+
+    @staticmethod
+    def _valid_run_channels(codes) -> list:
+        if not isinstance(codes, (list, tuple)) or len(codes) != 2:
+            raise ValueError(f"channels must be two codes, got {codes!r}")
+        c1, c2 = codes
+        for v, blank_ok in ((c1, True), (c2, False)):
+            if v is None and blank_ok:
+                continue
+            if isinstance(v, bool) or not isinstance(v, int)                     or not 0 <= v <= 3:
+                raise ValueError(f"a channel code is 0-3, got {v!r}")
+        return [c1, c2]
+
+    @staticmethod
+    def _valid_run_specks(n) -> int:
+        if isinstance(n, bool) or not isinstance(n, (int, float)):
+            raise ValueError(f"specks must be a number, got {n!r}")
+        if n != int(n) or n < 0:
+            raise ValueError(f"specks must be a whole number >= 0, got {n!r}")
+        return int(n)
+
+    # ------------------------------------------------------------------
     # Ticks
     # ------------------------------------------------------------------
     #

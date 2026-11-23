@@ -251,7 +251,8 @@ class TestTheStaleQuadruple:
         assert "result_token" in src
         src2 = inspect.getsource(_ann()._result_token)
         assert "_epicycle_token" in src2
-        assert "sender" in inspect.getsource(_ann()._signal_sender)
+        # the seam reads the slot's tag, never Qt's process-wide sender()
+        assert "_signal_from" in inspect.getsource(_ann()._signal_sender)
 
     def test_every_finish_handler_opens_with_the_guard(self):
         for name in ("_on_refine_finished", "_on_refine_error",
