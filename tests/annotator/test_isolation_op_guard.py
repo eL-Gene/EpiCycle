@@ -12,7 +12,8 @@ blank subviewer or hidden Refine layer.
 The fix is a navigator-side gate.  ``CurationLabelNavigator`` gets a
 new ``_is_op_active_cb`` predicate slot, wired by
 ``Curation3DAnnotator._wire_navigator_callbacks`` to
-``_is_op_active_for_navigator`` which returns ``_refinement_op_active()``.
+``_is_op_active_for_navigator`` which returns whether a Reshape, Refine or
+interpolation edit is open.
 The three user-initiated isolation entry points
 (``_on_isolate_toggled``, ``_fire_isolation_if_active``,
 ``_on_render_selected_clicked``) consult the predicate and bail out
@@ -320,9 +321,10 @@ class TestGateWiring:
         )
         assert hasattr(Curation3DAnnotator, "_is_op_active_for_navigator")
         src = inspect.getsource(Curation3DAnnotator._is_op_active_for_navigator)
-        # Must read through _refinement_op_active (the most conservative
-        # predicate — covers interp_snapshot held + refine_mode).
-        assert "_refinement_op_active" in src
+        # Must read the set of open edits and intersect it with the kinds
+        # that own the isolated layer.
+        assert "staged_kinds()" in src
+        assert "ISOLATION_BLOCKING" in src
 
     def test_isolate_toggled_has_gate(self):
         from napari_epicycle.annotator.curation_label_navigator import (
@@ -372,6 +374,21 @@ class TestWidgetPredicate:
         ann._smooth_running = flags.get("smooth", False)
         ann._interp_snapshot = flags.get("interp_snapshot", None)
         ann._interp_refine_mode = flags.get("interp_refine_mode", False)
+        # The open-edit set also reads these; a bare widget has none of them.
+        from napari_epicycle.annotator.refinement_state import RefinementOpState
+        ann._refine_state = RefinementOpState()
+        for name in ("_interp_running", "_add_running", "_batch_running",
+                     "_batch_staged"):
+            setattr(ann, name, False)
+        for name in ("_batch_refine_dialog", "_merge_dialog", "_draw_snapshot",
+                     "_interp_label_id", "_interp_roi", "_split_snapshot",
+                     "_split_label_id", "_split_roi", "_smooth_snapshot",
+                     "_smooth_label_id", "_smooth_roi"):
+            setattr(ann, name, None)
+        ann._split_previewed = False
+        ann._split_fragment_refine = False
+        ann._split_fragment_ids = []
+        ann._smooth_chain_count = 0
         return ann
 
     def test_returns_false_when_idle(self):
@@ -416,3 +433,35 @@ class TestWidgetPredicate:
         )
         ann = self._make_bare_widget(interp_refine_mode=True)
         assert Curation3DAnnotator._is_op_active_for_navigator(ann) is True
+
+
+class TestTickWithNothingSelected:
+    """Ticking Isolate with no row selected isolates nothing and the box
+    stays ticked; the next row clicked is isolated."""
+
+    def test_empty_selection_tick_keeps_box_and_skips_callback(self):
+        from napari_epicycle.annotator.curation_label_navigator import (
+            CurationLabelNavigator,
+        )
+        fired = []
+        nav = _make_bare_navigator(op_active_cb=lambda: False)
+        nav._on_isolation_changed_cb = lambda ids, **kw: fired.append(set(ids))
+        nav._isolate_cb._checked = True
+        nav.selected_label_ids = lambda: set()
+        CurationLabelNavigator._on_isolate_toggled(nav, True)
+        assert fired == []
+        assert nav._isolate_cb.isChecked() is True
+
+    def test_next_selection_is_isolated(self):
+        from napari_epicycle.annotator.curation_label_navigator import (
+            CurationLabelNavigator,
+        )
+        fired = []
+        nav = _make_bare_navigator(op_active_cb=lambda: False)
+        nav._on_isolation_changed_cb = lambda ids, **kw: fired.append(set(ids))
+        nav._isolate_cb._checked = True
+        CurationLabelNavigator._on_isolate_toggled(nav, True)
+        nav.selected_label_ids = lambda: {7}
+        CurationLabelNavigator._on_isolate_toggled(nav, True)
+        assert fired == [{7}]
+        assert nav._isolate_cb.isChecked() is True

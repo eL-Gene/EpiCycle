@@ -17,8 +17,25 @@ SEG_PRESET_EPICYCLE = "EpiCycle defaults"
 SEG_PRESET_USEG3D = "u-Segment3D defaults (without its flow filter)"
 SEG_PRESET_CUSTOM = "Custom"
 SEG_INFERENCE_TITLE = "Inference settings"
-SEG_MEMBRANE_LABEL = "Membrane channel:"
-SEG_NUCLEI_LABEL = "Nuclei channel:"
+#: the two Cellpose channel boxes, named by what they do for the model: the
+#: channel it segments (the nuclear stain for a nuclei model) and an optional
+#: helper.  The constant names are historical; only the words changed.
+SEG_MEMBRANE_LABEL = "Channel to segment:"
+SEG_NUCLEI_LABEL = "Helper channel:"
+#: Cellpose's channel codes as the two boxes name them: the item's INDEX
+#: is the code (0 = gray / none, 1 = the first channel)
+SEG_CODE_ITEMS_SEGMENT = ("0: gray", "1: red", "2: green", "3: blue")
+SEG_CODE_ITEMS_HELPER = ("0: none", "1: red", "2: green", "3: blue")
+#: what a model does with each of its two channels (a nuclei model
+#: segments the nuclear stain), and one trained channel on a Model card:
+#: its role, then the item its box shows for it, "segment 2: green"
+SEG_ROLE_SEGMENT = "segment"
+SEG_ROLE_HELPER = "helper"
+SEG_TRAINED_CHANNEL = "{role} {item}"
+#: a model trained with the first code 0: Cellpose averaged every channel
+#: into one image and ignored the helper, so no channel and no helper is
+#: named (the part used where both models are named)
+SEG_TRAINED_GRAY_ITEM = "gray (all channels averaged)"
 SEG_CELL_WIDTH_LABEL = "Typical cell width:"
 SEG_CELL_WIDTH_AUTO = "Auto"
 SEG_CELL_WIDTH_SUFFIX = " µm"

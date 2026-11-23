@@ -362,3 +362,120 @@ def test_a_config_is_rebuilt_from_its_record():
     back = S.seg_config_from_record(rec, SegmentationConfig)
     assert back == seg
     assert S.seg_config_from_record(None, SegmentationConfig) is None
+
+
+# ---------------------------------------------------------------- one channel
+
+def _predict_file(c, path, seg):
+    return c._predict_single_patch(
+        patch_name=path.name, stack_path=str(path), lateral_path="lat",
+        axial_path="ax", seg_config=seg, axes="CZYX")
+
+
+@pytest.mark.parametrize("c1", [False, True])
+def test_a_one_channel_patch_runs_as_gray_and_records_the_asked_codes(
+        w, tmp_path, fake_segment, c1):
+    """ZYX, and ZCYX with C = 1: Cellpose gets [0, 0], the record keeps the
+    codes asked for and says ``one_channel``; the run's config is not
+    changed."""
+    from ._one_channel import write_zyx_patch
+    c = _open(w, tmp_path)
+    path = write_zyx_patch(tmp_path, "gray.tif", c1=c1)
+    seg = _seg(channels=[2, 1])
+    result = _predict_file(c, path, seg)
+    assert list(fake_segment[-1].channels) == [0, 0]
+    assert list(seg.channels) == [2, 1]
+    m = json.loads(_manifest_path(c, path.name).read_text(encoding="utf-8"))
+    assert m["seg_config"]["channels"] == [2, 1]
+    assert m["one_channel"] is True
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
+    assert result["one_channel_line"] == P.S3_LOG_ONE_CHANNEL.format(
+        patch="gray.tif", seg="2: green")
+
+
+def test_a_two_channel_patch_in_the_same_predict_keeps_its_codes(
+        w, tmp_path, fake_segment):
+    from ._one_channel import write_two_channel_patch, write_zyx_patch
+    c = _open(w, tmp_path)
+    seg = _seg(channels=[2, 1])
+    one = write_zyx_patch(tmp_path, "gray.tif")
+    two = write_two_channel_patch(tmp_path, "two.tif")
+    _predict_file(c, one, seg)
+    result = _predict_file(c, two, seg)
+    assert [list(s.channels) for s in fake_segment] == [[0, 0], [2, 1]]
+    m = json.loads(_manifest_path(c, "two.tif").read_text(encoding="utf-8"))
+    assert m["seg_config"]["channels"] == [2, 1]
+    assert "one_channel" not in m
+    assert result["one_channel_line"] is None
+
+
+def test_a_blank_box_on_a_one_channel_patch_records_none(w, tmp_path,
+                                                         fake_segment):
+    from ._one_channel import write_zyx_patch
+    c = _open(w, tmp_path)
+    path = write_zyx_patch(tmp_path, "gray.tif")
+    _predict_file(c, path, _seg(channels=[-1, 0]))
+    assert list(fake_segment[-1].channels) == [0, 0]
+    m = json.loads(_manifest_path(c, path.name).read_text(encoding="utf-8"))
+    assert m["seg_config"]["channels"] is None
+    assert m["one_channel"] is True
+
+
+def test_a_blank_box_never_reaches_cellpose_on_a_two_channel_patch(
+        w, tmp_path, fake_segment):
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
+
+    from ._one_channel import write_two_channel_patch
+    c = _open(w, tmp_path)
+    path = write_two_channel_patch(tmp_path, "two.tif")
+    with pytest.raises(ValueError, match=P.S3_GATE_PICK_CHANNEL):
+        _predict_file(c, path, _seg(channels=[-1, 0]))
+    assert fake_segment == []
+    assert not _manifest_path(c, "two.tif").exists()
+
+
+def test_the_flag_is_written_only_when_true():
+    m = S.build_prediction_manifest(patch_name="P1.tif", axes="CZYX",
+                                    seg_config=_seg())
+    assert "one_channel" not in m
+    m = S.build_prediction_manifest(patch_name="P1.tif", axes="ZYX",
+                                    seg_config=_seg(), one_channel=True)
+    assert m["one_channel"] is True
+    assert m["seg_config"]["channels"] == [2, 1]
+
+
+def test_with_channels_is_a_copy():
+    seg = _seg(channels=[2, 1])
+    out = S.with_channels(seg, [0, 0])
+    assert list(out.channels) == [0, 0]
+    assert list(seg.channels) == [2, 1]
+    assert S.with_channels(seg, None).channels is None
+    assert S.with_channels({"channels": [1, 0]}, [0, 0]) == {
+        "channels": [1, 0]}
+
+
+def test_the_reconstruction_of_a_one_channel_patch_carries_the_asked_codes(
+        w, tmp_path, fake_segment):
+    """Its newest reconstruction is what "This run's last reconstruction"
+    and Step 4's "Step 3 run" read: never [0, 0]."""
+    from ._one_channel import write_zyx_patch
+    c = _open(w, tmp_path)
+    path = write_zyx_patch(tmp_path, "gray.tif")
+    _predict_file(c, path, _seg(channels=[1, 0]))
+    recorded, extra = c._recon_recorded_seg("gray.tif", _seg(channels=[3, 3]),
+                                            0.0)
+    assert list(recorded.channels) == [1, 0]
+    assert extra["seg_config_source"] == "prediction"
+    # the prediction manifest goes with Clean intermediates; the
+    # reconstruction keeps the flag
+    assert extra["one_channel"] is True
+
+
+def test_a_two_channel_reconstruction_carries_no_flag(w, tmp_path,
+                                                      fake_segment):
+    from ._one_channel import write_two_channel_patch
+    c = _open(w, tmp_path)
+    path = write_two_channel_patch(tmp_path, "two.tif")
+    _predict_file(c, path, _seg(channels=[2, 1]))
+    _, extra = c._recon_recorded_seg("two.tif", _seg(), 0.0)
+    assert "one_channel" not in extra

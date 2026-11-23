@@ -49,8 +49,10 @@ def _sentences():
     from packages.epicycle_annotator import add_preview as AP
     from packages.epicycle_annotator.batch_refine import ADD_BATCH_BUSY
     from packages.epicycle_annotator.reshape import region as R
+    # the refusal every door shares when an edit is open; the Add tab says it too
+    from napari_epicycle.annotator._staged_op_text import STAGED_WORK_OPEN
 
-    out = []
+    out = [STAGED_WORK_OPEN]
     out += _module_strings(AP)
     out += [v for _k, many, one in AP._COUNT_PARTS for v in (many, one)]
     out += _module_strings(AFW)
@@ -59,6 +61,29 @@ def _sentences():
             if k.startswith("ADD_") and isinstance(v, str)]
     out += [ADD_BATCH_BUSY]
     out += list(STAGE_TEXT.values())          # the busy strip's stage line
+    # Inside each cell's stage lines come from its recipe, word for word
+    from packages.epicycle_annotator import add_derive as AD
+
+    out += list(AD.DERIVE_STAGES)
+    out += [AD.DERIVE_LOOP_CELLS_WITH, AD.DERIVE_LOOP_EMPTY_CELLS,
+            AD.DERIVE_LOOP_NUCLEI]
+    # S1's found / added lines with the two-nuclei tail
+    for head in (AP.ADD_S1_FOUND, AP.ADD_S1_FOUND_ONE):
+        for tail in (AP.ADD_S1_TWO_TAIL, AP.ADD_S1_TWO_TAIL_ONE):
+            out.append(head + AP.ADD_NOTE_COUNTS_SEP + tail)
+            # the two-nuclei tail comes LAST, after the unticked one
+            for mid in (AP.ADD_S1_UNTICKED, AP.ADD_S1_UNTICKED_PLAIN):
+                out.append(head + mid + AP.ADD_NOTE_COUNTS_SEP + tail)
+    for head in (AP.ADD_S1_ADDED, AP.ADD_S1_ADDED_ONE):
+        for tail in (AP.ADD_S1_ADDED_TWO_TAIL, AP.ADD_S1_ADDED_TWO_TAIL_ONE):
+            out.append(head + AP.ADD_NOTE_COUNTS_SEP + tail)
+    # S1 with nothing ticked: the count, the two-nuclei tail if any, then
+    # the none-ticked tail that names All
+    for head, none in ((AP.ADD_S1_FOUND, AP.ADD_S1_NONE_TICKED),
+                       (AP.ADD_S1_FOUND_ONE, AP.ADD_S1_NONE_TICKED_ONE)):
+        out.append(head + none)
+        for tail in (AP.ADD_S1_TWO_TAIL, AP.ADD_S1_TWO_TAIL_ONE):
+            out.append(head + AP.ADD_NOTE_COUNTS_SEP + tail + none)
     out += [getattr(mod, name) for mod in (AP, AFW, R)
             for name in _ALLOWED_OTHER if hasattr(mod, name)]
     # S1's two composed lines: the found count + its unticked tail, and
@@ -190,6 +215,49 @@ def test_the_marker_items_are_named():
     assert AP.ADD_ITEM_RUN.split("{")[0].strip() in guide
 
 
+def test_the_look_for_items_and_the_new_rows_are_named():
+    """Look for nuclei's items, the Whole patch buttons, the two chips and
+    the three Inside rows of Advanced -- every word the page shows for
+    them."""
+    from packages.epicycle_annotator import add_preview as AP
+
+    guide = _norm(_guide())
+    for item in (AP.ADD_LOOK_FOR_LABEL, AP.ADD_LOOK_ANYWHERE,
+                 AP.ADD_LOOK_NO_RUN, AP.ADD_LOOK_INSIDE.split("{")[0].strip(),
+                 AP.ADD_WHOLE_BTN, AP.ADD_CHIP_TWO, AP.ADD_CHIP_CUT,
+                 "Nucleus radius", "Nucleus edge",
+                 "Gap that splits two nuclei"):
+        assert item in guide, item
+
+
+def test_the_cells_items_and_rows_are_named():
+    """Tissue outline's and Grow by's items (the grey forms too), Show the
+    tissue outline and the Advanced rows of Cells -- every word the page
+    shows for them."""
+    from packages.epicycle_annotator import add_preview as AP
+
+    guide = _norm(_guide())
+    for item in (AP.ADD_OUTLINE_LABEL, AP.ADD_OUTLINE_CLEARED,
+                 AP.ADD_OUTLINE_CLEARED_GREY, AP.ADD_OUTLINE_SHRINK,
+                 AP.ADD_OUTLINE_NONE, AP.ADD_SHOW_OUTLINE,
+                 AP.ADD_GROW_LABEL, AP.ADD_GROW_FLOOD,
+                 AP.ADD_GROW_SPREAD,
+                 AP.ADD_GROW_SPREAD_GREY, AP.ADD_WALL_COST_LABEL,
+                 AP.ADD_GROWTH_LIMIT_LABEL, AP.ADD_INCLUDE_MEMBRANE,
+                 AP.ADD_BRIDGE_LABEL):
+        assert item in guide, item
+    for section in ("## How cells grow", "## The tissue outline",
+                    "### Cells: the whole patch"):
+        assert section in _guide(), section
+
+
+def test_the_guide_names_no_banned_word():
+    body = _guide().lower()
+    for word in ("envelope", "geodesic", "provenance", " proxy", " roi ",
+                 " lut "):
+        assert word not in body, word
+
+
 # --------------------------------------------------------------------------- #
 # the old guide's false claims stay gone
 # --------------------------------------------------------------------------- #
@@ -214,20 +282,46 @@ def _body_without_what_changed():
     "Uncheck cells",
     "Smooth added cells",
     "Recenter on crosshair",
+    # the tissue outline is drawn in the side views too now
+    "main view only",
+    "not drawn in the three side views",
+    # a Cells whole patch is filled to the walls in one go, not in pieces
+    "Cells are filled in pieces",
+    "filled in one piece",
+    "Piece 2 of 5",
+    "A whole patch always spreads",
+    "Stop works between pieces",
+    "Fill to the walls (boxes only)",
+    "every setting of Spread is in microns",
+    "about 5 µm",
+    # markers are placed on a whole patch too, and From lists Click markers
+    "places nothing",
+    "Boxes only",
+    "lists only the other runs",
 ])
 def test_a_retired_claim_is_not_back(phrase):
     assert phrase not in _body_without_what_changed()
 
 
 def test_the_corrected_claims_are_there():
+    from packages.epicycle_annotator import add_preview as AP
+
     body = _body_without_what_changed()
     assert "where the crosshair is" in body                      # (1)
     assert "Drag the outline" in body                            # (2)
     assert "voxels (0.6 million)" in body                        # (4)
     assert "just above the two buttons at the bottom" in body    # (5)
-    for word in ("**Discard**", "**Cancel**", "**Done**"):       # (6)
+    for word in ("**Discard**", "**Close box**", "**Done**",    # (6)
+                 "**Undo all**"):
         assert word in body
     assert "in the preview" in body                              # (7)
+    # the outline in the side views: the claim itself must be there, not
+    # only the old claim absent
+    assert "in the main view and in the three side views" in body
+    assert _norm(AP.ADD_HELP_SHOW_OUTLINE) in body
+    assert _norm(AP.ADD_OUTLINE_DRAWING) in body
+    # a slice along the tissue's top or bottom tints the whole tissue
+    assert "the whole tissue there takes a cyan tint" in body
 
 
 def test_the_no_clahe_sentence_lives_here():
@@ -263,6 +357,73 @@ def test_the_marker_list_is_explained():
     assert ("Unticking a marker leaves a gap in the numbering; the other "
             "colours do not change.") in guide
     assert "A double click places two markers" not in guide
-    for q in ("Tick at least one marker to cut",
+    for q in ("Tick at least one object to grow from",
               "That spot is already inside marker"):
         assert q in guide, q
+
+
+def test_the_clear_menu_items_and_confirm_buttons_are_named(widget,
+                                                            monkeypatch):
+    """The menu's two items (QActions) and the confirm's two buttons are not
+    on the page, so the page scan above never sees them: pinned here."""
+    import napari_epicycle.ui_shell.theme as TH
+    from napari_epicycle.annotator.curation_3d_widget import (
+        Curation3DAnnotator,
+    )
+    from packages.epicycle_annotator import add_preview as AP
+
+    guide = _norm(_guide())
+    items = [a.text() for a in widget.add_clear_menu.actions()]
+    assert items == [AP.ADD_CLEAR_ITEM_BOX, AP.ADD_CLEAR_ITEM_PATCH]
+    seen = {}
+
+    def _fake_confirm(parent, title, text, **kw):
+        seen.update(kw, title=title)
+        return False
+
+    monkeypatch.setattr(TH, "themed_confirm", _fake_confirm)
+    assert Curation3DAnnotator._add_clear_confirm(object(), "text") is False
+    assert seen["title"] == AP.ADD_CLEAR_CONFIRM_TITLE
+    assert seen["confirm_text"] == AP.ADD_CLEAR_CONFIRM_OK
+    assert seen["cancel_text"] == AP.ADD_CLEAR_CONFIRM_BACK
+    assert seen["accent"] == "red"
+    for word in (AP.ADD_CLEAR_ITEM_BOX, AP.ADD_CLEAR_ITEM_PATCH,
+                 AP.ADD_CLEAR_CONFIRM_OK, AP.ADD_CLEAR_CONFIRM_BACK):
+        assert "**{}**".format(word) in guide, word
+    assert "titled *{}*".format(AP.ADD_CLEAR_CONFIRM_TITLE) in guide
+
+
+def test_the_whole_patch_fill_is_described():
+    """A Cells whole patch fills to the walls with a background marker: the
+    new sentences are quoted, the growth limit's default and what it means
+    in very dark cytoplasm are said, and the walls picture is one slice."""
+    from packages.epicycle_annotator import add_preview as AP
+
+    body = _body_without_what_changed()
+    for text in (AP.ADD_HELP_WHOLE_FILL, AP.ADD_AMBER_ONE_CHANNEL_WHOLE,
+                 AP.ADD_HELP_GROWTH_LIMIT, AP.ADD_HELP_GROW,
+                 AP.ADD_WHOLE_TIP, AP.ADD_NOTE_DARK_OFF_LEAK_WHOLE,
+                 AP.ADD_S1_WARMING, AP.ADD_WHOLE_NEEDS_NUMBA,
+                 AP.ADD_WHOLE_NEEDS_NUMBA_CACHE,
+                 AP.whole_too_big_line(150_000_000),
+                 AP.ADD_S1_PARKED_REFUSED,
+                 AP.ADD_SUM_ADVANCED_FILL,
+                 AP.ADD_SUM_ADVANCED_FILL_NO_MEMBRANE):
+        assert _norm(text) in body, text
+    assert ("In very dark cytoplasm the same limit lets a cell go further, "
+            "about 10 µm.") in body
+    assert "28 by default" in body
+    assert "at the depth of the XY view" in body
+    # the size limit the guide names is the fill's own ceiling
+    from packages.epicycle_annotator.reshape import region as R
+
+    limit = "{:g}".format(R.WHOLE_FILL_MAX_VOXELS / 1_000_000)
+    assert "A whole patch can be filled up to {} million voxels".format(
+        limit) in body
+    # the stage line Stop is said to act during, as the strip shows it
+    assert "while the grey line says *\"Finding markers...\"*" in body
+    # the parked refusal no longer claims what a reopened annotator undoes
+    assert "two fills never run at once" not in body
+    assert "Stop, honestly" not in body
+    assert "Tissue far from every marker stays empty." in body
+    assert "Tissue with no marker stays empty" not in body

@@ -606,6 +606,8 @@ def contour_refine(
     size_budget: int | None = None,
     progress=None,
     cancel_event=None,
+    spacing_source=None,
+    _diag=None,
 ) -> ContourResult:
     """Slide one object's outline onto the image (REFINE).
 
@@ -654,7 +656,37 @@ def contour_refine(
     ``hit_limit``,
     ``mean_move_um``, ``max_move_um``, ``traced``, ``total``, ``capped``,
     ``plane_seconds`` and ``rebuild_seconds``.
+
+    One ``[CONTOUR]`` line per run is printed with the numbers the run
+    actually used (``spacing_source`` is only a label for it).
     """
+    import time as _time
+
+    t_start = _time.perf_counter()
+    res = _contour_refine_run(
+        volume_roi, label_id, mode=mode, elevation=elevation,
+        image_roi=image_roi, spacing=spacing, limit_um=limit_um,
+        iterations=iterations, smoothing=smoothing, balloon=balloon,
+        gate=gate, lambda1=lambda1, lambda2=lambda2, band_um=band_um,
+        neighbor_constraint=neighbor_constraint, sharpness=sharpness,
+        orientation=orientation, sampling=sampling, share_pct=share_pct,
+        n_slices=n_slices, rebuild_sigma=rebuild_sigma,
+        rebuild_um=rebuild_um, size_budget=size_budget, progress=progress,
+        cancel_event=cancel_event)
+    diag = dict(_diag or {}, sharpness=sharpness, iterations=iterations,
+                smoothing=smoothing)
+    _print_contour_line(res, volume_roi, label_id, mode, spacing,
+                        spacing_source, elevation, image_roi, diag,
+                        _time.perf_counter() - t_start)
+    return res
+
+
+def _contour_refine_run(
+    volume_roi, label_id, *, mode, elevation, image_roi, spacing, limit_um,
+    iterations, smoothing, balloon, gate, lambda1, lambda2, band_um,
+    neighbor_constraint, sharpness, orientation, sampling, share_pct,
+    n_slices, rebuild_sigma, rebuild_um, size_budget, progress, cancel_event,
+) -> ContourResult:
     import time as _time
 
     from scipy.ndimage import distance_transform_edt, gaussian_filter1d
@@ -880,6 +912,69 @@ def contour_refine(
 
 
 
+def _print_contour_line(res, volume_roi, label_id, mode, spacing, source,
+                        elevation, image_roi, diag, seconds) -> None:
+    """The one ``[CONTOUR]`` line of a run: the numbers it really used.
+
+    Cheap (one distance transform on the ROI, and only when the object
+    changed) and it never raises.
+    """
+    try:
+        d = dict(diag or {})
+        if isinstance(mode, (int, np.integer)):
+            mode = CONTOUR_MODES[int(mode)]
+        det = res.details
+        sp = tuple(float(s) if float(s) > 0 else 1.0 for s in spacing)
+        vol = np.asarray(volume_roi)
+        before = int(np.count_nonzero(vol == int(label_id)))
+        after = int(np.count_nonzero(np.asarray(res[0]) == int(label_id)))
+        mean_um = max_um = 0.0
+        if int(res[1]) > 0 and before and after:
+            from scipy.ndimage import distance_transform_edt
+
+            old = vol == int(label_id)
+            new = np.asarray(res[0]) == int(label_id)
+            diff = old != new
+            # distance (um) from each changed voxel to the other shape
+            d_to_new = distance_transform_edt(~new, sampling=sp)
+            d_to_old = distance_transform_edt(~old, sampling=sp)
+            moved = np.where(old, d_to_new, d_to_old)[diff]
+            mean_um = float(moved.mean())
+            max_um = float(moved.max())
+        chan = d.get("channel")
+        if chan is None:
+            chan = image_roi
+        if chan is not None:
+            c = np.asarray(chan)
+            chan_txt = "{}[{:.4g},{:.4g}]".format(
+                c.dtype, float(c.min()), float(c.max()))
+        else:
+            chan_txt = "none"
+        if elevation is not None:
+            e = np.asarray(elevation)
+            p1, p99 = np.percentile(e, (1, 99))
+            wall_txt = "p1={:.4g} p99={:.4g}".format(float(p1), float(p99))
+        else:
+            wall_txt = "p1=none p99=none"
+        chan_name = d.get("channel_name") or "none"
+        print("[CONTOUR] mode={} channel={} channel_name={!r} walls({}) gate={:.3g} k={:.3g} "
+              "balloon={:.3g} iter={} smoothing={} spacing={} src={} roi={} "
+              "vox_before={} vox_after={} mean_um={:.3f} max_um={:.3f} "
+              "reason={} seconds={:.2f}".format(
+                  mode, chan_txt, chan_name, wall_txt, float(det.get("gate", 0.0)),
+                  float(d.get("sharpness", float("nan"))),
+                  float(det.get("balloon", 0.0)),
+                  d.get("iterations"), d.get("smoothing"),
+                  tuple(round(s, 4) for s in sp), source,
+                  tuple(int(n) for n in vol.shape), before, after,
+                  mean_um, max_um, det.get("reason"), float(seconds)))
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic, never a crash
+        try:
+            print("[CONTOUR] (line failed: {!r})".format(exc))
+        except Exception:
+            pass
+
+
 def contour_with_walls(
     volume_roi: np.ndarray,
     label_id: int,
@@ -893,6 +988,8 @@ def contour_with_walls(
     spacing=(1.0, 1.0, 1.0),
     progress=None,
     cancel_event=None,
+    spacing_source=None,
+    channel_name=None,
     **contour_kw,
 ) -> ContourResult:
     """Prepare the channel, build the wall picture, then run the contour --
@@ -955,7 +1052,9 @@ def contour_with_walls(
     res = contour_refine(
         volume_roi, label_id, mode=mode, elevation=elevation,
         image_roi=image, spacing=spacing, progress=progress,
-        cancel_event=cancel_event, **contour_kw)
+        cancel_event=cancel_event, spacing_source=spacing_source,
+        _diag={"channel": channel_roi, "channel_name": channel_name},
+        **contour_kw)
     res.details["elevation"] = elevation
     return res
 

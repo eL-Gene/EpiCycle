@@ -100,6 +100,24 @@ _ASSIGN_STYLE = (theme.PRIMARY_BTN_STYLE
                  + "QPushButton { padding: 4px 12px; }")
 
 
+def _describe_feature(column: str) -> str:
+    """The one-sentence description of a measured feature (the sentences
+    the QC Extraction dialog shows), or "" for a column with none."""
+    try:
+        from ..segmentation.analysis_widget import _get_feature_description
+    except Exception:  # noqa: BLE001 -- a tooltip never breaks the plot
+        return ""
+    return _get_feature_description(str(column))
+
+
+#: What the plot is built with: its words, where a feature's description
+#: comes from (the X, Y and Colour by tooltips), and that "QC status" is
+#: offered only on a table with a ``qc_status`` column (the panel's
+#: threshold filter that wrote it is gone).
+_PLOT_TEXTS = {**T.STEP3_PLOT_TEXTS, "describe": _describe_feature,
+               "QC_STATUS_NEEDS_COLUMN": True}
+
+
 def _card_style(edge: str) -> str:
     return (
         "QWidget#qcSelectionCard {"
@@ -615,7 +633,7 @@ class QCPlotArea(QWidget):
         pin_lay.setSpacing(0)
         self._pinned = pinned
         self.qc_plot_widget = QCPlotWidget(
-            pinned, layout="workbench", texts=T.STEP3_PLOT_TEXTS,
+            pinned, layout="workbench", texts=_PLOT_TEXTS,
             palette=theme.STEP3_PLOT_PALETTE, tier_scheme=STEP3_SCHEME)
         pin_lay.addWidget(self.qc_plot_widget, 1)
         # The plot clamps at WB_PLOT_MAX_H: the spare room goes here.

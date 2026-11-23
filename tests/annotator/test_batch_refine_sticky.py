@@ -58,6 +58,8 @@ def _reject_ann(dlg):
     ann._batch_refine_dialog = dlg
     # Stub the side-effect helpers.
     ann._sync_calls = []
+    # Nothing is isolated in these tests; a bare instance cannot say so itself.
+    ann._iso_live_ids = lambda: frozenset()
     ann._sync_all_views_after_operation = lambda roi=None: ann._sync_calls.append(roi)
     ann._lock_fires = []
     ann._fire_batch_refine_lock = lambda active: ann._lock_fires.append(active)

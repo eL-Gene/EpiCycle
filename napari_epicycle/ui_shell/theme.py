@@ -7,8 +7,9 @@ from pathlib import Path as _Path
 
 from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QSizePolicy, QStyledItemDelegate, QTextBrowser, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
+    QScrollArea, QSizePolicy, QStyledItemDelegate, QTextBrowser, QVBoxLayout,
+    QWidget,
 )
 
 
@@ -21,8 +22,13 @@ MONO_LABEL_STYLE = f"color: #aaaaaa; font-size: 11px; {MONO_FONT}"
 
 
 def _qta_icon_or_none(icon_name: str, color: str):
-    """Return a qtawesome QIcon, or None if unavailable."""
-    if not icon_name:
+    """Return a qtawesome QIcon, or None if unavailable.
+
+    None with no QApplication: qtawesome builds its icon-font set once, on
+    the first icon asked for, and a set built with no application holds no
+    fonts and is never rebuilt -- every later icon of the process would
+    fail ("Invalid font prefix")."""
+    if not icon_name or QApplication.instance() is None:
         return None
     try:
         import qtawesome as qta
@@ -1860,13 +1866,17 @@ QPushButton:hover {
 def themed_confirm(parent, title: str, message: str,
                    confirm_text: str = "Continue",
                    cancel_text: str = "Cancel",
-                   accent: str = "amber") -> bool:
+                   accent: str = "amber",
+                   default: str = "confirm") -> bool:
     """Show a dark-themed confirmation dialog. Returns True if confirmed.
 
     Args:
         accent: ``"amber"`` (Build/Step 3), ``"green"`` (Apply/Step 4) or
             ``"red"`` (a destructive confirm: Remove, Reset, Clear 2D
             predictions).
+        default: which button Enter presses -- ``"confirm"`` (the default)
+            or ``"cancel"`` (a destructive confirm that should be hard to
+            accept by reflex; Escape cancels either way).
     """
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
@@ -1906,7 +1916,12 @@ def themed_confirm(parent, title: str, message: str,
     )
     confirm_btn.setStyleSheet(btn_style)
     confirm_btn.clicked.connect(dlg.accept)
-    confirm_btn.setDefault(True)
+    if default == "cancel":
+        cancel_btn.setDefault(True)
+        cancel_btn.setAutoDefault(True)
+        confirm_btn.setAutoDefault(False)
+    else:
+        confirm_btn.setDefault(True)
 
     btn_row.addWidget(cancel_btn)
     btn_row.addWidget(confirm_btn)

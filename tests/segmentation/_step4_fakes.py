@@ -236,7 +236,9 @@ class UI:
         return list(getattr(self, "ticked", []))
 
     def chosen_channels(self):
-        return self.chan1_combo.currentIndex(), None
+        # the real panel's contract: two Cellpose codes (-1 = blank first box)
+        return (self.chan1_combo.currentIndex(),
+                max(self.chan2_combo.currentIndex(), 0))
 
     def get_checked_channels(self):
         return []

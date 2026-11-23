@@ -24,7 +24,28 @@ split's fragment-refine sub-mode (see the predicates below).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class StagedOp(Enum):
+    """The kinds of open edit that block saving, switching and starting
+    another edit.  Declared in priority order: the first member present
+    in a set picks the sentence and the tab that is shown to the user."""
+
+    BATCH = "batch"
+    RESHAPE = "reshape"
+    INTERPOLATE = "interpolate"
+    ADD = "add"
+    REFINE = "refine"
+    MERGE = "merge"
+
+
+# Kinds that make the navigator's Isolate doors, the lasso and the
+# paint-isolation toggle refuse: the edits that own the isolated layer.
+ISOLATION_BLOCKING = frozenset(
+    {StagedOp.RESHAPE, StagedOp.REFINE, StagedOp.INTERPOLATE}
+)
 
 
 @dataclass
@@ -66,6 +87,14 @@ class RefinementOpState:
     #     / preview applied) no other op may start and no destructive
     #     label action / merge / patch-switch may run. ---
     batch_refine_active: bool = False
+    # A batch is computing or its preview is awaiting Accept / Reject.  An
+    # open but idle dialog is NOT an open edit (``batch_refine_active``
+    # covers the dialog being present).
+    batch_op_open: bool = False
+
+    # --- Add: True from Add Start until Accept / Cancel (a REVIEW that is
+    #     only waiting for the user to look is not an open edit). ---
+    add_active: bool = False
 
     # --- Drawing / merge (mirrors annotator-side flags that are NOT
     #     refinement-op state but DO gate destructive label-action
@@ -74,6 +103,37 @@ class RefinementOpState:
     merge_dialog_open: bool = False
 
     # --- Predicates: cross-op gating ---
+
+    def staged_kinds(self) -> frozenset:
+        """Every kind of open edit right now (empty at idle).
+
+        Doors test membership or intersection of this set, never a single
+        kind: a Refine Preview inside a fragment refine, or an idle Batch
+        dialog behind a Reshape, must not hide a kind.
+        """
+        kinds = set()
+        if self.batch_op_open:
+            kinds.add(StagedOp.BATCH)
+        if self.split_active:
+            kinds.add(StagedOp.RESHAPE)
+        if self.interp_active:
+            kinds.add(StagedOp.INTERPOLATE)
+        if self.add_active:
+            kinds.add(StagedOp.ADD)
+        if self.smooth_active:
+            kinds.add(StagedOp.REFINE)
+        if self.merge_dialog_open:
+            kinds.add(StagedOp.MERGE)
+        return frozenset(kinds)
+
+    def staged_op_kind(self) -> StagedOp | None:
+        """The highest-priority open kind, or None at idle.  Only for
+        picking a sentence or a tab; doors use ``staged_kinds``."""
+        kinds = self.staged_kinds()
+        for kind in StagedOp:
+            if kind in kinds:
+                return kind
+        return None
 
     @property
     def any_op_active(self) -> bool:
@@ -85,11 +145,10 @@ class RefinementOpState:
         and the widget-side navigation gates that read this property —
         automatically refuse while a batch is staged.
         """
-        return (
-            self.interp_active
-            or self.split_active
-            or self.smooth_active
-            or self.batch_refine_active
+        # A merge dialog is excluded so Merge Into can still retarget an
+        # open dialog; an idle Batch dialog still counts.
+        return bool(
+            (self.staged_kinds() - {StagedOp.MERGE}) or self.batch_refine_active
         )
 
     def can_start_interp(self) -> bool:
@@ -106,6 +165,11 @@ class RefinementOpState:
         if self.split_active and not self.split_fragment_refine:
             return False
         return True
+
+    def can_start_add(self) -> bool:
+        """Add starts only when no other edit is open (any kind, a merge
+        dialog and a running batch included)."""
+        return not self.staged_kinds()
 
     def can_start_split(self) -> bool:
         """Encodes the existing rule at curation_3d_widget.py:3432-3436.

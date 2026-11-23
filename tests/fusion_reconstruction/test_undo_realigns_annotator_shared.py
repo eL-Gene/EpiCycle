@@ -264,3 +264,25 @@ def test_refresh_realigns_every_active_labels_layer():
     ctrl._refresh_annotator_subviewers()
     assert ann.sync_manager.shared_labels[NAME] is layer.data
     assert ann.sync_manager.shared_labels["second"] is other.data
+
+
+def test_the_main_undo_of_an_add_accept_tells_the_add_page():
+    """An Add Accept taken back by the main Undo: the Add page hears which
+    one (its review then drops those rows), so it never lists objects that
+    are gone.  Undo all reaches the same path."""
+    before, layer, shared = _launch(np.int32)
+    ann = _make_annotator(layer, shared)
+    heard = []
+    ann._add_after_accept_undone = heard.append
+    ctrl = _make_controller(layer, ann)
+    roi = (slice(0, 5), slice(0, 6), slice(0, 6))
+    _accept_add(ctrl, layer, ann, roi)
+    ctrl._undo_last_curation()
+    assert heard == [9]
+    assert np.array_equal(layer.data, before)
+    # an entry of another kind says nothing
+    ctrl._commit_curation_action(
+        "delete", 4, "Deleted 4", roi_slices=roi,
+        old_roi_data=layer.data[roi].copy())
+    ctrl._undo_last_curation()
+    assert heard == [9]

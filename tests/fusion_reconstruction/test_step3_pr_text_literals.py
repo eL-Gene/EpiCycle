@@ -48,6 +48,10 @@ SCOPE = {
         "_build_curation_bucket",
         # R7w: Session's Set spacing… row and its gate
         "_build_session_spacing_row", "set_session_spacing_gate",
+        # the Patches rows' eye
+        "set_pr_eye_locked",
+        # the eye's refusal under the list while a run owns the foot
+        "show_pr_list_note",
     ),
     "controller.py": (
         "_apply_recon_defaults", "_on_epicycle_defaults_clicked",
@@ -74,7 +78,8 @@ SCOPE = {
         # V1: the ticks, the missing files, Forget, the lock line
         "_ticked_patch_names", "_pr_stored_ticks", "_pr_runnable",
         "_pr_set_item_ticked", "_on_pr_item_changed", "_on_pr_ticks_changed",
-        "_pr_tick_rows", "_on_pr_tick_all_unprocessed", "_on_pr_tick_every",
+        "_pr_tick_rows", "_on_pr_tick_all_unprocessed", "_on_pr_untick_all",
+        "_on_pr_tick_every",
         "_recompute_missing_patches", "_pr_check_files", "_pr_row_menu",
         "_pr_forget_refusal", "_forget_patch", "_pr_forget_reset_view",
         "_refresh_pr_lock", "_on_pr_lock_timer", "_pr_row_manifests",
@@ -105,6 +110,25 @@ SCOPE = {
         "_spacing_stale_names", "_open_set_spacing", "_on_qc_spacing_found",
         "_extraction_spacing_used", "_record_extraction_spacing",
         "_write_qc_extraction_context", "_check_qc_extraction_staleness",
+        # a new run starts clean: its seed, the run's channel memory, the
+        # model overlay, the one-channel patches
+        "_new_run_seed", "_channel_word", "_log_new_run_seed",
+        "_overlay_widget_names", "_reapply_model_overlay",
+        "_memory_writes_blocked", "_remember_run_channels",
+        "_remember_run_specks", "_apply_run_memory",
+        "_restore_start_from_choice", "_one_channel_patches",
+        # the Patches rows' eye, the row menu and the prediction window
+        "_pr_has_made_by", "_on_pr_eye", "_prediction_refusal",
+        "_live_prediction_windows", "_on_show_prediction",
+        "_on_prediction_choice", "_start_prediction_load",
+        "_prediction_load_current", "_on_prediction_preview_loaded",
+        "_on_prediction_preview_failed", "_on_prediction_thread_finished",
+        "_close_prediction_windows", "_sweep_prediction_threads",
+        # the live-run fixes: an older run's recorded channels, the eye's
+        # refusal under the list, the foot on a run switch, the window's
+        # run name
+        "_run_record_codes", "_pr_eye_say", "_reset_pr_foot",
+        "_active_run_counts", "_active_run_display_name",
         # (not _on_serial_pred_patch_done: older code with its own words)
     ),
     # R2b part 2: the cell width's two lines (kept out of ui.py)
@@ -115,11 +139,16 @@ SCOPE = {
     # V1: the rows' records and Forget (Qt-free)
     "_step3_rows.py": None,
     "_step3_forget.py": None,
+    # a new run's channels and the one-channel rule (Qt-free)
+    "_step3_channels.py": None,
     # V2: the pictures' engine (V2a; its words now in _step3_pr_text)
     "_step3_thumbs.py": None,
     # R6: the model provenance (Qt-free) and its details window
     "_model_provenance.py": None,
     "_model_provenance_dialog.py": None,
+    # the prediction window: its reads (Qt-free) and the window
+    "_prediction_preview.py": None,
+    "_prediction_preview_dialog.py": None,
 }
 
 #: method calls whose FIRST argument is a sentence on screen

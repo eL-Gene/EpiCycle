@@ -183,6 +183,38 @@ FEATURE_REGISTRY: list[FeatureGroup] = [
 ]
 
 
+def _cross_run_pairing(*, labels, df, match_labels, **kw):
+    from napari_epicycle.fusion_reconstruction.qc_pairing_group import (
+        cross_run_pairing,
+    )
+    return cross_run_pairing(labels=labels, df=df,
+                             match_labels=match_labels)
+
+
+#: The pairing check against another run of the same patch (Step 3 only).
+#: Not in ``FEATURE_REGISTRY``: :func:`with_cross_run_pairing` adds it only
+#: when another run is picked, and ``run_extraction`` skips it anyway
+#: without a ``match_labels`` input.
+CROSS_RUN_PAIRING = FeatureGroup(
+    name="cross_run_pairing",
+    fn=_cross_run_pairing,
+    requires=frozenset({"labels", "match_labels"}),
+)
+
+
+def with_cross_run_pairing(registry: list) -> list[FeatureGroup]:
+    """A copy of ``registry`` with :data:`CROSS_RUN_PAIRING` right after
+    ``core_morphology`` (first when there is none).  A registry that
+    already holds it comes back as an unchanged copy."""
+    out = list(registry)
+    if any(g.name == CROSS_RUN_PAIRING.name for g in out):
+        return out
+    at = next((i + 1 for i, g in enumerate(out)
+               if g.name == "core_morphology"), 0)
+    out.insert(at, CROSS_RUN_PAIRING)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Dynamic registry construction
 # ---------------------------------------------------------------------------
@@ -246,6 +278,7 @@ _CHANNEL_SUFFIXES = [
 
 def get_feature_manifest(
     checked_channels: Optional[list] = None,
+    include_match: bool = False,
 ) -> dict[str, list[str]]:
     """Return ``{category: [feature_names]}`` for the Extract Features dialog.
 
@@ -255,18 +288,23 @@ def get_feature_manifest(
 
     Args:
         checked_channels: List of ``{"index": int, "prefix": str}`` dicts.
+        include_match: The "Overlap with other run" category (the
+            pairing check against another run of the patch) is left out
+            unless this is True, as the channel groups are when no channel is checked.
 
     Returns:
         OrderedDict-style dict (insertion-ordered) mapping category names to
         lists of feature column names.
     """
     from napari_epicycle.segmentation.analysis_widget import (
-        _CATEGORY_ORDER, _FEATURE_CATEGORIES,
+        _CATEGORY_ORDER, _FEATURE_CATEGORIES, _MATCH_CATEGORY,
     )
 
     # Build {category: [features]} in display order
     manifest: dict[str, list[str]] = {}
     for cat in _CATEGORY_ORDER:
+        if cat == _MATCH_CATEGORY and not include_match:
+            continue
         feats = [f for f, c in _FEATURE_CATEGORIES.items() if c == cat]
         if feats:
             manifest[cat] = feats

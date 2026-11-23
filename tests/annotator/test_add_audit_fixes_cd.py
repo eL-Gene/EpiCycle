@@ -54,8 +54,8 @@ def test_the_unticked_sentence():
 def test_the_ticked_tail_drops_the_repeated_word():
     assert AP.ADD_S1_TICKED_TAIL == " · {k} of {n} ticked"
     line = AP.box_line((2, 3, 4), preset="cells", n_clicks=7, n_ticked=5)
-    assert line.endswith("· 7 markers placed · 5 of 7 ticked")
-    assert line.count("markers") == 1
+    assert line.endswith("· 7 objects marked · 5 of 7 ticked")
+    assert line.count("objects") == 1 and "markers" not in line
 
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +67,13 @@ class _Clock:
 
     def monotonic(self):
         return self.t
+
+    def perf_counter(self):
+        # the [ADD-PERF] laps read this clock too; their timing is not
+        # under test, so the real one
+        import time
+
+        return time.perf_counter()
 
 
 def test_a_double_clicks_second_press_is_quiet(h, monkeypatch):  # noqa: F811

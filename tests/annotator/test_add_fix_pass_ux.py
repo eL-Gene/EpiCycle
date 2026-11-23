@@ -95,6 +95,9 @@ def h(monkeypatch):
 
 def test_the_orchestrator_hands_the_panel_a_basename_not_a_path(h):
     h._add_run_guide_token = 1
+    # a refusal lands on a session (with no box up it is dropped and the
+    # run read again at the next box start -- see test_add_derive_wiring)
+    h.place_box((slice(0, 6), slice(0, 10), slice(0, 10)))
     path = r"C:\Users\someone\Desktop\workspace\artifacts\step3\runs\r1\labels.tif"
     h._on_add_guide_refused(
         "There is no file at {}. It may have been moved or renamed - pick "

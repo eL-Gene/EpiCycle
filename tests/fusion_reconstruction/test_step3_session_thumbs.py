@@ -1,4 +1,4 @@
-"""Session's patch rows with their pictures ((R5), item 3, rows 3, 23, 30; brick V2).
+"""Session's patch rows with their pictures (thumbnails).
 
 Session's ``loaded_patch_list`` is painted by the shared row painter in
 ``MODE_WIDE`` with ``show_tick=False`` (and no eye): thumbnail · name and the

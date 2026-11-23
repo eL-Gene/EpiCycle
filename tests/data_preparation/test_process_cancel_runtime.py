@@ -75,7 +75,7 @@ def test_worker_cancel_mid_run_emits_cancelled(app, monkeypatch):
 
     assert not thread.isRunning(), "worker did not stop after Cancel"
     thread.wait(2000)
-    # exactly one terminal signal, and it is the clean "cancelled" (grill B4)
+    # exactly one terminal signal, and it is the clean "cancelled"
     assert ("error", "cancelled") in got
     assert all(kind != "finished" for kind, _ in got)
 

@@ -1,4 +1,4 @@
-"""Contract tests for the guided-Split pickers in the Split tab (Reshape R1).
+"""Contract tests for the guided-Split pickers in the Split tab.
 
 These instantiate the REAL widget against an offscreen QApplication rather
 than inspecting its source, because the thing that must not break is
@@ -238,6 +238,9 @@ class TestSplitParams:
             # runs.  It is not a param -- it picks the `gamma` / `log`
             # TOKEN inside `seed_preproc` / `wall_preproc`, which are.
             "lift_mode",
+            # How many new pieces stay isolated after Accept -- read by
+            # the widget at Accept time, not an engine param.
+            "pieces_cap",
         }
         for key in p:
             assert key in structural or key in DEFAULT_PARAMS, (
@@ -1151,9 +1154,11 @@ class TestTheMarkerChannelCombo:
         widget.set_seed_channels(["nuclei", "dapi"], current="dapi")
         assert widget.split_seed_channel_combo.currentText() == "dapi"
 
-    def test_the_first_fill_still_selects_something(self, widget):
+    def test_the_first_fill_is_blank(self, widget):
+        # Changed: a first fill now starts BLANK (index -1) so a run with
+        # nothing chosen is refused instead of silently using channel 0.
         widget.set_seed_channels(["nuclei", "dapi"])
-        assert widget.split_seed_channel_combo.currentIndex() == 0
+        assert widget.split_seed_channel_combo.currentIndex() == -1
 
 
 class TestClearAlsoClearsTheMarkers:

@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 from qtpy.QtCore import QCoreApplication, QEvent, Qt
-from qtpy.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow
+from qtpy.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabBar
 
 from napari_epicycle.annotator import curation_3d_widget as CW
 from napari_epicycle.annotator import launcher as L
@@ -213,3 +213,185 @@ def test_empty_navigator_dock_is_purged_not_reused(qapp):
     assert "already open" not in msg
     docks = _docks_titled(viewer.main, L._NAVIGATOR_DOCK_NAME)
     assert [d.widget() for d in docks] == [widget]
+
+
+# ---------------------------------------------------------------------------
+# Floating the annotator docks needs one shared GL context
+# ---------------------------------------------------------------------------
+
+
+def _close_on_teardown(request, qapp, main):
+    """Close a shown window even when the test fails."""
+    def _close():
+        main.close()
+        main.deleteLater()
+        qapp.processEvents()
+    request.addfinalizer(_close)
+
+
+def _real_dock(viewer):
+    inner = QLabel("inner")
+    dock = viewer.window.add_dock_widget(inner, name="float-test")
+    return dock, inner
+
+
+def test_float_blocked_when_gl_contexts_not_shared(qapp, monkeypatch):
+    monkeypatch.setattr(L, "_gl_contexts_shared", lambda: False)
+    viewer = _Viewer()
+    dock, inner = _real_dock(viewer)
+    L._install_dock_close_hook(dock, inner)
+
+    feats = dock.features()
+    assert not (feats & QDockWidget.DockWidgetFloatable)
+    assert not (feats & QDockWidget.DockWidgetMovable)
+    dock.setFloating(True)  # napari's title-bar button does exactly this
+    assert not dock.isFloating()  # refused at once, not after a tick
+    qapp.processEvents()
+    assert not dock.isFloating()
+
+
+def test_probe_needs_a_global_share_context(qapp, monkeypatch):
+    from qtpy import QtGui
+
+    monkeypatch.setattr(QCoreApplication, "testAttribute", lambda self, a: True)
+    monkeypatch.setattr(
+        QtGui.QOpenGLContext, "globalShareContext", staticmethod(lambda: None)
+    )
+    assert L._gl_contexts_shared() is False
+
+
+def test_hint_names_the_fix_and_prints_once(qapp, monkeypatch, capsys):
+    monkeypatch.setattr(L, "_gl_contexts_shared", lambda: False)
+    viewer = _Viewer()
+    dock, inner = _real_dock(viewer)
+    L._install_dock_close_hook(dock, inner)
+    dock.setFloating(True)
+    dock.setFloating(True)
+    out = capsys.readouterr().out
+    assert out.count("floating disabled") == 1
+    assert "conda env config vars set -n <env> (or -p <prefix>) VISPY_PYQT5_SHARE_CONTEXT=true" in out
+
+
+def test_float_allowed_and_dock_raised_on_redock_when_shared(request, qapp, monkeypatch):
+    monkeypatch.setattr(L, "_gl_contexts_shared", lambda: True)
+    viewer = _Viewer()
+    sibling = QDockWidget("sibling", viewer.main)
+    sibling.setWidget(QLabel("s"))
+    viewer.main.addDockWidget(Qt.RightDockWidgetArea, sibling)
+    dock, inner = _real_dock(viewer)
+    viewer.main.tabifyDockWidget(sibling, dock)
+    _close_on_teardown(request, qapp, viewer.main)
+    viewer.main.show()
+    L._install_dock_close_hook(dock, inner)
+
+    assert dock.features() & QDockWidget.DockWidgetFloatable
+    dock.setFloating(True)
+    qapp.processEvents()
+    assert dock.isFloating()
+    dock.setFloating(False)
+    qapp.processEvents()
+    assert not dock.isFloating()
+    bars = [b for b in viewer.main.findChildren(QTabBar) if b.count() > 1]
+    assert bars and bars[0].tabText(bars[0].currentIndex()) == "float-test"
+
+
+def test_float_hook_connected_once_across_reuse(qapp, monkeypatch):
+    monkeypatch.setattr(L, "_gl_contexts_shared", lambda: True)
+    viewer = _Viewer()
+    dock, inner = _real_dock(viewer)
+    raised = []
+    monkeypatch.setattr(dock, "raise_", lambda: raised.append(1))
+    L._install_dock_close_hook(dock, inner)
+    L._install_dock_close_hook(dock, inner)  # the reuse path
+
+    dock.setFloating(True)
+    dock.setFloating(False)
+    qapp.processEvents()
+    assert raised == [1]
+
+
+def test_new_dock_holding_same_widget_is_configured(qapp, monkeypatch):
+    monkeypatch.setattr(L, "_gl_contexts_shared", lambda: False)
+    viewer = _Viewer()
+    dock, inner = _real_dock(viewer)
+    L._install_dock_close_hook(dock, inner)
+    dock2 = QDockWidget("second", viewer.main)
+    L._configure_dock_floating(dock2, inner)
+    assert not (dock2.features() & QDockWidget.DockWidgetFloatable)
+
+
+def test_real_napari_float_button_does_not_reparent(request, qapp, monkeypatch):
+    from napari._qt.widgets.qt_viewer_dock_widget import QtViewerDockWidget
+    from qtpy.QtWidgets import QWidget
+
+    monkeypatch.setattr(L, "_gl_contexts_shared", lambda: False)
+    main = QMainWindow()
+    host = QWidget(main)
+    sibling = QtViewerDockWidget(host, QLabel("s"), name="EpiCycle Plugin")
+    main.addDockWidget(Qt.RightDockWidgetArea, sibling)
+    inner = QLabel("annotator")
+    dock = QtViewerDockWidget(host, inner, name="annot")
+    main.addDockWidget(Qt.RightDockWidgetArea, dock)
+    main.tabifyDockWidget(sibling, dock)
+    _close_on_teardown(request, qapp, main)
+    main.show()
+    dock.raise_()
+    qapp.processEvents()
+    ran = []
+    inner._dock_close_hook_fired = False
+    L._install_dock_close_hook(dock, inner)
+    monkeypatch.setattr(L, "_run_widget_cleanup", lambda w: ran.append(w))
+
+    dock.title.float_button.click()
+
+    assert inner.window() is main
+    assert not dock.isFloating()
+    bars = [b for b in main.findChildren(QTabBar) if b.count() > 1]
+    assert bars[0].tabText(bars[0].currentIndex()) == "annot"
+    qapp.processEvents()
+    assert ran == []
+
+
+# --- initial size of the floating Advanced Features dock ------------------
+# The dock opens tall enough for its panel (hint + title bar, at least
+# 350 px) and never taller than 85 % of the available screen height.
+
+def _launch_recording_resize(monkeypatch):
+    sizes = []
+    real = QDockWidget.resize
+
+    def _rec(self, *args):
+        sizes.append(args)
+        return real(self, *args)
+
+    monkeypatch.setattr(QDockWidget, "resize", _rec)
+    viewer = _Viewer()
+    widget, ok, _msg = L.launch_advanced_features_dock(
+        viewer, mode="3d_curation"
+    )
+    assert ok and widget is not None
+    assert sizes
+    return widget, sizes[-1]
+
+
+def test_initial_dock_height_follows_widget_hint(qapp, monkeypatch):
+    from qtpy.QtCore import QSize
+
+    monkeypatch.setattr(
+        AdvancedFeaturesWidget, "sizeHint", lambda self: QSize(420, 500)
+    )
+    _w, (width, height) = _launch_recording_resize(monkeypatch)
+    assert height >= 500 + 40
+    assert height >= 350
+    assert width >= 420
+
+
+def test_initial_dock_height_is_capped_to_screen(qapp, monkeypatch):
+    from qtpy.QtCore import QSize
+
+    monkeypatch.setattr(
+        AdvancedFeaturesWidget, "sizeHint", lambda self: QSize(420, 99999)
+    )
+    _w, (width, height) = _launch_recording_resize(monkeypatch)
+    cap = int(QApplication.primaryScreen().availableGeometry().height() * 0.85)
+    assert height <= cap

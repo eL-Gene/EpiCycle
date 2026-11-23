@@ -6,7 +6,7 @@
 
 ## What it does
 
-EpiCycle is a [napari](https://napari.org) plugin for human-in-the-loop 3D segmentation of stratified epithelia. It bootstraps dataset-specific segmentation models from sparse or no ground truth: starting from a handful of annotated 2D slices, a cycle of prediction, correction and retraining builds lateral and axial [Cellpose](https://github.com/MouseLand/cellpose) models while the curated slices accumulate into a training set. The refined models are then applied across whole stacks in all three orthoviews and fused into 3D cell reconstructions with [u-Segment3D](https://github.com/DanuserLab/u-segment3D), which can be measured, triaged and curated in 3D, fed back as further training data, or scaled up to whole tissues. We developed it for skin, where cells are crowded, anisotropic and differ between layers, but nothing in the workflow is specific to one tissue.
+EpiCycle is a [napari](https://napari.org) plugin for human-in-the-loop 3D segmentation. It bootstraps dataset-specific segmentation models from sparse or no ground truth: starting from a handful of annotated 2D slices, a cycle of prediction, correction and retraining builds lateral and axial [Cellpose](https://github.com/MouseLand/cellpose) models while the curated slices accumulate into a training set. The refined models are then applied across whole stacks in all three orthoviews and fused into 3D cell reconstructions with [u-Segment3D](https://github.com/DanuserLab/u-segment3D), which can be measured, triaged and curated in 3D, fed back as further training data, or scaled up to whole tissues. We developed it for skin, where cells are crowded, anisotropic and differ between layers, but nothing in the workflow is specific to one tissue.
 
 EpiCycle is under active development. We are documenting the codebase, expect to refactor parts of it, and may change file formats between versions; a workspace from an earlier version is migrated when it opens. Keep a backup of workspaces you care about.
 
@@ -59,8 +59,8 @@ Same versions, installed by hand. Run this in an Anaconda Prompt:
 conda create -n epicycle python=3.12
 conda activate epicycle
 pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu118
-pip install -r https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.2/requirements-lock.txt
-pip install --no-deps "napari-epicycle @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.2.zip"
+pip install -r https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.3/requirements-lock.txt
+pip install --no-deps "napari-epicycle @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.3.zip"
 ```
 
 The PyTorch line is the CUDA 11.8 build we test with; any current NVIDIA driver runs it (a CUDA 13 driver works too). If you prefer a different CUDA build of the same PyTorch version, pick its line on pytorch.org and use it in place of ours; later CUDA builds are untested but expected to work. Without a GPU, use the CPU build; only the curation steps run.
@@ -69,7 +69,7 @@ The `requirements-lock.txt` line installs every other dependency at the exact ve
 
 We install u-Segment3D from the exact version we used for the paper, not from its latest release. The latest release works with EpiCycle too, but it expects a newer CUDA than the rest of our setup, and installing it alongside ours leaves two GPU libraries fighting over the same job. We have not tested that on a GPU, so for now we stay with the version we know. Updating everything to the newer CUDA is on the list.
 
-To install a later release, put its tag (`vX.Y.Z`) where the commands above say `v0.1.2`.
+To install a later release, put its tag (`vX.Y.Z`) where the commands above say `v0.1.3`.
 
 **Option C, from a clone**
 
@@ -93,7 +93,7 @@ The first run downloads the Cellpose model weights (see Licence and third-party 
 
 Start in Step 1 and choose a project folder, the workspace. Every step reads and writes that folder, and the steps share it.
 
-Every section of the panels has a **?** button. It opens a short guide in plain language. The same guides are Markdown files in [`docs/guides/`](docs/guides/). When a control puzzles you, read the guide before you click around.
+Every section of the panels has a **?** button. It opens a short guide in plain language. The same guides are Markdown files in [`docs/guides/`](docs/guides/). When a control puzzles you, read the guide before you click around. New to curation? Start with [Curate a patch in five moves](docs/guides/step3_curate_five_moves.md).
 
 ## Tutorials
 
@@ -110,6 +110,8 @@ EpiCycle measures more than 50 features per cell in Steps 3 and 4 and in the who
 ## Getting help
 
 Try the **?** buttons first within each UI section. If something breaks, please [open an issue on GitHub](https://github.com/eL-Gene/EpiCycle/issues). The bug-report form asks for your operating system, the EpiCycle and napari versions, the step you were in, what you clicked, and the console output.
+
+**If napari closes unexpectedly.** Each time EpiCycle starts it writes what it prints to a file in `%USERPROFILE%\.epicycle\crash_logs` on Windows (paste that into the Explorer address bar) or `~/.epicycle/crash_logs` on Linux and macOS. The file is named after the date and time the session started. Attach the one from the session that closed, not the one made when you started napari again. The folder keeps the last ten sessions. The file lists the folders and file names you worked with, and your user name is part of those paths; it holds no images. Read it before attaching it to a public issue.
 
 ## Contributing
 

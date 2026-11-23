@@ -115,8 +115,9 @@ HELPED_WIDGETS = (
     "split_refine_eps_sb",
     "split_refine_merge_small_cb",
     "split_min_size_sb",
-    "split_auto_smooth_cb",
+    "split_smooth_mode_combo",
     "split_auto_advance_cb",
+    "split_pieces_cap_sb",
     # Brick 2b -- the Detect Seeds row (the owner's added scope:
     # varying these three is the productive part of that row).  The
     # threshold LINE is drawn by pyqtgraph, so its sentence is keyed on
@@ -227,6 +228,7 @@ def _all_user_strings():
     out.extend(M.SEEDS_FROM_LABELS)
     out.extend(M.WALLS_FROM_LABELS)
     out.extend(M.SEED_DETECTOR_LABELS)
+    out.extend(M.SMOOTH_MODE_LABELS)
     out.extend(M.SEEDS_FROM_SHORT)
     out.extend(M.WALLS_FROM_SHORT)
     out.append(M.AdvancedFeaturesWidget._MARKERS_STALE_TEXT)
@@ -381,11 +383,11 @@ class TestTheSentencesMatchTheCodeTheyDescribe:
         M = _mod()
         preview = inspect.getsource(Curation3DAnnotator._preview_split)
         accept = inspect.getsource(Curation3DAnnotator._accept_split)
-        assert "split_auto_smooth_cb" in preview
-        assert "split_auto_smooth_cb" not in accept, (
+        assert "get_split_smooth_mode" in preview
+        assert "get_split_smooth_mode" not in accept, (
             "it IS read at accept now -- rewrite the sentence, not the test"
         )
-        text = M.HELP_LINES["split_auto_smooth_cb"]
+        text = M.HELP_LINES["split_smooth_mode_combo"]
         assert "Accept" not in text, text
         assert "preview" in text.lower(), text
 
@@ -400,8 +402,8 @@ class TestTheSentencesMatchTheCodeTheyDescribe:
         )
 
         guided = inspect.getsource(Curation3DAnnotator._apply_reshape_result)
-        assert "split_auto_smooth_cb" not in guided
-        assert "hand-painted" in _mod().HELP_LINES["split_auto_smooth_cb"]
+        assert "get_split_smooth_mode" not in guided
+        assert "hand-painted" in _mod().HELP_LINES["split_smooth_mode_combo"]
 
 
 class TestItemHelp:
@@ -465,7 +467,8 @@ class TestEveryHelperIsAPlainSentence:
         M = _mod()
         for text in (list(M.SEEDS_FROM_LABELS)
                      + list(M.WALLS_FROM_LABELS)
-                     + list(M.SEED_DETECTOR_LABELS)):
+                     + list(M.SEED_DETECTOR_LABELS)
+                     + list(M.SMOOTH_MODE_LABELS)):
             assert 0 < len(text) <= 42, "{} chars: {!r}".format(
                 len(text), text)
 

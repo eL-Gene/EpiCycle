@@ -44,7 +44,7 @@ def read_step1_state(workspace: str) -> Optional[Dict[str, Any]]:
     """Step 1's state, read with a guarded ``json.loads``.
 
     NEVER ``_state.load_state``: that renames a corrupt ``step1_state.json``
-    and fires Step 1's corrupt hook (grill G1-7).  ``None`` when the
+    and fires Step 1's corrupt hook.  ``None`` when the
     file is missing or unreadable.
     """
     if not workspace:

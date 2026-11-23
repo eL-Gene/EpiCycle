@@ -71,6 +71,7 @@ def _controller(tmp_path):
 
     ctrl = SegmentStackController.__new__(SegmentStackController)
     ctrl.ui = UI()
+    ctrl.viewer = None
     ctrl.working_dir = ""
     ctrl.state_manager = StackStateManager()
     ctrl._suppress_publish = False

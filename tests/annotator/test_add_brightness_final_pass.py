@@ -185,14 +185,21 @@ def test_another_channel_combo_does_not_reset_the_threshold(h):
 # --------------------------------------------------------------------------- #
 def test_panel_flat_box_sentence(widget):  # noqa: F811
     reset_add(widget)
-    widget.update_add_ui_state(
-        histogram_data={"counts": [10], "edges": [7.0, 7.5]},
-        brightness_auto=float("nan"), brightness_flat=True)
-    assert not widget.add_otsu_btn.isEnabled()
-    assert widget._add_threshold_help.text() == AP.ADD_AUTO_NOTHING_TO_SPLIT
-    widget.update_add_ui_state(brightness_auto=0.4, brightness_flat=False)
-    assert widget.add_otsu_btn.isEnabled()
-    assert widget._add_threshold_help.text() == AP.ADD_HELP_THRESHOLD
+    # Auto is measured for a box: with none placed the card says so
+    widget.update_add_ui_state(box_active=True, whole_patch=False)
+    try:
+        widget.update_add_ui_state(
+            histogram_data={"counts": [10], "edges": [7.0, 7.5]},
+            brightness_auto=float("nan"), brightness_flat=True)
+        assert not widget.add_otsu_btn.isEnabled()
+        assert widget._add_threshold_help.text() == (
+            AP.ADD_AUTO_NOTHING_TO_SPLIT)
+        widget.update_add_ui_state(brightness_auto=0.4,
+                                   brightness_flat=False)
+        assert widget.add_otsu_btn.isEnabled()
+        assert widget._add_threshold_help.text() == AP.ADD_HELP_THRESHOLD
+    finally:
+        widget.update_add_ui_state(box_active=False)
 
 
 def test_panel_pending_threshold_never_shows_the_old_number(widget):  # noqa: F811

@@ -6,6 +6,9 @@ but Qt emits ``currentIndexChanged`` FIRST, and the controller's
 ``_on_channels_changed`` (with no trained channels known) rebuilds both
 combos from the remembered choice on that signal -- so every pick snapped
 back before it was remembered.
+
+The boxes hold Cellpose codes ("0: gray" / "0: none" first), so an item's
+index is the code ``chosen_channels`` reads.
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ def w(qapp, tmp_path):
 
 
 def test_a_membrane_pick_sticks(qapp, w):
-    assert w.chan1_combo.count() == 3
+    assert w.chan1_combo.count() == 4       # "0: gray" + three channels
     _pick(w.chan1_combo, 2)
     pump(qapp)
     assert w.chan1_combo.currentIndex() == 2
@@ -41,12 +44,12 @@ def test_a_membrane_pick_sticks(qapp, w):
 
 
 def test_a_nuclei_pick_sticks_and_none_stays_pickable(qapp, w):
-    _pick(w.chan2_combo, 2)              # item 2 = channel 1 ("none" first)
+    _pick(w.chan2_combo, 2)              # item 2 = code 2, the second channel
     pump(qapp)
-    assert w.chosen_channels()[1] == 1
-    _pick(w.chan2_combo, 0)              # back to "none"
+    assert w.chosen_channels()[1] == 2
+    _pick(w.chan2_combo, 0)              # back to "0: none"
     pump(qapp)
-    assert w.chosen_channels()[1] is None
+    assert w.chosen_channels()[1] == 0
 
 
 def test_the_pick_survives_a_later_rebuild(qapp, w):

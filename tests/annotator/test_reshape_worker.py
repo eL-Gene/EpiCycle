@@ -421,7 +421,17 @@ def test_the_marker_worker_reports_no_stages_and_claims_none():
     # The Add rebuild's own stages, named the same way: its
     # worker shares the table too, and a stray key must still fail here.
     _ADD_ONLY = {"add_box", "add_markers", "add_cut", "add_find",
-                 "add_smooth", "add_info"}
+                 "add_smooth", "add_info",
+                 # the Derive stages: the patch read, the outline,
+                 # the engine warm-up, the growth and its pieces
+                 "add_box_patch", "add_outline", "add_warm",
+                 "add_grow", "add_piece",
+                 # the page's own waits: what the strip names while the
+                 # main thread writes, draws or takes back, and what it
+                 # names while the box, the patch or a run is read
+                 "add_accept", "add_draw", "add_clear", "add_undo_all",
+                 "add_discard", "add_walls", "add_balls",
+                 "add_info_patch", "add_run"}
     assert (set(RW.STAGE_TEXT) - {"done"} - _REFINE_ONLY - _ADD_ONLY
             == set(STAGES))
     assert _ADD_ONLY <= set(RW.STAGE_TEXT)

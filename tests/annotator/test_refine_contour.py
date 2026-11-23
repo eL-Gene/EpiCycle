@@ -456,3 +456,63 @@ class TestContourWithWalls:
                                prob_roi=(vol == 3).astype(np.float32),
                                iterations=5)
         assert b.details["elevation"] is not None
+
+
+# --------------------------------------------------------------------------- #
+# the [CONTOUR] diagnostic line
+# --------------------------------------------------------------------------- #
+class TestContourLine:
+    def _run(self, capsys, **kw):
+        vol = _sphere((24, 24, 24), radius=6)
+        args = dict(mode="snap", elevation=_flat(vol), balloon=0.0,
+                    iterations=3, smoothing=1, limit_um=2.0,
+                    spacing=(2.0, 1.0, 1.0), spacing_source="patch")
+        args.update(kw)
+        contour_refine(vol, 3, **args)
+        return [ln for ln in capsys.readouterr().out.splitlines()
+                if ln.startswith("[CONTOUR]")]
+
+    def test_one_line_with_the_effective_numbers(self, capsys):
+        lines = self._run(capsys, gate=0.25, sharpness=50.0)
+        assert len(lines) == 1
+        ln = lines[0]
+        for field in ("mode=snap", "gate=0.25", "k=50", "iter=3",
+                      "smoothing=1", "spacing=(2.0, 1.0, 1.0)", "src=patch",
+                      "roi=(24, 24, 24)", "vox_before=", "vox_after=",
+                      "mean_um=", "max_um=", "seconds=", "p1=", "p99="):
+            assert field in ln, field
+
+    def test_a_push_reports_the_displacement_in_microns(self, capsys):
+        vol = _sphere((24, 24, 24), radius=6)
+        lines = self._run(capsys, balloon=1.0, gate=0.0, iterations=6,
+                          limit_um=3.0, spacing=(1.0, 1.0, 1.0))
+        ln = lines[0]
+        fields = dict(f.split("=", 1) for f in ln.split() if "=" in f)
+        assert int(fields["vox_after"]) > int(fields["vox_before"])
+        assert float(fields["max_um"]) > 0.0
+        assert float(fields["max_um"]) <= 3.0 + 1.0
+
+    def test_the_brightness_mode_prints_the_channel(self, capsys):
+        vol = _sphere((24, 24, 24), radius=6)
+        img = (vol > 0).astype(np.float32) * 0.5
+        contour_refine(vol, 3, mode="brightness", image_roi=img,
+                       iterations=2, smoothing=1, limit_um=1.0)
+        out = capsys.readouterr().out
+        assert out.count("[CONTOUR]") == 1
+        assert "float32[0,0.5]" in out and "src=None" in out
+
+    def test_a_line_that_cannot_be_built_never_raises(self, capsys,
+                                                       monkeypatch):
+        import packages.epicycle_annotator.refine as rf
+
+        monkeypatch.setattr(rf.np, "count_nonzero",
+                            lambda *a, **k: 1 / 0, raising=True)
+        vol = _sphere((16, 16, 16), radius=4)
+        try:
+            res = rf._print_contour_line(
+                ContourResult(vol, 0, ""), vol, 3, "snap", (1, 1, 1), None,
+                None, None, {}, 0.0)
+        finally:
+            monkeypatch.undo()
+        assert res is None
+        assert "[CONTOUR]" in capsys.readouterr().out

@@ -1,6 +1,8 @@
 # Curate
 
-Where you open the 3D annotator on a patch, edit the masks until you're satisfied, and lock the result so it can feed into Model Refinement.
+New here? Read **Curate a patch in five moves** (`step3_curate_five_moves.md`) first.
+
+Where you open the 3D annotator on a patch, edit the masks until you're satisfied, and finalize the result so it can feed into Model Refinement.
 
 ---
 
@@ -11,7 +13,7 @@ select patch  →  Open 3D Curation Annotator  →  edit masks
                                                      ↓
                                                 Save Curation
                                                      ↓
-                                                Accept Volume   (locks state)
+                                                Accept Volume   (optional: marks it done)
                                                      ↓
                                                 Finalize Labels (commits as training data)
 ```
@@ -22,7 +24,7 @@ Each step is its own button. You can stop and restart at any point — the works
 
 ## Step 1 — Open the 3D Curation Annotator
 
-Pick a `reconstructed` patch from the Curate Bucket list (left), then click **Open 3D Curation Annotator** (the amber-styled primary button).
+Pick a patch from the Curate Bucket list (left), then click **Open 3D Curation Annotator** (the amber-styled primary button).
 
 A separate dock opens with the 3D multi-view annotator. You'll see:
 - A main 3D viewer on the left
@@ -40,7 +42,9 @@ This is where the actual mask editing happens. Each of the dock's three tabs has
 
 As you edit, the **Save Curation** button lights up to indicate unsaved changes.
 
-Click it to write the current mask state to disk. This is **non-destructive** — it just updates the on-disk TIFF + the QC features CSV.  You can save many times during a single session.
+Click it to write the current mask state to disk. At full resolution this is **non-destructive** (see the half-size note below) — it just updates the on-disk TIFF + the QC features CSV.  You can save many times during a single session.
+
+**Saving from a half-size session** (*Downsample patches 2× on load*): Save Curation and Commit Triage both write the mask back at full size, so its boundaries are quantized to 2-voxel steps and small or very thin cells (a few voxels, or one voxel thick) can disappear. Their rows in the table turn deleted when you save or commit. To smooth the boundaries afterwards, reopen the patch at full resolution and run Batch Refine once with a Smooth step.
 
 **Undo** lets you revert the last curation action (one step at a time).
 
@@ -48,17 +52,17 @@ Click it to write the current mask state to disk. This is **non-destructive** �
 
 ## Step 3 — Accept Volume
 
-When you're done editing the masks, click **Accept Volume**. This locks the curation state — no more editing until you explicitly **Reset to Predicted** (which discards your work).
+When you're done editing the masks, click **Accept Volume**. It saves your edits first, then marks the patch as accepted. It does not lock the patch: opening it in the 3D Curation Annotator again sets it back to `curating`, and you can keep editing. (In **Predict + Reconstruct** an accepted patch is *protected*: that only means a new prediction or reconstruction cannot overwrite it.)
 
-Accepting transitions the patch from `curating` → `accepted`. The patch is now ready for finalization.
+Accepting transitions the patch from `curating` → `accepted`.
 
-> **Why this gate exists:** it prevents you from accidentally finalizing a patch you're still editing. Think of it as the *I'm satisfied* checkpoint.
+> **What it is for:** a marker that says *I'm satisfied* with this patch. It is optional — **Finalize Labels** works without it.
 
 ---
 
 ## Step 4 — Finalize Labels
 
-Click **Finalize Labels** to commit this patch as canonical training data. Status moves from `accepted` → `finalized`.
+Click **Finalize Labels** to commit this patch as canonical training data. It saves your edits first. Status moves to `finalized` from whatever it was (`reconstructed`, `curating` or `accepted`).
 
 **What finalization changes:**
 - The patch becomes selectable in the **Model Refinement** section
@@ -75,7 +79,7 @@ The list on the left shows your `reconstructed`, `curating`, `accepted` and `fin
 
 The row of the patch that is loaded in the viewer carries an amber bar on its left edge and a faint glow, apart from the highlight of the row you clicked.  Each row shows a picture of the patch, its name, its status on the right (the coloured dots and word), and under the name the marks *✔QC* (its cells have been measured) and *ed* (you edited it in this session) first, then its axis order, size, channels and label count, then its voxel size (the amber word voxels when it has none) and the number of labels in each tier — curated, good, review, bad, garbage — which wraps onto more lines when the column is narrow. The picture is the middle slice of the raw patch image — the same picture as on the patch's row in **Session**: grey for a patch with one channel; for two channels, channel 0 (nuclei, by EpiCycle's convention) in magenta and channel 1 (membrane) in green. It shows the image, not the labels; the status says how far the patch has come. Hover over the picture to read what it is, or why there is none.
 
-A patch whose file is gone keeps its row, with an amber line under it; a click on it is refused (the annotator needs the image), and its **⋯** offers to forget the patch — see the Patches guide in **Predict + Reconstruct**.
+A patch whose file is gone keeps its row, with an amber line under it; a click on it is refused (the annotator needs the image), and its **⋯** offers to forget the patch — see the Patches guide in **Predict + Reconstruct**.  A right-click on any other row of this list opens the same menu as a row of the Patches list there: **Show prediction…** and **Model details…**.
 
 Selecting a patch loads its labels into the 3D annotator if it's already open, or readies it for the next time you click Open 3D Curation Annotator.
 
@@ -112,6 +116,8 @@ What you'll see:
 - In the QC plot area the histogram's controls and lines and the Assign row are greyed too; its **Histogram** / **Selection** tabs, the divider and **Colours in viewer** stay live.
 - The panel controls and the step navigation are dimmed until the operation finishes.
 - The one button that stays available is the **Cancel** button for whatever is running — the Model Refinement *Cancel*, *Cancel Extraction*, or the predict/reconstruct *Cancel* — so you can stop it if you started the wrong thing.
+
+**An edit open in the 3D annotator** is a different kind of wait. While a Reshape, a Refine, an interpolation preview, a merge, an Add or a Batch Refine is open, **Save Curation**, **Commit Triage**, **Undo**, **Accept Volume** and **Finalize Labels** do nothing and the line under the QC plot tells you to accept or reject the open edit first. The same message refuses a patch switch, so what is written to disk is never an edit you have not accepted. Accept or reject the edit and the buttons work again.
 
 You can still **pan, zoom, and rotate** the 3D view the whole time — only the editing/action controls are locked, not the camera. When the operation finishes, everything re-enables on its own and the status line returns to showing the current patch.
 

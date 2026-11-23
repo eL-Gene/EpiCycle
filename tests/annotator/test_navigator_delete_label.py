@@ -295,8 +295,18 @@ def test_destructive_predicate_true_at_idle():
 
 
 def test_destructive_predicate_false_when_interp_active():
-    s = RefinementOpState(interp_active=True)
-    assert s.can_start_destructive_label_op() is False
+    # Drive the real mapping from the annotator's own flags: a staged preview
+    # (snapshot held, nothing running) must close the gate.
+    from types import SimpleNamespace
+
+    fake = SimpleNamespace(
+        _refine_state=RefinementOpState(),
+        _interp_running=False,
+        _interp_snapshot=object(),
+        _interp_refine_mode=False,
+    )
+    Curation3DAnnotator._sync_refine_state(fake)
+    assert fake._refine_state.can_start_destructive_label_op() is False
 
 
 def test_destructive_predicate_false_when_split_active():
@@ -360,17 +370,17 @@ def test_label_action_buttons_active_delegates_to_canonical_predicate():
 
 def test_label_action_buttons_active_no_inline_gating_logic():
     """Negative assertion: the previous agent's inline gating checks
-    (``_refinement_op_active()`` and ``getattr(self, '_draw_snapshot'...)``
+    (``staged_kinds()`` and ``getattr(self, '_draw_snapshot'...)``
     style direct reads inside the method body) must be gone.  The
     canonical predicate owns the logic now.
     """
     pred_src = inspect.getsource(
         Curation3DAnnotator._label_action_buttons_active
     )
-    # No direct call to _refinement_op_active() inside the method body.
-    assert "self._refinement_op_active()" not in pred_src, (
+    # No direct read of the open-edit set inside the method body.
+    assert "self.staged_kinds()" not in pred_src, (
         "_label_action_buttons_active must NOT inline "
-        "_refinement_op_active() — the canonical predicate covers it"
+        "staged_kinds() — the canonical predicate covers it"
     )
     # No direct getattr / attribute read of _draw_snapshot inline.
     assert "_draw_snapshot" not in pred_src, (

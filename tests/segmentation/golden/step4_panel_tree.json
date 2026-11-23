@@ -1051,7 +1051,7 @@
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
-    "text": "Membrane channel:"
+    "text": "Channel to segment:"
    },
    {
     "class": "QComboBox",
@@ -1059,7 +1059,7 @@
      "chan1_combo"
     ],
     "objectName": "",
-    "toolTip": "The channel the model reads as the cell membrane. A loaded or previewed stack shows its layer names here.",
+    "toolTip": "The channel that shows what this model finds: the cell outlines for a cell model, the nuclei for a nuclei model. A loaded or previewed stack shows its layer names here; hover an item to see whether this model was trained on it. Counted as Cellpose does: 0 gray (all channels averaged), then 1 for the first channel.",
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
@@ -1155,7 +1155,7 @@
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
-    "text": "Nuclei channel:"
+    "text": "Helper channel:"
    },
    {
     "class": "QComboBox",
@@ -1163,13 +1163,13 @@
      "chan2_combo"
     ],
     "objectName": "",
-    "toolTip": "The channel the model reads as the nuclei, or none. A loaded or previewed stack shows its layer names here.",
+    "toolTip": "An optional second channel that helps a cell model tell touching cells apart, usually the nuclei, or none. A loaded or previewed stack shows its layer names here.",
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
     "items": [
      [
-      "none",
+      "0: none",
       null,
       null
      ]
@@ -7125,7 +7125,7 @@
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
-    "text": "Membrane channel:"
+    "text": "Channel to segment:"
    },
    {
     "class": "QComboBox",
@@ -7133,23 +7133,28 @@
      "chan1_combo"
     ],
     "objectName": "",
-    "toolTip": "The channel the model reads as the cell membrane. A loaded or previewed stack shows its layer names here.",
+    "toolTip": "The channel that shows what this model finds: the cell outlines for a cell model, the nuclei for a nuclei model. A loaded or previewed stack shows its layer names here; hover an item to see whether this model was trained on it. Counted as Cellpose does: 0 gray (all channels averaged), then 1 for the first channel.",
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
     "items": [
      [
-      "0: nuclei (model)",
+      "0: gray",
       null,
       null
      ],
      [
-      "1: membrane (model)",
+      "1: red",
       null,
-      null
+      "This model was trained with this channel as its helper."
+     ],
+     [
+      "2: green",
+      null,
+      "This model was trained to segment this channel."
      ]
     ],
-    "currentIndex": 1
+    "currentIndex": 2
    },
    {
     "class": "QFrame",
@@ -7240,7 +7245,7 @@
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
-    "text": "Nuclei channel:"
+    "text": "Helper channel:"
    },
    {
     "class": "QComboBox",
@@ -7248,25 +7253,25 @@
      "chan2_combo"
     ],
     "objectName": "",
-    "toolTip": "The channel the model reads as the nuclei, or none. A loaded or previewed stack shows its layer names here.",
+    "toolTip": "An optional second channel that helps a cell model tell touching cells apart, usually the nuclei, or none. A loaded or previewed stack shows its layer names here.",
     "styleSheet": "",
     "enabled": true,
     "hidden": false,
     "items": [
      [
-      "none",
+      "0: none",
       null,
       null
      ],
      [
-      "0: nuclei (model)",
+      "1: red",
       null,
-      null
+      "This model was trained with this channel as its helper."
      ],
      [
-      "1: membrane (model)",
+      "2: green",
       null,
-      null
+      "This model was trained to segment this channel."
      ]
     ],
     "currentIndex": 1
@@ -9966,7 +9971,7 @@
     "styleSheet": "color: #999999; font-size: 10px;",
     "enabled": true,
     "hidden": false,
-    "text": "Trained on 2 channels: membrane (1), nuclei (0)."
+    "text": "Trained on segment 2: green, helper 1: red."
    },
    {
     "class": "QWidget",

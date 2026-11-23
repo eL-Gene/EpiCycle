@@ -23,14 +23,18 @@ Under the **Settings** title, one line says where the settings can come from:
 
 The list, in this order:
 
-- "EpiCycle defaults": EpiCycle's standard values. This also resets the cell width, Even out brightness, Rescale, the batch size and the CPU cores.
+- "EpiCycle defaults": EpiCycle's standard values. This also resets the cell width, Even out brightness, Rescale, the batch size and the CPU cores. For Cellpose's built-in nuclei model it also sets **Remove specks smaller than** to 100 voxels: that clean-up acts on the joined 3D mask before the cells are cut, separate nuclei are each a small piece of it, and the cell value (10,000) would delete most of them. Any other model keeps 10,000. When you pick another model while the list says EpiCycle defaults, **Remove specks smaller than** follows the new model; nothing else changes, and the list stays EpiCycle defaults.
 - "u-Segment3D defaults (without its flow filter)": the standard values of u-Segment3D, the program that joins the slices into 3D cells. u-Segment3D's own last clean-up, a filter that drops cells whose flows disagree, is not offered here, so this item leaves it off.
 - "This run’s last reconstruction": the settings this run used for its newest reconstruction. It is offered only once this run has reconstructed a patch. EpiCycle's defaults are filled first, then every setting that reconstruction recorded is put over them, including its two channels.
   - A reconstruction made from October 2026 on records every setting: the inference settings the model was given when the patch was predicted (cell width, batch size, Even out brightness, Rescale), the CPU cores and every u-Segment3D setting. The item then gives back exactly those settings, and no grey line shows.
   - A reconstruction made before October 2026 recorded only part of its settings. While you use one, a grey line says so: "Settings that run did not record are EpiCycle’s defaults."
-- "Custom": appears by itself as soon as you change any setting by hand, either channel included. When you pick a model, the channels it was trained with are filled in for you; that does not make the list Custom.
+- "Custom": appears by itself as soon as you change any setting by hand, either channel included. When you pick a model refined in Step 3 (with Use for re-prediction in Model Refinement, or from the model registry), the two channels it was trained with are filled in for you; that does not make the list Custom. Any other model picked later (a Step 2 model, a Cellpose built-in model or a file) leaves the two channel boxes as they are; a new run fills them from its model (see **A new run** below).
 
-**What is remembered.** Each run remembers its own choice. When you open the workspace again, or switch to another run, that run's choice is filled in again. Hand-changed values are not saved: a run left on Custom shows Custom, and the settings keep the values they have. A run that has never had a choice made in it shows EpiCycle defaults when you open the workspace; when you switch to it from another run, the settings keep the values they have and the list shows Custom.
+**What is remembered.** Each run remembers its own choice, its two channels and its **Remove specks smaller than**. A run made before these were remembered shows the channels its own newest record asked for: its newest prediction or reconstruction, by the time each was made (a one-channel patch's record counts too, since it keeps the channels you asked for; a record whose channel to segment was empty does not). It keeps the boxes as they are when it has no such record; it takes the values it shows when you first change one or first switch away from it. When you open the workspace again, or switch to another run, that run's choice is filled in again, then its two channels; its **Remove specks smaller than** too when the choice is Custom (under a standard set the set's own value is used). Other hand-changed values are not saved: a run left on Custom shows Custom, and its other settings keep the values they have. A run that has never had a choice made in it (a run made before these settings were remembered) shows EpiCycle defaults when you open the workspace; when you switch to it from another run, the settings it does not remember keep the values they have and the list shows Custom.
+
+**A new run** starts from "EpiCycle defaults" for its own model, never from the settings of the run you were in. A model trained in Step 2, or refined in Step 3, fills the two channel boxes with the channels it was trained on, when its training record says so and its two views (lateral and axial) agree; otherwise **Channel to segment** starts empty. A Cellpose built-in model does not say which channel it reads, so **Channel to segment** starts empty, showing "pick a channel" in grey, and **Helper channel** starts at 0: none. Once a patch with more than one channel is ticked, the line under the buttons says "Pick the channel to segment." and Predict Selected stays grey until you pick one. Filling the empty box is not counted as a change: the list keeps EpiCycle defaults, so **Remove specks smaller than** still follows the model. Changing a filled box later makes the list Custom, as any other change does. The New Run dialog says so under its list of built-in models: "A built-in model does not say which channel it reads: after creating the run, pick the channel to segment in Settings."
+
+**A patch with one channel** (a ZYX stack, or a stack whose channel axis holds a single channel) is read by Cellpose as gray whatever the two boxes say, so it is predicted as 0: gray on its own. The boxes keep the run's choice, and the patch's record keeps the channels you asked for, so "This run’s last reconstruction" and Step 4 never get 0: gray from it. While such a patch is ticked, the line under the buttons ends by naming it, for example "Wound_patch_5.tiff: one channel, runs as 0: gray." (several read "2 patches: one channel, run as 0: gray."), but not after "Predict the ticked patches first.": the line says one thing at a time. While **Channel to segment** is empty, Predict runs only when every ticked patch has one channel.
 
 ---
 
@@ -38,10 +42,14 @@ The list, in this order:
 
 These decide how the model reads each slice.
 
-- **Membrane channel:** "The channel that shows the cell outlines, as Cellpose’s code: 0 gray (all channels together), 1 red, 2 green, 3 blue." (2: green)
-- **Nuclei channel:** "An optional second channel, usually the nuclei, that helps the model tell touching cells apart; 0 means none." (1: red)
+- **Channel to segment:** "The channel that shows what this model finds: the cell outlines for a cell model, the nuclei for a nuclei model. As Cellpose’s code: 0 gray (all channels averaged), 1 red, 2 green, 3 blue." (2: green)
+- **Helper channel:** "An optional second channel that helps a cell model tell touching cells apart, usually the nuclei; 0 means none. A nuclei model needs none. With Channel to segment on 0: gray, this box is not used." (1: red)
+
+  For a nuclei model, such as Cellpose's built-in nuclei model, put the nuclear stain in Channel to segment and leave Helper channel at 0: none. On a patch with two or more channels, 0: gray averages them into one image, so a nuclear stain gets mixed with the membrane: pick the stain's own number instead.
 
   The items are Cellpose's channel codes, not your layer names: 1 is the first channel of the patch, 2 the second, 3 the third.
+
+  After Predict, the row's eye shows what the model saw, so you can check the channel before you reconstruct (see **Patches**).
 - **Typical cell width:** "About how wide one cell is, in micrometres; the model looks for cells near this size." (Auto) Auto lets the model use the cell size it was trained on.
 
   The model works in pixels, so each patch's width is turned into pixels from that patch's own voxel size (the one Step 1 recorded for its source image, or, when Step 1 has none, the one written in the patch file). Under the box a grey line shows the result for the patch you highlighted in the list (or the first patch Predict would run), for example "≈ 24 pixels at 0.33 µm per pixel".
@@ -106,7 +114,7 @@ While Smooth the flows is off, the last two are grey, and a grey line under them
 
 **Clean the mask** (these always run, as part of the 3D build):
 
-- **Remove specks smaller than** (10000 voxels): "Pieces of the 3D mask with fewer voxels than this are removed."
+- **Remove specks smaller than** (10000 voxels; 100 under EpiCycle defaults for the built-in nuclei model): "Pieces of the 3D mask with fewer voxels than this are removed."
 - **Fill holes** (on): "Fill holes inside the 3D mask."
 - **Close gaps** (1): "Close small gaps in the mask; the number is the size of the tool in voxels."
 - **Grow the mask** (1): "Grow the mask outwards by this many voxels."
@@ -139,4 +147,4 @@ While Smooth the flows is off, the last two are grey, and a grey line under them
 
 ## Same settings in Step 4
 
-Step 4's Segment section uses the same plain names, groups, help lines and defaults, and the same cell width in micrometres. Two things differ in Step 3: the channels are Cellpose's codes rather than your layer names, and the batch size sits at the top of the settings here, while Step 4 keeps it under Advanced.
+Step 4's Segment section uses the same plain names, groups, help lines and defaults, and the same cell width in micrometres. Both steps' channel boxes count as Cellpose does (0: gray, then 1 for the first channel), so the same pick is the same channel in both. Two things differ in Step 3: the channel boxes name each code by its colour rather than by your layer names, and the batch size sits at the top of the settings here, while Step 4 keeps it under Advanced.

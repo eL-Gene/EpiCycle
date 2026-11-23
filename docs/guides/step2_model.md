@@ -38,11 +38,15 @@ When this box is ticked, the model Predict uses switches to the new round's mode
 A closed block, with a one-line summary of the current values (for example `Balanced · membrane / nuclei · flow 0.4 · cellprob 0.0 · diameter 30 px`). Open it to change how sensitive Predict is:
 
 * **Cell probability threshold**: how sure Cellpose must be before it calls a pixel part of a cell. Lower finds more cells (and more noise); higher finds fewer, surer ones.
-* **Flow threshold**: how smooth the cell outlines must be. Lower accepts looser outlines.
+* **Flow threshold**: how much error Cellpose allows in a cell's shape before it drops the cell. Higher keeps more cells (default 0.4); lower keeps only the cleanest shapes.
 * **Diameter**: the typical cell width in pixels. Estimated for you by default; set it if you know your tissue's scale.
+* **Dynamics iterations**: how many steps Cellpose takes to trace each cell back to its centre. Auto (the default) suits most cells; raise it for unusually long or large cells.
+* **Normalize** (on by default): evens out each channel's brightness before Predict.
+* **Resample dynamics** (on by default): traces the cells at the model's own cell size.
+* **Invert image** (off by default): flips dark and bright before Predict, for dark cells on a bright background.
 * **Channel to segment** and **Helper channel** (for example membrane and nuclei): which of your stains Cellpose looks at. These are shown outside the closed block so you can see them at a glance.
 
-The presets fill in the thresholds with ready-made starting points; adjust them and press Apply to make the values active for later predictions.
+The presets fill in the thresholds with ready-made starting points; adjust them and press **Apply Inference Params** to make the values active for later predictions.
 
 **Adjust or retrain?** If predictions are mostly right but a little too eager or too shy, change the thresholds. If Cellpose is missing whole kinds of cells or inventing structures that no threshold removes, curate more slices and train a new round (see Staged slices, Train and loss curves).
 

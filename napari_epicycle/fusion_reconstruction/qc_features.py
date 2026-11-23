@@ -182,7 +182,14 @@ BOUNDED_FEATURES = frozenset([
     "max_cross_section_z_relative",
     # Z-stratified neighbor topology (bounded [0,1])
     "neighbor_z_turnover", "neighbor_persistence_ratio",
+    # The pairing check against another run (bounded [0,1])
+    "match_overlap", "match_minor_ratio",
 ])
+
+#: Columns the table may carry for display only; never written to the
+#: features CSV.  ``match_status`` is the match word the plot colours by,
+#: derived from the saved match columns whenever it is shown.
+_DISPLAY_ONLY_COLUMNS = frozenset({"match_status"})
 
 # Skewness threshold for auto-detection. Features with |skew| above this
 # get log1p transform before PCA/composite scoring.
@@ -2112,6 +2119,7 @@ def compute_pca_columns(
     n_components: int = 5,
     features: Optional[List[str]] = None,
     exclude_border: bool = False,
+    exclude_inactive: bool = False,
 ) -> pd.DataFrame:
     """Fit PCA once and write ``PC1..PC{n_components}`` columns to ``df``.
 
@@ -2126,6 +2134,10 @@ def compute_pca_columns(
     non-border rows; border rows are projected as supplementary
     points using the fitted Vt.
 
+    ``exclude_inactive=True`` fits on the live rows only and projects the
+    removed ones (``label_status`` deleted / superseded) into that basis;
+    the live rows get exactly the PCs a fit on them alone gives.
+
     Returns the same df for chainability.  Modifies in place.
     """
     result = compute_pca_full(
@@ -2134,6 +2146,7 @@ def compute_pca_columns(
         features=features,
         exclude_border=exclude_border,
         mode="qc",
+        exclude_inactive=exclude_inactive,
     )
     projected = result["projected"]
     n_written = projected.shape[1]
@@ -2404,6 +2417,19 @@ def assign_qc_tiers(
     if "qc_tier" in df.columns:
         curated_mask = df["qc_tier"].values == "curated"
         tiers = np.where(curated_mask, "curated", tiers)
+    # A row with no finite score has nothing to compare with the thresholds
+    # (NaN compares False everywhere and would land in "garbage"), and a
+    # ghost row (deleted / superseded) is history: both keep the tier they
+    # already have, or "" when they have none.
+    keep = ~np.isfinite(score)
+    if "label_status" in df.columns:
+        keep = keep | (df["label_status"].values != "active")
+    if keep.any():
+        if "qc_tier" in df.columns:
+            existing = df["qc_tier"].fillna("").astype(str).values
+        else:
+            existing = np.full(len(df), "", dtype=object)
+        tiers = np.where(keep, existing, tiers)
     df["qc_tier"] = tiers
     return df
 
@@ -2582,16 +2608,26 @@ def replace_with_retry(src, dst) -> None:
             time.sleep(REPLACE_RETRY_DELAY_S)
 
 
+def drop_display_only(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` without its display-only columns (``_DISPLAY_ONLY_COLUMNS``),
+    for every writer of the features CSV.  ``df`` itself is not changed;
+    it is returned as is when it carries none."""
+    shown = [c for c in df.columns if c in _DISPLAY_ONLY_COLUMNS]
+    return df.drop(columns=shown) if shown else df
+
+
 def save_patch_csv(df: pd.DataFrame, output_path: Union[str, Path]) -> None:
     """Save feature DataFrame to CSV atomically (temp + os.replace).
 
     Writes to a temporary file in the same directory, then atomically
     replaces the target.  If the write fails mid-way, the original file
-    (if any) is preserved and no partial CSV is left on disk.
+    (if any) is preserved and no partial CSV is left on disk.  Display-only
+    columns (``_DISPLAY_ONLY_COLUMNS``) are left out; ``df`` is not changed.
     """
     import os
     import tempfile
 
+    df = drop_display_only(df)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
@@ -3507,6 +3543,7 @@ def compute_pca(
     features: Optional[List[str]] = None,
     exclude_border: bool = False,
     mode: str = "qc",
+    exclude_inactive: bool = False,
 ) -> np.ndarray:
     """PCA projection (backward-compatible wrapper).
 
@@ -3516,6 +3553,7 @@ def compute_pca(
     result = compute_pca_full(
         df, n_components=n_components, features=features,
         exclude_border=exclude_border, mode=mode,
+        exclude_inactive=exclude_inactive,
     )
     return result["projected"]
 
@@ -3528,6 +3566,7 @@ def compute_pca_full(
     mode: str = "qc",
     transforms: Optional[dict] = None,
     winsorize: Optional[float] = None,
+    exclude_inactive: bool = False,
 ) -> dict:
     """PCA projection with loadings and explained variance.
 
@@ -3536,6 +3575,10 @@ def compute_pca_full(
         n_components: Number of principal components (default 10).
         features: Feature columns.  Defaults to PCA_FEATURES.
         exclude_border: Exclude border cells from fitting.
+        exclude_inactive: Also leave the removed rows (``label_status``
+            ``deleted`` / ``superseded``) out of the fit; they are still
+            projected, as border cells are.  Off by default: callers that
+            already pass live rows only see no change.
         mode: "qc" (robust) or "eda" (standard).
         transforms: Per-feature transform dict from the EDA table
             (e.g. ``{"area": "log", "extent": "raw"}``).  When provided,
@@ -3588,6 +3631,27 @@ def compute_pca_full(
         exclude = df["is_border_cell"].values.astype(bool)
     elif exclude_border:
         exclude = None  # no column to exclude from
+    # Removed rows (a re-extraction keeps some, with the old objects'
+    # values, to hold the id floor) never shape the fit.
+    if exclude_inactive and "label_status" in df.columns:
+        inactive = df["label_status"].isin(
+            ("deleted", "superseded")).to_numpy()
+        if inactive.any():
+            both = inactive if exclude is None else (exclude | inactive)
+            # a table of removed rows only: fit them all rather than none
+            if int((~both).sum()) >= 2:
+                exclude = both
+                if mode != "eda" and not transforms:
+                    # the robust scaler fills a missing value with its
+                    # column's median over EVERY row: take it over the
+                    # live rows, so they standardise exactly as a table
+                    # of live rows alone would
+                    for j in range(X.shape[1]):
+                        bad = ~np.isfinite(X[:, j])
+                        if bad.any():
+                            ok = ~bad & ~inactive
+                            X[bad, j] = (np.median(X[ok, j]) if ok.any()
+                                         else 0.0)
 
     if mode == "eda":
         if not transforms:

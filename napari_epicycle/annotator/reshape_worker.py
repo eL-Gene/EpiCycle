@@ -51,17 +51,81 @@ STAGE_TEXT = {
     # The Add tab's own stages (the region target
     # emits add_box / elevation / add_markers / add_cut as each STARTS).
     "add_box": "Reading the box...",
+    # the same stage on a whole patch (the page picks it)
+    "add_box_patch": "Reading the patch...",
     "add_markers": "Finding markers...",
     "add_cut": "Filling the empty space...",
     "add_find": "Finding bright objects...",
     "add_smooth": "Smoothing the new objects...",
     "add_info": "Measuring the box...",
+    # Cells: the tissue outline, Spread from each marker (in tiles on a
+    # box), and the growth engine's first set-up
+    "add_outline": "Measuring the tissue outline...",
+    "add_grow": "Spreading from each marker...",
+    "add_piece": "Spreading from each marker...",
+    "add_warm": "Preparing the growth engine...",
+    # The Add page's own waits on the main thread (the page paints the line
+    # before the work starts), and its readers on a worker
+    "add_accept": "Writing the new objects...",
+    "add_draw": "Drawing the new objects...",
+    "add_clear": "Clearing the objects...",
+    "add_undo_all": "Taking the objects back...",
+    "add_discard": "Taking the result off the screen...",
+    "add_walls": "Drawing the wall picture...",
+    "add_balls": "Drawing the markers...",
+    "add_info_patch": "Measuring the patch...",
+    # Cells ▸ Click markers: the click fill's first update of a box, and of
+    # a whole patch filled as you click (the page picks it)
+    "add_prepare": "Preparing the box...",
+    "add_prepare_patch": "Preparing the patch...",
+    "add_run": "Reading the run's objects...",
 }
 
 
 def stage_text(stage) -> str:
     """Plain-language sentence for a stage name (unknown -> the name itself)."""
     return STAGE_TEXT.get(str(stage), str(stage))
+
+
+def touching_verdicts(labels, seed_layer, target_id, roi, *, margin=4,
+                      seeds_in_region=None, cancel_event=None):
+    """The touching rule's verdicts for markers taken from a label mask.
+
+    ``{label id: MarkerContact}`` for every label of ``seed_layer`` inside
+    the object ``target_id``.  ``roi`` is the search box (computed from
+    ``margin`` when None, as the engine does); ``seeds_in_region`` is the
+    guide already cropped and masked to the object, when the caller has it
+    (a Find's report).  The label sizes are counted over the WHOLE
+    ``seed_layer``.  Runs on the worker's thread; returns ``{}`` when there
+    is nothing to measure, or when ``cancel_event`` is set mid-sweep.
+    """
+    import numpy as np
+
+    from packages.epicycle_annotator.batch_refine import compute_label_roi
+    from packages.epicycle_annotator.reshape.seeds import marker_contacts
+
+    if seed_layer is None or target_id is None:
+        return {}
+    labels = np.asarray(labels)
+    if roi is None:
+        roi = compute_label_roi(labels, int(target_id), int(margin))
+    if roi is None:
+        return {}
+    region = labels[roi] == int(target_id)
+    guide = np.asarray(seed_layer)
+    if seeds_in_region is None:
+        crop = guide[roi] if guide.shape == labels.shape else guide
+        if crop.shape != region.shape:
+            return {}
+        seeds_in_region = np.where(region, crop, 0)
+    return marker_contacts(seeds_in_region, region, guide,
+                           cancel_event=cancel_event)
+
+
+def _touching_line(contacts, wall_ms) -> str:
+    kept = sum(1 for c in contacts.values() if c.keep)
+    return ("[RESHAPE-FIND] touching rule wall={:.0f}ms kept={} "
+            "left_unticked={}".format(wall_ms, kept, len(contacts) - kept))
 
 
 class ReshapeWorker(QObject):
@@ -92,8 +156,13 @@ class ReshapeWorker(QObject):
     def __init__(self, labels, images, spec, *, target_id=None, roi=None,
                  seed_layer=None, spacing=(1, 1, 1), margin=4,
                  keep_seed_ids=None, cancel_event=None,
-                 keep_intermediates=False):
+                 keep_intermediates=False, touching_rule=False):
         super().__init__()
+        #: Markers from a label mask with no Find before the Preview: the
+        #: touching labels are left out of the cut here, on this thread,
+        #: exactly as a Find would have left them unticked.  Only applied
+        #: when ``keep_seed_ids`` is None (no ticks to honour).
+        self._touching_rule = bool(touching_rule)
         self._labels = labels
         self._images = dict(images or {})
         self._spec = spec
@@ -125,27 +194,74 @@ class ReshapeWorker(QObject):
         Safe to call directly in tests.
         """
         try:
-            result = reshape_region(
-                self._labels,
-                self._images,
-                self._spec,
-                target_id=self._target_id,
-                roi=self._roi,
-                seed_layer=self._seed_layer,
-                spacing=self._spacing,
-                margin=self._margin,
-                keep_seed_ids=self._keep_seed_ids,
-                cancel_event=self._cancel_event,
-                log=lambda text: self.message.emit(str(text)),
-                progress=lambda stage, i, n: self.progress.emit(
-                    stage, int(i), int(n)
-                ),
-                keep_intermediates=self._keep_intermediates,
-            )
+            keep_seed_ids = self._keep_seed_ids
+            n_left_out = 0
+            result = None
+            if self._touching_rule and keep_seed_ids is None:
+                t0 = _time.perf_counter()
+                contacts = touching_verdicts(
+                    self._labels, self._seed_layer, self._target_id,
+                    self._roi, margin=self._margin,
+                    cancel_event=self._cancel_event)
+                keep_seed_ids = sorted(
+                    int(k) for k, c in contacts.items() if c.keep)
+                n_left_out = len(contacts) - len(keep_seed_ids)
+                print(_touching_line(
+                    contacts, (_time.perf_counter() - t0) * 1000.0))
+                if (contacts and not keep_seed_ids
+                        and not self._cancel_event.is_set()):
+                    # Every label only touches the object.  Refused here,
+                    # in words about label markers: the engine would build
+                    # the walls first and then talk about prominence.
+                    from napari_epicycle.annotator import (
+                        _reshape_text as RT,
+                    )
+                    from packages.epicycle_annotator.reshape import (
+                        ReshapeResult,
+                    )
+
+                    result = ReshapeResult(
+                        status="refused", refusal_reason="no-seeds",
+                        roi=self._roi, messages=[RT.MARKERS_ALL_TOUCHING])
+                    self.message.emit(RT.MARKERS_ALL_TOUCHING)
+                    print("[RESHAPE] refused before the engine - every "
+                          "marker only touches the object")
+            if result is None:
+                result = self._run_engine(keep_seed_ids)
+            if (n_left_out and keep_seed_ids
+                    and getattr(result, "status", "") != "cancelled"):
+                # Some were kept and no list was on screen to show the
+                # rest, so the cut says so first.  In front: on a refusal
+                # the LAST message is the reason, and this stays a remark
+                # beside it.  (None kept is refused above, in one line.)
+                from napari_epicycle.annotator import _reshape_text as RT
+
+                result.messages.insert(0, RT.MARKERS_LEFT_OUT.format(
+                    n=n_left_out, s=RT.plural(n_left_out)))
         except Exception as exc:  # noqa: BLE001 - never strand a locked surface
             self.error.emit("{}\n{}".format(exc, traceback.format_exc()))
             return
         self.finished.emit(result)
+
+    def _run_engine(self, keep_seed_ids):
+        """The one engine call, with this worker's inputs."""
+        return reshape_region(
+            self._labels,
+            self._images,
+            self._spec,
+            target_id=self._target_id,
+            roi=self._roi,
+            seed_layer=self._seed_layer,
+            spacing=self._spacing,
+            margin=self._margin,
+            keep_seed_ids=keep_seed_ids,
+            cancel_event=self._cancel_event,
+            log=lambda text: self.message.emit(str(text)),
+            progress=lambda stage, i, n: self.progress.emit(
+                stage, int(i), int(n)
+            ),
+            keep_intermediates=self._keep_intermediates,
+        )
 
 
 class SeedFindWorker(QObject):
@@ -180,8 +296,11 @@ class SeedFindWorker(QObject):
 
     def __init__(self, labels, images, spec, *, target_id=None, roi=None,
                  seed_layer=None, spacing=(1, 1, 1), margin=4,
-                 cancel_event=None):
+                 cancel_event=None, touching_rule=False):
         super().__init__()
+        #: Markers from a label mask: measure every marker against the
+        #: object and fill ``report.contacts`` before ``finished``.
+        self._touching_rule = bool(touching_rule)
         self._labels = labels
         self._images = dict(images or {})
         self._spec = spec
@@ -215,6 +334,15 @@ class SeedFindWorker(QObject):
                 spacing=self._spacing,
                 margin=self._margin,
             )
+            if self._touching_rule and getattr(report, "ok", False):
+                t0 = _time.perf_counter()
+                report.contacts = touching_verdicts(
+                    self._labels, self._seed_layer, self._target_id,
+                    report.roi, margin=self._margin,
+                    seeds_in_region=report.seeds,
+                    cancel_event=self._cancel_event)
+                print(_touching_line(
+                    report.contacts, (_time.perf_counter() - t0) * 1000.0))
         except Exception as exc:  # noqa: BLE001 - never strand a locked surface
             self.error.emit("{}\n{}".format(exc, traceback.format_exc()))
             return

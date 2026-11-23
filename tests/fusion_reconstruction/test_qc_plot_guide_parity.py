@@ -1,8 +1,10 @@
 """Guides row (brick P2): every straight-double-
 quoted sentence in the three Curation guides is a sentence the screen can
-show -- a ``_qc_plot_text`` constant or a ``HIST_*`` word of the triage
-histogram, placeholders read as ``.+?`` and a ``"title|body"`` sentence as
-its two halves.  A reworded sentence turns this red until the guide follows.
+show -- a ``_qc_plot_text`` constant, a ``_qc_pairing_text`` constant (the
+pairing check: the Extract Features row, the plot's match words and
+notes, the refusals) or a ``HIST_*`` word of the triage histogram,
+placeholders read as ``.+?`` and a ``"title|body"`` sentence as its two
+halves.  A reworded sentence turns this red until the guide follows.
 
 Curly quotes are not read (so they cannot carry a claim past the check);
 anything that is not an on-screen sentence is written in **bold** or
@@ -21,7 +23,9 @@ QUOTE = re.compile(r'"([^"\n]+)"')
 
 
 def _templates() -> list:
+    from napari_epicycle.fusion_reconstruction import _qc_pairing_text as PT
     from napari_epicycle.fusion_reconstruction import _qc_plot_text as T
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as ST
     from napari_epicycle.fusion_reconstruction import triage_histogram_panel as H
 
     raw = []
@@ -33,12 +37,17 @@ def _templates() -> list:
             for x in v.values():
                 take(x)
 
-    for name in dir(T):
-        if name.isupper():
-            take(getattr(T, name))
+    for module in (T, PT):
+        for name in dir(module):
+            if name.isupper():
+                take(getattr(module, name))
     for name in dir(H):
         if name.startswith("HIST_"):
             take(getattr(H, name))
+    # the QC Settings dialog's own sentences (the Features guide quotes them)
+    for name in dir(ST):
+        if name.startswith("QC_"):
+            take(getattr(ST, name))
     out = []
     for t in raw:
         t = t.strip()
@@ -89,6 +98,57 @@ def test_the_check_has_teeth():
                      templates) == ["Lasso selected 15 cells."]
     assert unmatched('"Sync viewer colors"', templates) == [
         "Sync viewer colors"]
+
+
+# --- The pairing check's section of the features guide ---------------------
+PAIRING_HEADING = "## Comparing with another run"
+
+
+def _pairing_section() -> str:
+    text = (GUIDES / FILES[1]).read_text(encoding="utf-8")
+    start = text.index(PAIRING_HEADING)
+    end = text.find("\n## ", start + len(PAIRING_HEADING))
+    return text[start:] if end < 0 else text[start:end]
+
+
+def test_the_pairing_section_quotes_enough_sentences():
+    q = quotes(_pairing_section())
+    assert len(q) >= 13, q
+
+
+def test_the_pairing_section_quotes_every_match_word_and_the_limit():
+    from napari_epicycle.fusion_reconstruction import _qc_pairing_text as PT
+
+    q = quotes(_pairing_section())
+    for s in (PT.PICKER_LABEL, PT.colour_by_match("Nuclei"), PT.STATUS_NONE,
+              PT.STATUS_ONE, PT.STATUS_SEVERAL, PT.STATUS_SHARED,
+              PT.STATUS_TOO_SMALL, PT.STATUS_NOT_MEASURED, PT.LIMIT,
+              PT.PREDATE_EDITS):
+        assert s in q, s
+
+
+def test_the_pairing_section_states_the_link_floor_in_use():
+    from napari_epicycle.fusion_reconstruction import _qc_pairing_text as PT
+    from napari_epicycle.fusion_reconstruction.qc_pairing_group import (
+        LINK_FLOOR,
+    )
+
+    assert PT.link_rule(LINK_FLOOR) in quotes(_pairing_section())
+    assert PT.link_rule(LINK_FLOOR) == (
+        "Two objects are linked when their shared voxels are at least "
+        "0.20 of the smaller one.")
+
+
+def test_the_pairing_section_check_has_teeth():
+    templates = _templates()
+    section = _pairing_section()
+    assert unmatched(section, templates) == []
+    for old, new in (("0.20 of the smaller one", "0.20 of the larger one"),
+                     ("not that the cell is right", "not that it is right"),
+                     ('"shared match"', '"match shared"'),
+                     ("predate your edits", "predate the edits")):
+        assert old in section, old
+        assert unmatched(section.replace(old, new), templates), old
 
 
 def test_no_retired_words_in_the_plot_guide():

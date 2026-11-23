@@ -723,18 +723,16 @@ class TestDisconnectLabelSync:
         layer = _FakeLayer(np.zeros((4, 8, 8), dtype=np.int32), name="seg")
 
         mgr1.connect_label_sync(layer)
-        # Reset flag so mgr2 can also connect
-        layer._epicycle_sync_connected = False
         mgr2.connect_label_sync(layer)
 
-        # Both added handlers
-        assert len(layer.events.mode._callbacks) == 2
+        # The newer manager replaces the stale one's handlers (a closed
+        # annotator's callbacks must never pile up on a surviving layer).
+        assert len(layer.events.mode._callbacks) == 1
 
-        # Disconnect mgr1's handlers
+        # The stale manager's disconnect must not remove mgr2's handlers.
         mgr1.disconnect_label_sync(layer)
         assert len(layer.events.mode._callbacks) == 1
 
-        # The remaining handler is mgr2's
         mgr2.disconnect_label_sync(layer)
         assert len(layer.events.mode._callbacks) == 0
 
@@ -1178,3 +1176,228 @@ class TestClearEditedSlicesForLabel:
         mgr.clear_edited_slices_for_label("seg", 5)
         result = mgr.get_edited_slices("seg")
         assert result == {"XY": {}, "XZ": {}, "YZ": {}}
+
+
+# ---------------------------------------------------------------------------
+# Real napari layers: callbacks must not pile up across annotator reopens
+# ---------------------------------------------------------------------------
+
+
+def _real_setup():
+    from packages.epicycle_annotator.sync import lock_brush_size_to_1
+
+    main = Labels(np.zeros((4, 8, 8), np.int32), name="curation_3d_run1")
+    lock_brush_size_to_1(main)
+    return main
+
+
+def _make_real_manager(main):
+    vms = [types.SimpleNamespace(layers=[]) for _ in range(3)]
+    return LabelSyncManager(
+        main_viewer=types.SimpleNamespace(layers=[main]),
+        viewer_model_xy=vms[0],
+        viewer_model_xz=vms[1],
+        viewer_model_yz=vms[2],
+        qt_viewer_xy=None,
+        qt_viewer_xz=None,
+        qt_viewer_yz=None,
+    )
+
+
+def _counts(layer):
+    return {
+        n: len(getattr(layer.events, n).callbacks)
+        for n in ("brush_size", "n_edit_dimensions", "colormap", "selected_label")
+    }
+
+
+def _open(main):
+    mgr = _make_real_manager(main)
+    mgr.connect_main_label_sync(main)
+    mgr.connect_label_sync(main)
+    return mgr
+
+
+def _close(mgr, main):
+    # Same order as the annotator's close path.
+    mgr.disconnect_label_sync(main)
+    mgr.disconnect_main_label_sync(main)
+    mgr.disconnect_all()
+
+
+class TestNoCallbackAccumulationAcrossReopens:
+    def test_reopen_cycles_leave_only_live_manager_callbacks(self):
+        main = _real_setup()
+        base = _counts(main)
+        live = _open(main)
+        one_open = _counts(main)
+        _close(live, main)
+        assert _counts(main) == base
+
+        for _ in range(3):
+            mgr = _open(main)
+            assert _counts(main) == one_open
+            _close(mgr, main)
+        assert _counts(main) == base
+
+    def test_aborted_close_does_not_leak_into_next_open(self):
+        main = _real_setup()
+        base = _counts(main)
+        first = _open(main)
+        one_open = _counts(main)
+        # Close "aborted": no disconnect ever called for `first`; the
+        # guard flags are reset by a sweep, as the widget's sweep does.
+        main._epicycle_sync_connected = False
+        main._epicycle_main_drag_connected = False
+        second = _open(main)
+        assert _counts(main) == one_open
+        assert len(main.mouse_drag_callbacks) == 1
+        _close(second, main)
+        assert _counts(main) == base
+        assert first is not None
+
+    def test_stale_manager_disconnect_does_not_remove_live_callbacks(self):
+        main = _real_setup()
+        stale = _open(main)
+        live = _open(main)
+        live_counts = _counts(main)
+        _close(stale, main)
+        assert _counts(main) == live_counts
+        assert main._epicycle_sync_connected is True
+        assert main._epicycle_main_drag_connected is True
+        _close(live, main)
+
+    def test_brush_slider_does_not_cascade_through_stale_managers(self):
+        main = _real_setup()
+        for _ in range(3):
+            _open(main)  # never closed: three stale + one live
+        live = _open(main)
+        calls = []
+        orig = LabelSyncManager.sync_label_properties
+
+        def spy(self, layer):
+            calls.append(id(self))
+            return orig(self, layer)
+
+        LabelSyncManager.sync_label_properties = spy
+        try:
+            main.brush_size = 7
+        finally:
+            LabelSyncManager.sync_label_properties = orig
+        assert main.brush_size == 1
+        assert set(calls) <= {id(live)}
+        assert len(calls) <= 4  # two live callbacks x (set + snap-back)
+
+
+class TestWriteOnlyOnChange:
+    def test_same_colormap_object_emits_once(self):
+        main = _real_setup()
+        from napari.utils.colormaps import label_colormap
+
+        cmap = label_colormap(8)
+        seen = []
+        main.events.colormap.connect(lambda e: seen.append(1))
+        main.colormap = cmap
+        main.colormap = cmap
+        n = len(seen)
+        mgr = _make_real_manager(main)
+        sub = Labels(np.zeros((4, 8, 8), np.int32), name="curation_3d_run1_XY")
+        mgr.viewer_model_xy.layers.append(sub)
+        sub_seen = []
+        sub.events.colormap.connect(lambda e: sub_seen.append(1))
+        sub.events.opacity.connect(lambda e: sub_seen.append(1))
+        sub.events.n_edit_dimensions.connect(lambda e: sub_seen.append(1))
+        mgr.sync_label_properties(main)
+        first = len(sub_seen)
+        mgr.sync_label_properties(main)
+        assert len(sub_seen) == first, "second sync with equal values must emit nothing"
+        assert n >= 1
+
+
+class TestConnectThroughProxy:
+    """The 3D annotator's slow load connects through a throwaway namespace
+    that shares the real layer's emitters."""
+
+    @staticmethod
+    def _proxy(main):
+        return types.SimpleNamespace(name=main.name, data=main.data, events=main.events)
+
+    def test_leaky_closes_through_proxy_do_not_accumulate(self):
+        main = _real_setup()
+        base = _counts(main)
+        clean = _make_real_manager(main)
+        clean.connect_main_label_sync(main)
+        clean.connect_label_sync(self._proxy(main))
+        clean_counts = _counts(main)
+        clean.disconnect_label_sync(self._proxy(main))
+        clean.disconnect_main_label_sync(main)
+        assert _counts(main) == base
+
+        for _ in range(3):  # closes that never reach a disconnect
+            mgr = _make_real_manager(main)
+            mgr.connect_main_label_sync(main)
+            mgr.connect_label_sync(self._proxy(main))
+            main._epicycle_sync_connected = False
+            main._epicycle_main_drag_connected = False
+        mgr = _make_real_manager(main)
+        mgr.connect_main_label_sync(main)
+        mgr.connect_label_sync(self._proxy(main))
+        assert _counts(main) == clean_counts
+
+    def test_disconnect_through_real_layer_removes_proxy_connected(self):
+        main = _real_setup()
+        base = _counts(main)
+        mgr = _make_real_manager(main)
+        mgr.connect_label_sync(self._proxy(main))
+        mgr.disconnect_label_sync(main)
+        assert _counts(main) == base
+
+
+class TestSyncPurgeAndDiag:
+    def test_purging_other_managers_callbacks_prints_one_line(self, capsys):
+        main = _real_setup()
+        _open(main)
+        capsys.readouterr()
+        _open(main)
+        out = capsys.readouterr().out
+        assert out.count("[SYNC-PURGE]") >= 1
+
+    def test_sync_props_print_is_off_by_default(self, capsys):
+        main = _real_setup()
+        mgr = _open(main)
+        capsys.readouterr()
+        mgr.sync_label_properties(main)
+        assert "[SYNC-PROPS]" not in capsys.readouterr().out
+
+    def test_disconnect_all_clears_layer_ledgers(self):
+        main = _real_setup()
+        mgr = _open(main)
+        mgr.disconnect_all()
+        assert not getattr(main, "_epicycle_sync_cbs", None)
+        assert not getattr(main, "_epicycle_main_sync_cbs", None)
+
+
+class TestLedgerHostRelease:
+    def test_disconnected_layer_is_not_kept_alive(self):
+        import gc
+        import weakref
+
+        main = _real_setup()
+        mgr = _make_real_manager(main)
+        mgr.connect_label_sync(main)
+        mgr.disconnect_label_sync(main)
+        ref = weakref.ref(main)
+        mgr.main_viewer.layers.clear()
+        del main
+        gc.collect()
+        assert ref() is None
+
+    def test_own_proxy_then_real_connect_prints_no_purge(self, capsys):
+        main = _real_setup()
+        mgr = _make_real_manager(main)
+        mgr.connect_label_sync(
+            types.SimpleNamespace(name=main.name, data=main.data, events=main.events)
+        )
+        capsys.readouterr()
+        mgr.connect_label_sync(main)
+        assert "[SYNC-PURGE]" not in capsys.readouterr().out

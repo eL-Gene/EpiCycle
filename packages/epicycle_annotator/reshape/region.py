@@ -25,6 +25,69 @@ The algorithm, each stage polling ``cancel_event``:
 8. **Keep only new objects, one piece each** (``keep_marker_components``).
 9. **Notes** -- faint-wall pairs and the unfilled share of the tissue.
 
+**Three ways to grow** (``params["growth"]``): ``"flood"`` -- the stages
+above, the default, unchanged -- ``"compete"``, the competition with a
+growth limit (``compete.py``), and ``"fill_with_background"``, one seeded
+watershed with a background marker.
+
+Under ``"compete"``: stage 4 also drops run markers that are mostly over
+kept objects (``drop_sliver_markers``, on the unclipped cores); stage 5
+seeds every kept object as a competitor (``kept_competitors``) instead of
+its core; stage 6 is skipped (no outside marker -- the competition only
+claims voxels of its *space*: the empty voxels, cut to the tissue outline
+when one is chosen, else minus the eroded dark); stage 7 runs
+``compete_tiled`` (tiles in all three axes on ONE elevation and ONE marker
+volume, so tiles equal one call), zeroes the competitors' claims and, with
+``include_membrane``, hands the membrane at a new cell's edge to it.
+
+Under ``"fill_with_background"`` (what fills a whole patch on Cells):
+stages 1-4 and the space as under the competition (the same sliver drop,
+the same space from one shared helper), the same kept competitors, plus
+ONE background marker: every space voxel holding no source that lies
+farther from its nearest marker than that marker's own distance ``r`` --
+``max(BACKGROUND_FROM_MARKER_UM, BACKGROUND_NN_SHARE x the distance from
+its centroid to the nearest other marker's centroid)``, in um; a lone
+marker takes the floor.  That distance is where the background STARTS,
+not how far a cell grows: on flat terrain the cut lands about half-way.
+The seed is geometric (the space, the markers, the spacing; never an
+image channel) and is measured in z-slabs with a halo wider than every
+``r``, which gives exactly the whole-volume answer and a Stop between
+slabs.  The slabs hold the distance map's memory (about 49 bytes per
+voxel of a slab and its halo) to the larger of the slab budget and about
+four halos of planes; one marker far from the rest makes the halo, and so
+a slab, as large as the whole patch.  Then one watershed over the space
+(6-connected, no line, compactness 0) under the flood's stage name
+``add_cut``; the competitors' and the background's claims are zeroed,
+the membrane step runs when ticked, the voxels the kept objects were
+seeded on are emptied again (a kept object keeps its side of a gap), and
+one piece per marker is kept.  Measured, the whole path peaks at about
+59 bytes per voxel of the patch with the membrane step off and about 70
+with it on, besides the caller's own inputs.  The watershed itself cannot
+be stopped; a Stop pressed during it lands when it returns, before
+anything is handed back.
+
+``whole_patch=True`` lifts the box budget for the competition (grown in
+tiles) and for the fill with a background, which has its own ceiling,
+:data:`WHOLE_FILL_MAX_VOXELS` (reason ``"too-big-whole"``).  The flood
+never takes a whole patch.
+
+**The tissue outline** (``params["outline"]`` is the MODE, both growth
+rules): ``"shrink"`` (``outline.tissue_outline``) or ``"cleared"``.  The
+outline itself is the run argument ``outline=`` -- the finished outline
+the caller built ONCE over the whole patch (or its box crop); the engine
+crops it and never builds one for a box alone: ``"shrink"`` with no
+``outline=`` is refused (``"outline-per-box"``) unless the run IS the
+whole patch (``whole_patch=True``), where it is built here from the dark
+channels.  Choosing one turns the dark plumbing on whatever
+``params["outside"]`` says.  Hook A: an automatic marker with >= 70 % of
+its voxels outside is dropped (``n_outside_outline``, apart from the dark
+drop, which runs first); when that leaves no marker the refusal is
+``"no-markers-outline"``.  Hook B (the flood only): the empty space
+outside the outline joins the outside marker.  Hook D (both growth rules;
+it only ever shrinks the answer): new objects only inside it.  The
+unfilled share is then measured against the outline.  It never writes and
+never touches a kept object.
+
 Unlike the label path, a cancel here RAISES :class:`~.engine.ReshapeCancelled`;
 the Add worker turns it into its own ``cancelled`` answer.
 
@@ -33,9 +96,16 @@ Pure: numpy / scipy / skimage, no Qt, no napari.
 
 from __future__ import annotations
 
+import math
+import threading
+import time
+
 import numpy as np
 from scipy import ndimage as ndi
+from scipy.spatial import cKDTree
 
+# the module, not its names: `include_membrane` is also a spec knob
+from . import compete as _compete
 from .engine import (
     ReshapeCancelled,
     SeedReport,
@@ -48,12 +118,21 @@ from .spec import REGION_SEEDS, ReshapeResult, ReshapeSpec
 
 __all__ = [
     "ADD_ENGINE_NO_MARKERS",
+    "ADD_ENGINE_NO_MARKERS_OUTLINE",
+    "ADD_ENGINE_OUTLINE_PER_BOX",
     "ADD_ENGINE_TOO_BIG",
+    "ADD_ENGINE_TOO_BIG_WHOLE",
+    "BACKGROUND_FROM_MARKER_UM",
+    "BACKGROUND_NN_SHARE",
+    "BACKGROUND_SLAB_VOXELS",
+    "ENGINE_REFUSALS",
     "DARK_BLUR_UM",
     "DARK_SAMPLE_VOXELS",
     "NUCLEI_SLIVER_UM",
     "REGION_SEEDS",
     "REGION_STAGES",
+    "REGION_STAGES_COMPETE",
+    "compete_is_warm",
     "dark_mask",
     "drop_slivers",
     "eroded_cores",
@@ -64,7 +143,10 @@ __all__ = [
     "rasterise_points",
     "reshape_empty_region",
     "too_big_sentence",
+    "too_big_whole_sentence",
     "unfilled_fraction",
+    "warm_up_compete",
+    "WHOLE_FILL_MAX_VOXELS",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -85,6 +167,39 @@ NUCLEI_SLIVER_UM = 1.0
 #: is dropped.
 DARK_DROP_SHARE = 0.5
 
+#: Under ``growth="fill_with_background"``: the least distance (um) from a
+#: marker at which the background seed may start.  It is where the seed
+#: STARTS, not how far a cell grows (on flat terrain the cut lands about
+#: half-way between the marker and the seed).
+BACKGROUND_FROM_MARKER_UM = 6.0
+
+#: ... and the share of the distance from a marker's centroid to the
+#: nearest other marker's centroid at which its background seed starts,
+#: when that is farther than :data:`BACKGROUND_FROM_MARKER_UM` -- so a
+#: sparse layer of large cells is not cut short by a fixed distance.
+BACKGROUND_NN_SHARE = 0.75
+
+#: The largest whole patch (voxels) the fill with a background takes: the
+#: fill peaks at about 59 bytes per voxel of the patch with the membrane
+#: step off and about 70 with it on (besides the caller's own inputs: about
+#: 6 GB and 7 GB at this ceiling), and its watershed cannot be stopped once
+#: it runs (the watershed step alone took about two minutes at 73 million
+#: voxels; the whole Preview takes longer).
+WHOLE_FILL_MAX_VOXELS = 100_000_000
+
+#: Voxels per z-slab, halo included, when the background seed is measured;
+#: the distance map holds about 49 bytes per voxel of a slab.  A slab is
+#: never thinner than two halos, so the distance maps together cover at
+#: most about three times the patch; with one marker far from the rest the
+#: halo -- and a slab -- can reach the whole patch.
+BACKGROUND_SLAB_VOXELS = 16_000_000
+
+#: The growth rules that drop run markers mostly over kept objects.
+_SLIVER_DROP_GROWTH = ("compete", "fill_with_background")
+
+#: The largest id the solvers take.
+_INT32_MAX = int(np.iinfo(np.int32).max)
+
 #: The marker sources the region target reads -- ONE tuple, defined in
 #: ``spec.py`` (which refuses any other source on ``target="region"``) and
 #: re-exported here.
@@ -95,6 +210,12 @@ DARK_DROP_SHARE = 0.5
 #: the empty space...") names the work under way.  The Add worker maps them
 #: to ``STAGE_TEXT``.
 REGION_STAGES = ("add_box", "elevation", "add_markers", "add_cut")
+
+#: The same four stages under ``growth="compete"``: the last one grows.
+REGION_STAGES_COMPETE = ("add_box", "elevation", "add_markers", "add_grow")
+
+#: The competition reports each finished tile as ``(PIECE_STAGE, i, k)``.
+PIECE_STAGE = "add_piece"
 
 # -- the engine's sentences ---------------------------- #
 _TOO_BIG_TEMPLATE = (
@@ -117,6 +238,18 @@ def too_big_sentence(budget):
     return _TOO_BIG_TEMPLATE.format(_voxel_count_words(budget))
 
 
+_TOO_BIG_WHOLE_TEMPLATE = (
+    "This patch is too large to fill as a whole — the limit is {} "
+    "voxels; fill it box by box instead. (Nothing was changed.)"
+)
+
+
+def too_big_whole_sentence(limit):
+    """The refusal of a whole-patch fill over ``limit`` voxels (reason
+    ``"too-big-whole"``)."""
+    return _TOO_BIG_WHOLE_TEMPLATE.format(_voxel_count_words(limit))
+
+
 #: The refusal at the default budget (``spec.ADD_BOX_BUDGET``); B2 imports
 #: it by name.  A refusal under any other budget is ``too_big_sentence``.
 ADD_ENGINE_TOO_BIG = too_big_sentence(4_000_000)
@@ -124,6 +257,32 @@ ADD_ENGINE_NO_MARKERS = (
     "No marker was left to grow from — every marker fell in dark space, "
     "over kept objects, or was too small to use. (Nothing was changed.)"
 )
+#: Reason ``"no-markers-outline"``: the tissue outline dropped the last
+#: markers (at least one marker was left until the outline drop).
+ADD_ENGINE_NO_MARKERS_OUTLINE = (
+    "No marker was left to grow from — the markers that were left all lay "
+    "outside the tissue outline. (Nothing was changed.)"
+)
+#: Reason ``"outline-per-box"``: a shrink outline was asked for one box
+#: with no outline handed in.  The outline is built once over the whole
+#: patch and cropped; one built over a box alone differs at the box faces.
+ADD_ENGINE_OUTLINE_PER_BOX = (
+    "The tissue outline is built over the whole patch, never over one box "
+    "alone, and none was handed in. (Nothing was changed.)"
+)
+
+#: Reason ``"too-big-whole"`` at the shipped ceiling; a refusal under any
+#: other ceiling is :func:`too_big_whole_sentence`.
+ADD_ENGINE_TOO_BIG_WHOLE = too_big_whole_sentence(WHOLE_FILL_MAX_VOXELS)
+
+#: Every engine refusal's sentence by its reason code, except ``"too-big"``
+#: (its sentence names the budget: :func:`too_big_sentence`).
+ENGINE_REFUSALS = {
+    "no-markers": ADD_ENGINE_NO_MARKERS,
+    "no-markers-outline": ADD_ENGINE_NO_MARKERS_OUTLINE,
+    "outline-per-box": ADD_ENGINE_OUTLINE_PER_BOX,
+    "too-big-whole": ADD_ENGINE_TOO_BIG_WHOLE,
+}
 
 #: Log-only diagnostic (not a user sentence; never in ``messages``).
 _LOG_NEIGHBOUR_NO_CORE = (
@@ -141,21 +300,52 @@ def _check_cancel(cancel_event):
 
 
 class _RegionProgress:
-    """``(stage, i, n)`` over :data:`REGION_STAGES`; a raising callback is
-    swallowed, as the engine's own ``_Progress`` does."""
+    """``(stage, i, n)`` over :data:`REGION_STAGES` (or ``names``); a raising
+    callback is swallowed, as the engine's own ``_Progress`` does -- except
+    that with ``propagate_cancel`` a :class:`~.engine.ReshapeCancelled` it
+    raises stops the run (the fill with a background: its watershed cannot
+    be stopped once it starts, so a Stop at its stage must land before)."""
 
-    __slots__ = ("_cb", "_i")
+    __slots__ = ("_cb", "_i", "_n", "_propagate")
 
-    def __init__(self, callback):
+    def __init__(self, callback, names=REGION_STAGES, propagate_cancel=False):
         self._cb = callback
         self._i = 0
+        self._n = len(names)
+        self._propagate = bool(propagate_cancel)
 
     def __call__(self, stage):
         self._i += 1
         if self._cb is None:
             return
         try:
-            self._cb(stage, self._i, len(REGION_STAGES))
+            self._cb(stage, self._i, self._n)
+        except ReshapeCancelled:
+            if self._propagate:
+                raise
+        except Exception:
+            pass
+
+
+class _PieceProgress:
+    """``compete_tiled``'s ``progress(i, k)`` -> ``callback(PIECE_STAGE, i,
+    k)``; remembers ``k``.  A Stop raised by the callback propagates; any
+    other error in it is swallowed (a broken bar never stops the work)."""
+
+    __slots__ = ("_cb", "k")
+
+    def __init__(self, callback):
+        self._cb = callback
+        self.k = 0
+
+    def __call__(self, i, k):
+        self.k = int(k)
+        if self._cb is None:
+            return
+        try:
+            self._cb(PIECE_STAGE, int(i), int(k))
+        except ReshapeCancelled:
+            raise
         except Exception:
             pass
 
@@ -515,6 +705,17 @@ def unfilled_fraction(result, existing_roi, dark_raw):
     return unfilled / denominator
 
 
+def _unfilled_in_outline(result, existing_roi, outline):
+    """|empty, inside the outline, not filled| / |empty, inside the outline|
+    -- ``None`` when the outline holds no empty voxel."""
+    tissue = (np.asarray(existing_roi) == 0) & np.asarray(outline, bool)
+    denominator = int(np.count_nonzero(tissue))
+    if denominator == 0:
+        return None
+    unfilled = int(np.count_nonzero(tissue & (np.asarray(result) == 0)))
+    return unfilled / denominator
+
+
 # --------------------------------------------------------------------------- #
 # the shared stages 1, 3, 4
 # --------------------------------------------------------------------------- #
@@ -539,54 +740,241 @@ def _check_spec(spec):
 
 def _budget(spec, shape):
     n = int(np.prod(shape, dtype=np.int64))
+    if spec.params.get("whole_patch"):
+        # the competition grows a whole patch in tiles, so its size is never
+        # refused here; the fill with a background is ONE watershed over
+        # the whole patch, held whole in memory and not stoppable while it
+        # runs, so it has a ceiling (checked before anything is read)
+        if spec.params.get("growth") == "fill_with_background":
+            limit = int(WHOLE_FILL_MAX_VOXELS)
+            if n > limit:
+                raise _Refused("too-big-whole", too_big_whole_sentence(limit))
+        return n
     budget = int(spec.params["box_budget"])
     if n > budget:
         raise _Refused("too-big", too_big_sentence(budget))
     return n
 
 
-def _dark_stage(spec, *, roi, shape, dark_channels, dark_threshold, spacing):
-    """``dark_raw`` (bool, box-sized) or ``None`` with ``outside="faces"``."""
-    if spec.params["outside"] != "faces+dark":
-        return None
+def _effective_outside(params):
+    """``params["outside"]``, except that a tissue outline turns the dark
+    plumbing on whatever the dark tick says (the outline is decoupled from
+    the tick; the dark drop and, for the flood, the dark outside marker
+    then always run)."""
+    if params.get("outline", "none") != "none":
+        return "faces+dark"
+    return params["outside"]
+
+
+def _dark_stage(spec, *, roi, shape, dark_channels, dark_threshold, spacing,
+                keep_crops=False):
+    """``(dark_raw, crops)``: ``dark_raw`` (bool, box-sized) or ``None``
+    with ``outside="faces"`` and no tissue outline; ``crops`` -- the dark
+    channels cut to the box, returned only with ``keep_crops`` (the shrink
+    outline built here reads the same crops: each channel is cut ONCE),
+    else ``None``."""
+    if _effective_outside(spec.params) != "faces+dark":
+        return None, None
+    why = ("outside='faces+dark'" if spec.params["outside"] == "faces+dark"
+           else "a tissue outline")
     if dark_threshold is None:
         raise ValueError(
-            "outside='faces+dark' needs dark_threshold= (the patch threshold "
-            "from patch_dark_threshold).")
+            "{} needs dark_threshold= (the patch threshold "
+            "from patch_dark_threshold).".format(why))
     if not dark_channels:
         raise ValueError(
-            "outside='faces+dark' needs dark_channels= (every image channel "
-            "of the patch, cropped to the box).")
+            "{} needs dark_channels= (every image channel "
+            "of the patch, cropped to the box).".format(why))
     crops = {name: _region_crop(arr, roi, shape,
                                 what="dark channel {!r}".format(name))
              for name, arr in dict(dark_channels).items()}
-    return dark_mask(crops, dark_threshold=dark_threshold,
-                     factor=spec.params["dark_otsu_factor"], spacing=spacing)
+    dark_raw = dark_mask(crops, dark_threshold=dark_threshold,
+                         factor=spec.params["dark_otsu_factor"], spacing=spacing)
+    return dark_raw, (crops if keep_crops else None)
 
 
 def _drop_dark(markers, dark_raw):
-    """Drop automatic markers with >= 50 % of their voxels in the dark."""
+    """Drop automatic markers with >= 50 % of their voxels in the dark.
+
+    Counts with ``np.bincount`` over COMPACTED ids (the ids' own values are
+    never an index), so a whole patch or an id of 2**31 - 1 costs only the
+    marker voxels -- a float64 ``ndi.sum`` over the volume cost 56 s and
+    4.2 GiB at 73 M voxels.  The decisions are the ones that sum made."""
     if dark_raw is None:
         return markers, 0
-    ids = _ids_of(markers)
-    if ids.size == 0:
+    nz = markers != 0
+    if not nz.any():
         return markers, 0
-    total = ndi.sum(np.ones(markers.shape, np.float64), labels=markers, index=ids)
-    in_dark = ndi.sum(dark_raw.astype(np.float64), labels=markers, index=ids)
-    share = np.asarray(in_dark) / np.maximum(np.asarray(total), 1.0)
+    ids, inv = np.unique(markers[nz], return_inverse=True)
+    inv = inv.reshape(-1)
+    total = np.bincount(inv, minlength=ids.size).astype(np.float64)
+    in_dark = np.bincount(inv[np.asarray(dark_raw, bool)[nz]],
+                          minlength=ids.size).astype(np.float64)
+    share = in_dark / np.maximum(total, 1.0)
     drop = ids[share >= DARK_DROP_SHARE]
     if drop.size:
         markers = np.where(np.isin(markers, drop), 0, markers)
     return markers, int(drop.size)
 
 
+def _drop_automatic(markers, *, dark_raw, outline):
+    """The automatic markers' two drops, in order and counted apart:
+    >= 50 % of a marker in the dark (``n_dropped_dark``), THEN >= 70 % of a
+    survivor outside the tissue outline (``n_outside_outline``).  A marker
+    both dark and outside is dropped once and counted as dark; a marker
+    30 % dark and 30 % outside is kept (each rule on its own).  Returns
+    ``(markers, n_dark, n_outside)``."""
+    markers, n_dark = _drop_dark(markers, dark_raw)
+    if outline is None:
+        return markers, n_dark, 0
+    from .outline import markers_outside
+
+    drop = markers_outside(markers, outline)
+    if drop.size:
+        markers = np.where(np.isin(markers, drop), 0, markers)
+    return markers, n_dark, int(drop.size)
+
+
+def _check_outline_arg(spec, outline):
+    """The run argument ``outline=`` against the spec's outline MODE, in
+    plain words (a ``ValueError``: a caller's mistake, raised before any
+    work).  A volume with no outline chosen, ``"cleared"`` without its
+    volume, a volume that is not 3D, or one that is not bool / integer
+    0-1 (a float is refused -- a probability map is no outline)."""
+    mode = spec.params.get("outline", "none")
+    if outline is None:
+        if mode == "cleared":
+            raise ValueError(
+                "params['outline']='cleared' needs outline= (the outline "
+                "of the objects cleared on this patch, built by the "
+                "caller).")
+        return
+    if mode == "none":
+        raise ValueError(
+            "outline= was given but no outline is chosen "
+            "(params['outline']='none'); pick 'shrink' or 'cleared', or "
+            "leave the outline out.")
+    shape = getattr(outline, "shape", None)
+    if shape is None or len(shape) != 3:
+        raise ValueError(
+            "outline= must be a 3D volume (the whole patch or the box "
+            "crop), got shape {!r}.".format(shape))
+    dtype = np.dtype(getattr(outline, "dtype", np.float64))
+    if dtype.kind not in "biu":
+        raise ValueError(
+            "outline= must be bool, or integers 0 and 1; got {} (a float "
+            "map is not an outline -- threshold it first).".format(dtype))
+
+
+def _outline_refusal(spec, outline):
+    """A box always receives the patch-wide outline cropped.  A shrink
+    outline with nothing handed in is built here only when the run IS the
+    whole patch; for a box it is refused -- one built over the box alone
+    differs from the patch's at every box face."""
+    p = spec.params
+    if (p.get("outline", "none") == "shrink" and outline is None
+            and not p.get("whole_patch")):
+        raise _Refused("outline-per-box", ADD_ENGINE_OUTLINE_PER_BOX)
+
+
+def _outline_stage(spec, *, outline, roi, shape, crops, dark_threshold,
+                   spacing, cancel_event):
+    """The tissue outline cut to the box (bool), or ``None`` for
+    ``outline="none"``.  ``outline`` (the run argument: the whole patch or
+    the box crop) is cropped and used as handed in; ``"shrink"`` without
+    one (the whole patch only, see :func:`_outline_refusal`) is built here
+    from ``crops`` -- the dark channels already cut for the dark stage --
+    at the patch threshold, Dark below and Bridge gaps."""
+    p = spec.params
+    mode = p.get("outline", "none")
+    if mode == "none":
+        return None
+    if outline is not None:
+        box = _region_crop(outline, roi, shape, what="the tissue outline")
+        if box.dtype != bool:
+            if box.size and (box.min() < 0 or box.max() > 1):
+                raise ValueError(
+                    "outline= must hold only 0 and 1; it holds values from "
+                    "{} to {} in the box.".format(box.min(), box.max()))
+            box = box.astype(bool)
+        return box
+    from .outline import tissue_outline
+
+    return tissue_outline(crops, spacing, dark_factor=p["dark_otsu_factor"],
+                          bridge_um=p["bridge_um"],
+                          dark_threshold=dark_threshold, cancel=cancel_event)
+
+
+def _no_markers(counts):
+    """The refusal when no marker is left: the outline's own reason when it
+    dropped the last ones, else the general one."""
+    if counts.get("n_outside_outline", 0) > 0:
+        return _Refused("no-markers-outline", ADD_ENGINE_NO_MARKERS_OUTLINE)
+    return _Refused("no-markers", ADD_ENGINE_NO_MARKERS)
+
+
+def _dark_and_outline(spec, *, outline, roi, shape, dark_channels,
+                      dark_threshold, spacing, cancel_event):
+    """Stages 3 and 3b: ``(dark_raw, outline_box)``; the dark channels are
+    cut to the box once and shared."""
+    build_here = (spec.params.get("outline", "none") == "shrink"
+                  and outline is None)
+    dark_raw, crops = _dark_stage(spec, roi=roi, shape=shape,
+                                  dark_channels=dark_channels,
+                                  dark_threshold=dark_threshold,
+                                  spacing=spacing, keep_crops=build_here)
+    _check_cancel(cancel_event)
+    # None for "none": no work, no poll
+    box = _outline_stage(spec, outline=outline, roi=roi, shape=shape,
+                         crops=crops, dark_threshold=dark_threshold,
+                         spacing=spacing, cancel_event=cancel_event)
+    return dark_raw, box
+
+
+def _dark_outside(spec, dark_raw, *, seed_points, shape, spacing, cancel_event,
+                  faces_are_dark=False):
+    """The dark part of the outside: ``dark_raw`` with the click clearance
+    taken out, eroded by the clearance reach.  Returns ``(dark_out,
+    dark_raw)`` -- ``dark_raw`` after the clearance, which the unfilled
+    share reads.  ``faces_are_dark``: the box faces are no edge of the dark
+    (the erosion pads with dark), so the dark reaches the faces -- the
+    competition needs that, having no face marker; the flood keeps its
+    faces in the outside marker anyway."""
+    p = spec.params
+    if spec.seeds == "paint" and seed_points:
+        clear = rasterise_points(seed_points, shape,
+                                 radius_um=p["dark_clearance_um"],
+                                 spacing=spacing) > 0
+        dark_raw = dark_raw & ~clear
+    reach = float(p["dark_clearance_um"])
+    _check_cancel(cancel_event)
+    if reach > 0:
+        from .arbiter import physical_ball
+        if faces_are_dark:
+            dark_out = ndi.binary_erosion(
+                dark_raw, structure=physical_ball(reach, spacing),
+                border_value=1)
+        else:
+            dark_out = ndi.binary_erosion(dark_raw,
+                                          structure=physical_ball(reach, spacing))
+    else:
+        dark_out = dark_raw
+    return dark_out, dark_raw
+
+
 def _marker_stage(spec, *, roi, shape, existing, seed_layer, seed_points,
-                  dark_raw, spacing, cancel_event):
-    """Stage 4: the new-object markers ``1..N`` and their counts."""
+                  dark_raw, spacing, cancel_event, outline=None):
+    """Stage 4: the new-object markers ``1..N`` and their counts.
+
+    The order: the cores; under the competition and the fill with a
+    background the sliver drop on the UNCLIPPED cores (run objects only);
+    the clip to empty space; the dark drop; the outline drop (hook A); the
+    ascending relabel."""
     p = spec.params
     empty = existing == 0
     counts = {"n_dropped_thin": 0, "n_markers_over_kept": 0,
-              "n_nuclei_slivers": 0, "n_dropped_dark": 0}
+              "n_nuclei_slivers": 0, "n_dropped_dark": 0,
+              "n_outside_outline": 0, "n_slivers": 0}
     if spec.seeds == "paint":
         balls = rasterise_points(seed_points, shape,
                                  radius_um=p["click_radius_um"], spacing=spacing)
@@ -611,8 +999,18 @@ def _marker_stage(spec, *, roi, shape, existing, seed_layer, seed_points,
         on_empty = _ids_of(np.where(empty, crop, 0))
         counts["n_dropped_thin"] = int(np.intersect1d(emptied, on_empty).size)
         before = _ids_of(cores)
-        cores = np.where(empty, cores, 0)
-        counts["n_markers_over_kept"] = int(before.size - _ids_of(cores).size)
+        clipped = np.where(empty, cores, 0)
+        counts["n_markers_over_kept"] = int(before.size - _ids_of(clipped).size)
+        if p.get("growth") in _SLIVER_DROP_GROWTH:
+            # a core mostly over kept objects is a sliver of a kept cell's
+            # own nucleus; judged on the UNCLIPPED core, then clipped.  A
+            # core wholly over kept objects stays counted "over kept".
+            kept, n_sliv = _compete.drop_sliver_markers(cores, empty)
+            counts["n_slivers"] = int(n_sliv) - counts["n_markers_over_kept"]
+            clipped = np.where(empty, kept, 0)
+            del kept
+        cores = clipped
+        del clipped
         source = "another run's objects"
     else:  # nuclei_masks
         before = _ids_of(np.where(empty, crop, 0))
@@ -622,7 +1020,8 @@ def _marker_stage(spec, *, roi, shape, existing, seed_layer, seed_points,
         counts["n_nuclei_slivers"] = n_sliv
         source = "bright objects (nuclei)"
     _check_cancel(cancel_event)
-    cores, counts["n_dropped_dark"] = _drop_dark(cores, dark_raw)
+    cores, counts["n_dropped_dark"], counts["n_outside_outline"] = _drop_automatic(
+        cores, dark_raw=dark_raw, outline=outline)
     markers, n = _relabel_ascending(cores)
     return markers, n, n_found, counts, source
 
@@ -649,17 +1048,453 @@ def _wall_images(spec, images, roi, shape, supplied_elevation):
 
 
 # --------------------------------------------------------------------------- #
+# stages 5-8: the three ways to grow
+# --------------------------------------------------------------------------- #
+def _grow_by_flood(spec, *, elev, existing, new, n, outline, dark_raw,
+                   seed_points, shape, spacing, step, log, sink, cancel_event):
+    """Stages 5-8 of the flood (the default), with hooks B and D when an
+    outline is chosen.  Returns ``(result, markers, dark_raw, n_frag)``."""
+    p = spec.params
+    # ---- 5. kept neighbours, cored ----------------------------------- #
+    cores, n_no_core = eroded_cores(existing, erode_um=p["core_erode_um"],
+                                    spacing=spacing,
+                                    cancel_event=cancel_event)
+    if n_no_core and log is not None:
+        try:
+            log(_LOG_NEIGHBOUR_NO_CORE.format(n_no_core))
+        except Exception:
+            pass
+    markers = new.copy()
+    nb_ids = _ids_of(cores)
+    if nb_ids.size:
+        nz = cores != 0
+        markers[nz] = (np.searchsorted(nb_ids, cores[nz]) + n + 2).astype(np.int32)
+
+    # ---- 6. the outside marker --------------------------------------- #
+    # the box faces are outside (a box is a cut); a whole patch filled the
+    # way a box is keeps its faces open (``faces_outside=False``: they are
+    # the edge of the data), and its dark is not eroded back from them
+    faces = bool(p.get("faces_outside", True))
+    outside = np.zeros(shape, bool)
+    if faces:
+        outside[0, :, :] = outside[-1, :, :] = True
+        outside[:, 0, :] = outside[:, -1, :] = True
+        outside[:, :, 0] = outside[:, :, -1] = True
+    if dark_raw is not None:
+        dark_out, dark_raw = _dark_outside(spec, dark_raw,
+                                           seed_points=seed_points, shape=shape,
+                                           spacing=spacing,
+                                           cancel_event=cancel_event,
+                                           faces_are_dark=not faces)
+        outside |= dark_out
+    if outline is not None:
+        # hook B: outside the outline is outside -- a hard edge, not eroded
+        outside |= ~outline
+    outside &= (existing == 0) & (new == 0)
+    markers[outside & (markers == 0)] = n + 1
+    _check_cancel(cancel_event)
+
+    # ---- 7. the cut --------------------------------------------------- #
+    step("add_cut")
+    _check_cancel(cancel_event)
+    partition = solve(elev, markers, np.ones(shape, bool), solver="watershed",
+                      compactness=p["compactness"], spacing=spacing,
+                      sink=sink)
+    _check_cancel(cancel_event)
+
+    # ---- 8. new objects only, one piece each -------------------------- #
+    keep = (partition >= 1) & (partition <= n) & (existing == 0)
+    if outline is not None:
+        keep &= outline                  # hook D: new objects inside it only
+    result = np.where(keep, partition, 0).astype(np.int32)
+    del partition, keep
+    result, n_frag = keep_marker_components(result, new,
+                                            cancel_event=cancel_event)
+    _check_cancel(cancel_event)
+    return result, markers, dark_raw, n_frag
+
+
+def _growth_space(spec, *, existing, outline, dark_raw, seed_points, shape,
+                  spacing, cancel_event):
+    """Where the competition and the fill with a background may claim
+    voxels: the empty voxels inside the tissue outline; with no outline and
+    the dark rule on, the empty voxels minus the eroded dark (the box faces
+    count as dark); else every empty voxel.
+
+    Returns ``(space, dark_raw)`` -- ``dark_raw`` after the clearance
+    around clicks when the dark rule shaped the space (the unfilled share
+    reads it), else as handed in."""
+    empty = existing == 0
+    if outline is not None:
+        space = empty & outline          # hook D
+    elif dark_raw is not None:
+        dark_out, dark_raw = _dark_outside(spec, dark_raw,
+                                           seed_points=seed_points, shape=shape,
+                                           spacing=spacing,
+                                           cancel_event=cancel_event,
+                                           faces_are_dark=True)
+        space = empty & ~dark_out
+        del dark_out
+    else:
+        space = empty
+    return space, dark_raw
+
+
+def _grow_by_competition(spec, *, elev, existing, new, n, outline, dark_raw,
+                         seed_points, shape, spacing, tile_budget, step,
+                         progress, cancel_event):
+    """Stages 5-8 of the competition.  No outside marker: the competition
+    claims only its space -- the empty voxels inside the outline, or (no
+    outline) the empty voxels minus the eroded dark, or every empty voxel.
+    Returns ``(result, sources, dark_raw, n_frag, n_tiles)``."""
+    p = spec.params
+    # ---- 6'. the space (no outside marker) ----------------------------- #
+    space, dark_raw = _growth_space(spec, existing=existing, outline=outline,
+                                    dark_raw=dark_raw, seed_points=seed_points,
+                                    shape=shape, spacing=spacing,
+                                    cancel_event=cancel_event)
+    _check_cancel(cancel_event)
+
+    # ---- 5'. kept objects compete from the empty voxels next to them --- #
+    sources, n_new = _compete.kept_competitors(new, existing, space)
+    if n_new != n:          # pragma: no cover - `new` is relabelled 1..n
+        raise AssertionError("the markers are not numbered 1..{}".format(n))
+    _check_cancel(cancel_event)
+
+    # ---- 7'. the growth, tile by tile --------------------------------- #
+    step("add_grow")
+    pieces = _PieceProgress(progress)
+    claims = _compete.compete_tiled(
+        elev, sources, space, spacing, wall_cost=float(p["wall_cost"]),
+        growth_limit=float(p["growth_limit"]),
+        budget=(_compete.COMPETE_TILE_VOXELS if tile_budget is None
+                else int(tile_budget)),
+        cancel=cancel_event, progress=pieces)
+    _mark_warm("grow")
+    claims[claims > n] = 0               # a kept object never gains a voxel
+    _check_cancel(cancel_event)
+    if p["include_membrane"]:
+        claims = _compete.include_membrane(
+            claims, elevation=elev, existing=existing, space=space,
+            spacing_um=spacing)
+        _mark_warm("membrane")
+        _check_cancel(cancel_event)
+
+    # ---- 8'. new objects only, one piece each ------------------------- #
+    result = np.where((claims >= 1) & (claims <= n) & space, claims,
+                      0).astype(np.int32)
+    del claims
+    result, n_frag = keep_marker_components(result, new,
+                                            cancel_event=cancel_event)
+    _check_cancel(cancel_event)
+    return result, sources, dark_raw, n_frag, pieces.k
+
+
+# --------------------------------------------------------------------------- #
+# the background marker of the fill with a background
+# --------------------------------------------------------------------------- #
+def _checked_spacing(spacing):
+    """The voxel spacing as three finite positive floats (um), else a
+    ``ValueError`` in plain words: every distance of the background seed is
+    measured in microns."""
+    try:
+        sp = tuple(float(s) for s in spacing)
+    except (TypeError, ValueError):
+        sp = ()
+    if len(sp) != 3 or not all(math.isfinite(s) and s > 0.0 for s in sp):
+        raise ValueError(
+            "the background seed needs the voxel spacing as three positive "
+            "numbers in um (z, y, x); got {!r}.".format(spacing))
+    return sp
+
+
+def _background_radii(new, spacing):
+    """Per marker id, the distance (um) past which its background seed
+    starts: ``max(BACKGROUND_FROM_MARKER_UM, BACKGROUND_NN_SHARE x NN)``,
+    NN = the distance from the marker's centroid (its mean voxel index x
+    the spacing) to the nearest other marker's centroid.  A lone marker
+    takes the floor.  Returns a float64 array indexed by id (index 0, and
+    any id with no voxel, hold 0.0).  Reads only the marker voxels."""
+    sp = _checked_spacing(spacing)
+    mk = np.asarray(new)
+    n = int(mk.max()) if mk.size else 0
+    radii = np.zeros(n + 1, np.float64)
+    if n <= 0:
+        return radii
+    flat = mk.reshape(-1)
+    where = np.flatnonzero(flat)
+    ids = flat[where].astype(np.int64)
+    count = np.bincount(ids, minlength=n + 1).astype(np.float64)
+    present = np.flatnonzero(count[1:] > 0) + 1
+    coords = np.unravel_index(where, mk.shape)
+    del where
+    centroids = np.empty((present.size, 3), np.float64)
+    for axis in range(3):
+        total = np.bincount(ids, weights=coords[axis].astype(np.float64),
+                            minlength=n + 1)
+        centroids[:, axis] = total[present] / count[present] * sp[axis]
+    floor = float(BACKGROUND_FROM_MARKER_UM)
+    if present.size < 2:
+        radii[present] = floor
+        return radii
+    dist, _idx = cKDTree(centroids).query(centroids, k=2)
+    radii[present] = np.maximum(floor, float(BACKGROUND_NN_SHARE) * dist[:, 1])
+    return radii
+
+
+def _background_id(n, n_kept):
+    """The background's id: after the ``n`` new markers and the ``n_kept``
+    kept competitors.  Refused in plain words past the solver's int32."""
+    bg = int(n) + int(n_kept) + 1
+    if bg > _INT32_MAX:
+        raise ValueError(
+            "too many ids for the fill: {} new markers, {} kept objects and "
+            "the background need more ids than the solver takes "
+            "({}).".format(int(n), int(n_kept), _INT32_MAX))
+    return bg
+
+
+def _background_seeds(new, space, sources, spacing, *, cancel_event=None,
+                      slab_voxels=None):
+    """The background seed: every ``space`` voxel holding no source
+    (``sources == 0``) whose distance to its nearest marker voxel of
+    ``new`` exceeds that marker's distance (:func:`_background_radii`).
+
+    Geometric: it reads only the space, the markers, the sources and the
+    spacing -- never an image channel.  Measured in z-slabs with a halo of
+    ``ceil(max r / dz) + 1`` slices: a voxel whose nearest marker lies past
+    the halo is farther than every ``r``, so the slabs give the
+    whole-volume answer.  A slab is about ``slab_voxels`` voxels, halo
+    included (``None`` = :data:`BACKGROUND_SLAB_VOXELS`), but never thinner
+    than two halos, so the distance maps together cover at most about three
+    times the volume.  Memory: the distance map holds about 49 bytes per
+    voxel of a slab and its halo -- bounded by the larger of the slab budget
+    and about four halos of planes, which reaches the whole volume when one
+    marker is far from the rest (its ``r``, and the halo, are then large).
+    ``cancel_event`` is polled before every slab (raises
+    :class:`~.engine.ReshapeCancelled`).  Returns a bool volume; all False
+    when ``new`` holds no marker."""
+    sp = _checked_spacing(spacing)
+    mk = np.asarray(new)
+    shape = mk.shape
+    if len(shape) != 3:
+        raise ValueError("the markers must be a 3D volume, got shape "
+                         "{}.".format(shape))
+    space = np.asarray(space)
+    sources = np.asarray(sources)
+    if space.shape != shape or sources.shape != shape:
+        raise ValueError(
+            "the space {} and the sources {} must have the markers' shape "
+            "{}.".format(space.shape, sources.shape, shape))
+    space = space.astype(bool, copy=False)
+    out = np.zeros(shape, bool)
+    radii = _background_radii(mk, sp)
+    if radii.size < 2:
+        return out
+    r_max = float(radii.max())
+    nz = int(shape[0])
+    plane = int(shape[1]) * int(shape[2])
+    halo = int(math.ceil(r_max / sp[0])) + 1
+    budget = int(BACKGROUND_SLAB_VOXELS if slab_voxels is None else slab_voxels)
+    # never thinner than two halos: a slab of one slice under a wide halo
+    # would measure a distance map over 2 x halo + 1 slices per slice
+    thick = max(budget // max(plane, 1) - 2 * halo, 2 * halo, 1)
+    for z0 in range(0, nz, thick):
+        _check_cancel(cancel_event)
+        z1 = min(nz, z0 + thick)
+        cand = space[z0:z1] & (sources[z0:z1] == 0)
+        if not cand.any():
+            continue
+        a0, a1 = max(0, z0 - halo), min(nz, z1 + halo)
+        block = mk[a0:a1]
+        free = block == 0
+        if free.all():
+            # no marker within the halo: farther than every r
+            out[z0:z1] = cand
+            continue
+        dist, ind = ndi.distance_transform_edt(free, sampling=sp,
+                                               return_indices=True)
+        del free
+        lo, hi = z0 - a0, z1 - a0
+        nearest = block[ind[0, lo:hi], ind[1, lo:hi], ind[2, lo:hi]]
+        far = dist[lo:hi] > radii[nearest]
+        del dist, ind, nearest
+        out[z0:z1] = cand & far
+    return out
+
+
+def _grow_by_fill_with_background(spec, *, elev, existing, new, n, outline,
+                                  dark_raw, seed_points, shape, spacing, step,
+                                  sink, cancel_event):
+    """Stages 5-8 of the fill with a background.  The space and the kept
+    competitors as under the competition; one background marker
+    (:func:`_background_seeds`, id ``n + K + 1``); one watershed over the
+    space, 6-connected, no watershed line, compactness 0; every claim above
+    ``n`` zeroed; the membrane step when ticked; the voxels the kept objects
+    were seeded on emptied again (the membrane step must not hand a kept
+    object's side of a gap to a new cell: on a coarse z a new voxel beside
+    it can be nearer than the kept object below it); one piece per marker.
+    Returns ``(result, sources, dark_raw, n_frag)``."""
+    p = spec.params
+    _check_cancel(cancel_event)
+    # ---- 6'. the space (shared with the competition) ------------------- #
+    space, dark_raw = _growth_space(spec, existing=existing, outline=outline,
+                                    dark_raw=dark_raw, seed_points=seed_points,
+                                    shape=shape, spacing=spacing,
+                                    cancel_event=cancel_event)
+    _check_cancel(cancel_event)
+
+    # ---- 5'. kept objects compete from the empty voxels next to them --- #
+    sources, n_new = _compete.kept_competitors(new, existing, space)
+    if n_new != n:          # pragma: no cover - `new` is relabelled 1..n
+        raise AssertionError("the markers are not numbered 1..{}".format(n))
+    # K counts every kept object, not only those seeded on the space: the
+    # largest competitor id in `sources` falls short of n + K when the
+    # last-ranked kept object has no empty voxel of the space beside it
+    kept = existing != 0
+    n_kept = int(np.unique(existing[kept]).size) if kept.any() else 0
+    del kept
+    background = _background_id(n, n_kept)
+    _check_cancel(cancel_event)
+
+    # ---- 5''. the background, far from every marker -------------------- #
+    seed = _background_seeds(new, space, sources, spacing,
+                             cancel_event=cancel_event)
+    sources[seed] = background
+    del seed
+    _check_cancel(cancel_event)
+
+    # ---- 7''. one watershed over the space (cannot stop once it runs) -- #
+    step("add_cut")
+    _check_cancel(cancel_event)
+    claims = solve(elev, sources, space, solver="watershed", compactness=0.0,
+                   spacing=spacing, sink=sink)
+    _check_cancel(cancel_event)
+    claims = np.asarray(claims, np.int32)
+    claims[claims > n] = 0       # no kept object or background voxel kept
+    _check_cancel(cancel_event)
+    if p["include_membrane"]:
+        claims = _compete.include_membrane(
+            claims, elevation=elev, existing=existing, space=space,
+            spacing_um=spacing)
+        _mark_warm("membrane")
+        _check_cancel(cancel_event)
+    # a kept object's seam stays empty, whatever the membrane step did
+    claims[(sources > n) & (sources < background)] = 0
+
+    # ---- 8''. new objects only, one piece each ------------------------- #
+    result = np.where((claims >= 1) & (claims <= n) & space, claims,
+                      0).astype(np.int32)
+    del claims
+    result, n_frag = keep_marker_components(result, new,
+                                            cancel_event=cancel_event)
+    _check_cancel(cancel_event)
+    return result, sources, dark_raw, n_frag
+
+
+# --------------------------------------------------------------------------- #
+# the solver's one-time set-up
+# --------------------------------------------------------------------------- #
+_WARM = [False]
+
+#: The solver loops a real competition has run in this process; both ->
+#: warm (the membrane loop runs only with ``include_membrane``).
+_WARM_PARTS = set()
+
+#: The one-time sentence of :func:`warm_up_compete` is announced only when
+#: the set-up is still running after this many seconds (a compile; loading
+#: the on-disk cache takes 1-2.5 s and is not announced).
+WARM_ANNOUNCE_AFTER_S = 3.0
+
+
+def _mark_warm(part):
+    _WARM_PARTS.add(part)
+    if {"grow", "membrane"} <= _WARM_PARTS:
+        _WARM[0] = True
+
+
+def compete_is_warm():
+    """True once the solver's loops are set up in this process: by
+    :func:`warm_up_compete`, or by a real competition that ran both loops
+    (the growth and the membrane step)."""
+    return bool(_WARM[0])
+
+
+def _warm_body():
+    shape = (4, 8, 8)
+    unit = (1.0, 1.0, 1.0)
+    everywhere = np.ones(shape, bool)
+    markers = np.zeros(shape, np.int32)
+    markers[2, 4, 4] = 1
+    claims, _cost = _compete.compete(np.zeros(shape, np.float32), markers,
+                                     everywhere, unit, wall_cost=0.0,
+                                     growth_limit=1.0)
+    # bright everywhere and unclaimed beyond 1 um: the membrane loop runs
+    _compete.include_membrane(claims, elevation=np.full(shape, 0.5, np.float32),
+                              existing=np.zeros(shape, np.int32),
+                              space=everywhere, spacing_um=unit)
+
+
+def warm_up_compete(*, announce=None):
+    """Set the competition's solver up on a tiny volume, before the first
+    real use, on the worker thread.
+
+    The solver's two inner loops are compiled by numba on their first call:
+    about 10 s the first time on a machine (then cached on disk beside
+    ``compete.py``; a later process loads the cache in 1-2.5 s).  The set-up
+    runs on a helper thread while this one waits; ``announce()`` is called
+    -- on THIS thread, at most once -- only if the set-up is still running
+    after :data:`WARM_ANNOUNCE_AFTER_S` (a real compile, measured; a cache
+    load stays silent).  An error in ``announce`` is swallowed.  Returns
+    the seconds it took (0.0 when already warm).  Raises ``ImportError``
+    (``compete.NUMBA_MISSING``) or ``RuntimeError``
+    (``compete.NUMBA_CACHE_FAILED``) in plain words.
+
+    ``compete.have_numba()`` asks without compiling, but it IMPORTS numba
+    (about 1.3 s the first time in a process): call it on a worker too,
+    never on the main thread.
+    """
+    if _WARM[0]:
+        return 0.0
+    t0 = time.perf_counter()
+    failed = []
+
+    def body():
+        try:
+            _warm_body()
+        except BaseException as exc:   # handed back to the caller below
+            failed.append(exc)
+
+    helper = threading.Thread(target=body, name="compete-warm-up",
+                              daemon=True)
+    helper.start()
+    helper.join(float(WARM_ANNOUNCE_AFTER_S))
+    if helper.is_alive() and announce is not None:
+        try:
+            announce()
+        except Exception:
+            pass
+    helper.join()
+    if failed:
+        raise failed[0]
+    _WARM_PARTS.update(("grow", "membrane"))
+    _WARM[0] = True
+    return time.perf_counter() - t0
+
+
+# --------------------------------------------------------------------------- #
 # the entry points
 # --------------------------------------------------------------------------- #
 def find_region_seeds(labels, images, spec, *, roi, dark_channels=None,
                       seed_layer=None, seed_points=None, dark_threshold=None,
-                      spacing=(1, 1, 1), cancel_event=None):
+                      spacing=(1, 1, 1), cancel_event=None, outline=None):
     """Stages 1, 3 and 4 only: how many markers the box would grow from.
 
-    Same crop, same arguments, same cached dark threshold as
-    :func:`reshape_empty_region`, so ``n_in_region`` equals that Preview's
-    ``n_seeds``.  ``n_found`` = markers before drops.  ``images`` is unused
-    (no automatic source reads the walls) and accepted for symmetry.
+    Same crop, same arguments (``outline=`` included), same cached dark
+    threshold as :func:`reshape_empty_region`, so ``n_in_region`` equals
+    that Preview's ``n_seeds``.  ``n_found`` = markers before drops.
+    ``images`` is unused (no automatic source reads the walls) and accepted
+    for symmetry.
 
     ``report.markers`` stays EMPTY: the Add box-info line needs the two
     counts only, and per-marker statistics cost most of a Find on a packed
@@ -668,22 +1503,26 @@ def find_region_seeds(labels, images, spec, *, roi, dark_channels=None,
     spacing = _spacing(spacing)
     sink = MessageSink(None)
     report = SeedReport(roi=roi)
+    _check_spec(spec)
+    _check_outline_arg(spec, outline)
     try:
         shape, existing = _prepare(labels, spec, roi, spacing, cancel_event)
-        dark_raw = _dark_stage(spec, roi=roi, shape=shape,
-                               dark_channels=dark_channels,
-                               dark_threshold=dark_threshold, spacing=spacing)
-        _check_cancel(cancel_event)
-        markers, n, n_found, _counts, source = _marker_stage(
+        _outline_refusal(spec, outline)
+        dark_raw, outline_box = _dark_and_outline(
+            spec, outline=outline, roi=roi, shape=shape,
+            dark_channels=dark_channels, dark_threshold=dark_threshold,
+            spacing=spacing, cancel_event=cancel_event)
+        markers, n, n_found, counts, source = _marker_stage(
             spec, roi=roi, shape=shape, existing=existing, seed_layer=seed_layer,
             seed_points=seed_points, dark_raw=dark_raw, spacing=spacing,
-            cancel_event=cancel_event)
+            cancel_event=cancel_event, outline=outline_box)
         report.seed_source = source
         report.seeds = markers
         report.n_found = n_found
         report.n_in_region = n
+        report.n_outside_outline = int(counts.get("n_outside_outline", 0))
         if n < 1:
-            raise _Refused("no-markers", ADD_ENGINE_NO_MARKERS)
+            raise _no_markers(counts)
     except _Refused as refusal:
         report.status = "refused"
         report.refusal_reason = refusal.reason
@@ -696,7 +1535,8 @@ def reshape_empty_region(labels, images, spec, *, roi, dark_channels=None,
                          seed_layer=None, seed_points=None, dark_threshold=None,
                          spacing=(1, 1, 1), cancel_event=None, log=None,
                          progress=None, elevation=None,
-                         keep_intermediates=False) -> ReshapeResult:
+                         keep_intermediates=False,
+                         tile_budget=None, outline=None) -> ReshapeResult:
     """Fill the empty space of the box ``roi`` with new objects.
 
     **Pass box crops** for ``labels``, ``seed_layer``, the wall channel and
@@ -713,23 +1553,66 @@ def reshape_empty_region(labels, images, spec, *, roi, dark_channels=None,
     shape, holding ids ``1..N`` (N = ``n_seeds``, some possibly absent)
     on ``existing == 0`` only -- the Add worker mints the final ids -- or a
     refusal carrying :func:`too_big_sentence` (``ADD_ENGINE_TOO_BIG`` at the
-    default budget) / :data:`ADD_ENGINE_NO_MARKERS`.
+    default budget, reason ``"too-big"``) or the sentence of
+    :data:`ENGINE_REFUSALS` under its reason (``"no-markers"``,
+    ``"no-markers-outline"``, ``"outline-per-box"``, ``"too-big-whole"``).
     ``unfilled_tissue_fraction`` measures against the dark mask AFTER the
     clearance around clicks, so a cleared ball counts as tissue.  Progress
     names (:data:`REGION_STAGES`) are emitted as each stage STARTS; a cancel
     is polled between and inside stages and RAISES
     :class:`~.engine.ReshapeCancelled`.
+
+    Under ``params["growth"]="compete"`` (see the module notes) the last
+    stage is named ``add_grow`` (:data:`REGION_STAGES_COMPETE`) and every
+    finished tile is reported as ``("add_piece", i, k)``; ``tile_budget``
+    sets the voxels per tile, halo included (``None`` =
+    ``compete.COMPETE_TILE_VOXELS``).  On ``whole_patch=True`` hand the
+    elevation in through ``elevation=``, built ONCE over the whole patch:
+    the tiles then crop that one volume and equal a single call.
+
+    Under ``params["growth"]="fill_with_background"`` (see the module
+    notes) the stages are :data:`REGION_STAGES` (the last, ``add_cut``, is
+    the one watershed, which cannot be stopped once it runs).  A
+    ``ReshapeCancelled`` raised by ``progress`` at ANY of the four stages
+    stops the run there -- unlike the other growth rules, which swallow
+    anything the callback raises; any other error the callback raises is
+    still swallowed.  ``n_tiles`` is 0.  The spacing must be three finite
+    positive numbers (a ``ValueError`` before any stage).
+    ``whole_patch=True`` lifts the box budget up to
+    :data:`WHOLE_FILL_MAX_VOXELS`; above it the refusal is
+    :func:`too_big_whole_sentence` (reason ``"too-big-whole"``), given
+    before anything is read.
+
+    ``outline=`` -- the tissue outline for ``params["outline"]`` (bool, or
+    integers 0 / 1): the finished outline built ONCE over the whole patch
+    (or its box crop), cropped here and used as is.  Required for
+    ``"cleared"``; for ``"shrink"`` it may be left out only on the whole
+    patch (built here), else the run is refused (``"outline-per-box"``).
+    With a tissue outline, ``unfilled_tissue_fraction`` is measured against
+    it.  The first competition in a fresh install compiles its solver
+    (about 10 s, once): :func:`warm_up_compete` does that up front.
     """
     spacing = _spacing(spacing)
+    _check_spec(spec)
+    _check_outline_arg(spec, outline)
     sink = MessageSink(log)
-    step = _RegionProgress(progress)
     p = spec.params if isinstance(spec, ReshapeSpec) else {}
+    compete = p.get("growth") == "compete"
+    fill = p.get("growth") == "fill_with_background"
+    if fill:
+        # every distance of the fill is in microns: an unusable spacing is
+        # refused before any stage reads or builds anything
+        _checked_spacing(spacing)
+    step = _RegionProgress(progress,
+                           REGION_STAGES_COMPETE if compete else REGION_STAGES,
+                           propagate_cancel=fill)
     out = ReshapeResult(vox_volume=float(np.prod(spacing)), roi=roi,
                         dark_threshold=dark_threshold)
     try:
         # ---- 1. budget --------------------------------------------------- #
         step("add_box")
         shape, existing = _prepare(labels, spec, roi, spacing, cancel_event)
+        _outline_refusal(spec, outline)
         _check_cancel(cancel_event)
 
         # ---- 2. walls, on the whole box ---------------------------------- #
@@ -738,7 +1621,7 @@ def reshape_empty_region(labels, images, spec, *, roi, dark_channels=None,
         elev, clahe, ridge_img, _img = _build_wall_stage(
             spec, images=_wall_images(spec, images, roi, shape, elevation),
             roi=roi, region=whole, spacing=spacing, params=p, sink=sink,
-            supplied_elevation=elevation)
+            supplied_elevation=elevation, cancel_event=cancel_event)
         if keep_intermediates:
             kept_side = {"clahe": clahe, "ridge": ridge_img}
         del clahe, ridge_img, _img      # not held through the cut (L-A5)
@@ -746,16 +1629,17 @@ def reshape_empty_region(labels, images, spec, *, roi, dark_channels=None,
 
         # ---- 3. dark ------------------------------------------------------ #
         step("add_markers")
-        dark_raw = _dark_stage(spec, roi=roi, shape=shape,
-                               dark_channels=dark_channels,
-                               dark_threshold=dark_threshold, spacing=spacing)
-        _check_cancel(cancel_event)
+        # ---- 3b. the tissue outline (None for "none": no work, no poll) - #
+        dark_raw, outline = _dark_and_outline(
+            spec, outline=outline, roi=roi, shape=shape,
+            dark_channels=dark_channels, dark_threshold=dark_threshold,
+            spacing=spacing, cancel_event=cancel_event)
 
         # ---- 4. new-object markers --------------------------------------- #
         new, n, n_found, counts, source = _marker_stage(
             spec, roi=roi, shape=shape, existing=existing, seed_layer=seed_layer,
             seed_points=seed_points, dark_raw=dark_raw, spacing=spacing,
-            cancel_event=cancel_event)
+            cancel_event=cancel_event, outline=outline)
         for key, value in counts.items():
             setattr(out, key, value)
         out.seed_source = source
@@ -763,71 +1647,50 @@ def reshape_empty_region(labels, images, spec, *, roi, dark_channels=None,
         out.n_seeds = n
         out.n_seeds_dropped = max(0, n_found - n)
         if n < 1:
-            raise _Refused("no-markers", ADD_ENGINE_NO_MARKERS)
+            # the walls were built already: handed back with the refusal, so
+            # a caller that caches a whole patch's walls need not build them
+            # again on the retry
+            out.elevation = elev
+            raise _no_markers(counts)
         _check_cancel(cancel_event)
 
-        # ---- 5. kept neighbours, cored ----------------------------------- #
-        cores, n_no_core = eroded_cores(existing, erode_um=p["core_erode_um"],
-                                        spacing=spacing,
-                                        cancel_event=cancel_event)
-        if n_no_core and log is not None:
-            try:
-                log(_LOG_NEIGHBOUR_NO_CORE.format(n_no_core))
-            except Exception:
-                pass
-        markers = new.copy()
-        nb_ids = _ids_of(cores)
-        if nb_ids.size:
-            nz = cores != 0
-            markers[nz] = (np.searchsorted(nb_ids, cores[nz]) + n + 2).astype(np.int32)
-
-        # ---- 6. the outside marker --------------------------------------- #
-        outside = np.zeros(shape, bool)
-        outside[0, :, :] = outside[-1, :, :] = True
-        outside[:, 0, :] = outside[:, -1, :] = True
-        outside[:, :, 0] = outside[:, :, -1] = True
-        if dark_raw is not None:
-            if spec.seeds == "paint" and seed_points:
-                clear = rasterise_points(seed_points, shape,
-                                         radius_um=p["dark_clearance_um"],
-                                         spacing=spacing) > 0
-                dark_raw = dark_raw & ~clear
-            reach = float(p["dark_clearance_um"])
-            _check_cancel(cancel_event)
-            if reach > 0:
-                from .arbiter import physical_ball
-                dark_out = ndi.binary_erosion(dark_raw,
-                                              structure=physical_ball(reach, spacing))
-            else:
-                dark_out = dark_raw
-            outside |= dark_out
-        outside &= (existing == 0) & (new == 0)
-        markers[outside & (markers == 0)] = n + 1
-        _check_cancel(cancel_event)
-
-        # ---- 7. the cut --------------------------------------------------- #
-        step("add_cut")
-        _check_cancel(cancel_event)
-        partition = solve(elev, markers, whole, solver="watershed",
-                          compactness=p["compactness"], spacing=spacing,
-                          sink=sink)
-        _check_cancel(cancel_event)
-
-        # ---- 8. new objects only, one piece each -------------------------- #
-        result = np.where((partition >= 1) & (partition <= n) & (existing == 0),
-                          partition, 0).astype(np.int32)
-        del partition
-        result, out.n_fragments_dropped = keep_marker_components(
-            result, new, cancel_event=cancel_event)
-        _check_cancel(cancel_event)
+        if compete:
+            # ---- 5-8 under the competition -------------------------------- #
+            result, markers, dark_raw, out.n_fragments_dropped, out.n_tiles = (
+                _grow_by_competition(
+                    spec, elev=elev, existing=existing, new=new, n=n,
+                    outline=outline, dark_raw=dark_raw, seed_points=seed_points,
+                    shape=shape, spacing=spacing, tile_budget=tile_budget,
+                    step=step, progress=progress, cancel_event=cancel_event))
+        elif fill:
+            # ---- 5-8 under the fill with a background ---------------------- #
+            result, markers, dark_raw, out.n_fragments_dropped = (
+                _grow_by_fill_with_background(
+                    spec, elev=elev, existing=existing, new=new, n=n,
+                    outline=outline, dark_raw=dark_raw, seed_points=seed_points,
+                    shape=shape, spacing=spacing, step=step, sink=sink,
+                    cancel_event=cancel_event))
+            out.n_tiles = 0
+        else:
+            result, markers, dark_raw, out.n_fragments_dropped = _grow_by_flood(
+                spec, elev=elev, existing=existing, new=new, n=n,
+                outline=outline, dark_raw=dark_raw, seed_points=seed_points,
+                shape=shape, spacing=spacing, step=step, log=log, sink=sink,
+                cancel_event=cancel_event)
+            out.n_tiles = 0
 
         # ---- 9. notes ------------------------------------------------------ #
         out.faint_pairs = faint_wall_pairs(
             result, elev, percentile=p["arbiter_low_evidence_percentile"])
         _check_cancel(cancel_event)
         # measured against dark_raw AFTER the click clearance: a cleared
-        # ball around a click counts as tissue
-        out.unfilled_tissue_fraction = unfilled_fraction(result, existing, dark_raw)
+        # ball around a click counts as tissue; with an outline, against it
+        if outline is not None:
+            out.unfilled_tissue_fraction = _unfilled_in_outline(
+                result, existing, outline)
+        else:
+            out.unfilled_tissue_fraction = unfilled_fraction(result, existing,
+                                                             dark_raw)
         _check_cancel(cancel_event)
 
         # ---- 10. the answer ------------------------------------------------ #

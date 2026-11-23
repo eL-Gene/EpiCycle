@@ -215,6 +215,144 @@ def test_a_patch_with_no_labels_anywhere_lists_nothing(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# the unified layout: a Default run nested under runs/default/
+# --------------------------------------------------------------------------- #
+def _make_nested_workspace(tmp_path: Path, *, active="nuclei") -> Path:
+    """A workspace whose Default run was moved under ``runs/default/``.
+
+    The layout conversion writes ``default_run_nested: true`` at the top
+    of the state file, and the default run's labels then live at
+    ``runs/default/reconstructions/<patch>/labels_3d.tif``; nothing is
+    left in the flat tree.
+    """
+    ws = tmp_path / "ws"
+    step3 = ws / "artifacts" / "step3"
+    _write_labels(
+        step3 / "runs" / "default" / "reconstructions" / PATCH
+        / "labels_3d.tif")
+    run_root = step3 / "runs" / "nuclei"
+    run_root.mkdir(parents=True, exist_ok=True)
+    (run_root / "run_manifest.json").write_text(
+        json.dumps({"run_id": "nuclei", "display_name": "Nuclei",
+                    "target": "nuclei", "archived_at": None,
+                    "backend": "cellpose"}),
+        encoding="utf-8")
+    _write_labels(run_root / "reconstructions" / PATCH / "labels_3d.tif")
+    state = {
+        "schema_version": 3,
+        "active_run_id": active,
+        "default_run_nested": True,
+        "runs": {
+            "default": {"patches": {PATCH: {"status": "reconstructed"}}},
+            "nuclei": {"patches": {PATCH: {"status": "reconstructed"}}},
+        },
+    }
+    from napari_epicycle.fusion_reconstruction import _paths as step3_paths
+
+    real = Path(step3_paths.state_json_path(ws))
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_text(json.dumps(state), encoding="utf-8")
+    return ws
+
+
+def test_a_nested_default_run_is_listed_while_another_run_is_active(
+        tmp_path):
+    ws = _make_nested_workspace(tmp_path)
+    by = _by_run(rg.list_guide_sources(ws, PATCH, exclude_run_id="nuclei"))
+    assert "default" in by, "the picker must find Default's labels"
+    assert Path(by["default"].path) == (
+        ws / "artifacts" / "step3" / "runs" / "default" / "reconstructions"
+        / PATCH / "labels_3d.tif")
+    assert "nuclei" not in by
+
+
+def test_a_nested_default_row_reads_like_the_flat_one(tmp_path):
+    want = ("Default - target not set - this patch is reconstructed here - "
+            "reads labels_3d.tif - you are trusting these labels.")
+    nested = _by_run(rg.list_guide_sources(
+        _make_nested_workspace(tmp_path / "a"), PATCH,
+        exclude_run_id="nuclei"))["default"]
+    flat = _by_run(rg.list_guide_sources(
+        _make_workspace(tmp_path / "b"), PATCH))["default"]
+    assert nested.label == want
+    assert flat.label == want
+
+
+def test_a_nested_default_run_can_be_excluded_like_any_other(tmp_path):
+    ws = _make_nested_workspace(tmp_path, active="default")
+    by = _by_run(rg.list_guide_sources(ws, PATCH, exclude_run_id="default"))
+    assert set(by) == {"nuclei"}
+
+
+def test_a_flat_workspace_still_reads_the_flat_tree(tmp_path):
+    ws = _make_workspace(tmp_path)
+    src = _by_run(rg.list_guide_sources(ws, PATCH))["default"]
+    assert "reconstructions" not in Path(src.path).parts
+
+
+def test_the_private_flat_only_mapping_is_gone():
+    """One source of truth for a run's path: the run-management resolver
+    fed by the workspace's own flag."""
+    assert not hasattr(rg, "_paths_run_id")
+    assert rg._DEFAULT_RUN_ID == "default"
+
+
+class _ReshapeCaller:
+    """Just enough of the annotator for ``_refresh_reshape_inputs``."""
+
+    def __init__(self, run_id):
+        self._run_id = run_id
+        self.sources = None
+
+        class _Adv:
+            def __init__(inner):
+                inner.got = None
+
+            def set_guide_sources(inner, sources):
+                inner.got = list(sources)
+
+        class _V:
+            layers = []
+
+        self.adv = _Adv()
+        self.viewer = _V()
+
+    def _get_advanced_features_widget(self):
+        return self.adv
+
+    def _reshape_context(self):
+        return {"workspace": "ws", "patch_name": PATCH,
+                "run_id": self._run_id}
+
+    def _refresh_seed_channels(self):
+        pass
+
+
+@pytest.mark.parametrize("run_id, excluded", [
+    (None, "default"),          # the flat Default run says run_id=None
+    ("default", "default"),
+    ("nuclei", "nuclei"),
+])
+def test_the_reshape_picker_never_offers_the_active_run(
+        monkeypatch, run_id, excluded):
+    pytest.importorskip("qtpy")
+    from napari_epicycle.annotator.curation_3d_widget import (
+        Curation3DAnnotator,
+    )
+
+    seen = {}
+
+    def fake(ws, patch, *, exclude_run_id=None):
+        seen["exclude"] = exclude_run_id
+        return []
+
+    monkeypatch.setattr(rg, "list_guide_sources", fake)
+    caller = _ReshapeCaller(run_id)
+    Curation3DAnnotator._refresh_reshape_inputs(caller)
+    assert seen["exclude"] == excluded
+
+
+# --------------------------------------------------------------------------- #
 # load_guide_array
 # --------------------------------------------------------------------------- #
 def test_load_refuses_a_missing_file_in_plain_words(tmp_path):
@@ -311,7 +449,8 @@ def test_two_times_guide_is_majority_downsampled_in_a_two_times_session():
     # majority pooling never invents an id
     assert set(np.unique(matched)).issubset(set(np.unique(guide)))
     assert any("half size" in n for n in notes)
-    assert any("Small nuclei may merge" in n for n in notes)
+    assert any("Small labels may merge" in n for n in notes)
+    assert any("if a marker goes missing" in n for n in notes)
     assert any("QC Settings" in n for n in notes)
 
 

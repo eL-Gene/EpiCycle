@@ -10,16 +10,16 @@ your patches.
 
 ## Choosing a folder
 
-Click **Browse**, pick a location, and optionally type a subfolder name to create
-one on the spot. An empty folder is a perfectly good starting point — the
+Click **Browse** and pick a folder; that folder is the workspace (you can make a
+new, empty one in the folder picker). An empty folder is a perfectly good starting point — the
 structure inside is created for you at your first export.
 
 The status line underneath tells you what EpiCycle found:
 
 | What it says | What it means |
 |---|---|
-| ✔ Existing workspace — N patch(es) | You are reopening a project you worked on before. Your patches are still there. |
-| ✔ Directory exists — empty | A valid, fresh workspace. Nothing extracted yet. |
+| ✔ Existing workspace — N patch(es) | The folder has image files (.tif) at its top level; N counts those files only. |
+| ✔ Directory exists — empty | No image files at the top of the folder. A fresh workspace reads this — and so can a project you worked on before, because its patches are kept in folders inside it. It does not mean your work is gone. |
 | ⚠ Directory does not exist | It will be created at your first export. Fine for a new project — but look twice if you expected to find existing work here, because it usually means a typo or a moved folder. |
 
 ## One workspace, shared by every step
@@ -45,7 +45,8 @@ working:
 
 | Colour | What it says | What it means |
 |---|---|---|
-| Red | Choose a workspace folder to begin. | Nothing chosen yet. Nothing will load. |
+| Red | Choose a workspace folder to begin. | Step 1, with nothing chosen yet. Nothing will load. |
+| Red | Set a workspace in Project Setup before running this step. | Steps 2 to 5, with nothing chosen yet. |
 | Green | Workspace: … (shared across steps) | This step is using the shared workspace. |
 | Amber | Workspace: … (different from the shared workspace) | You pressed Browse in that step earlier, and the shared folder has since moved somewhere else. That step stays where you put it. Hover the line to see both folders. |
 | Red | That workspace folder is no longer where it was. | The folder has been moved, renamed or deleted since you chose it. Press Browse and point at its new location. |

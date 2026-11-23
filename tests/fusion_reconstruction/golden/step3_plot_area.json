@@ -2143,7 +2143,7 @@
             "isEnabled": true,
             "object_name": "",
             "style": "color: #888888; font-size: 10px; background: transparent;",
-            "text": "Dragging a line re-sorts every label that is not curated, hand\u2026",
+            "text": "Dragging a line re-sorts every label that is not curated, hand assignments included.",
             "tooltip": "Dragging a line re-sorts every label that is not curated, hand assignments included."
            }
           ],
@@ -2904,11 +2904,10 @@
              }
             ],
             "class": "QComboBox",
-            "current": 6,
+            "current": 5,
             "hidden": false,
             "isEnabled": true,
             "items": [
-             "QC status",
              "QC tier",
              "Cluster",
              "Border cell",
@@ -3838,7 +3837,7 @@
             "isEnabled": true,
             "object_name": "",
             "style": "color: #888888; font-size: 10px; background: transparent;",
-            "text": "Dragging a line re-sorts every label that is not curated, hand\u2026",
+            "text": "Dragging a line re-sorts every label that is not curated, hand assignments included.",
             "tooltip": "Dragging a line re-sorts every label that is not curated, hand assignments included."
            }
           ],
@@ -4599,11 +4598,10 @@
              }
             ],
             "class": "QComboBox",
-            "current": 6,
+            "current": 5,
             "hidden": false,
             "isEnabled": true,
             "items": [
-             "QC status",
              "QC tier",
              "Cluster",
              "Border cell",

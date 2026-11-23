@@ -121,6 +121,21 @@ wrapped to two.  ``foot`` is unchanged: the idle line with every clause
 (ready, "Predict the ticked patches first.", "N protected (...) are
 skipped") is shorter than the longest run line.
 
+The row eye (2026-10-27): every Patches row that is not missing draws the eye
+in the slot the ⓘ had, so the rows that had none (unprocessed, and predicted
+rows with no made-by record) lose the slot's width from their status word.
+``eye_words`` measures, on an UNPROCESSED row and on each running row, at the
+list's real width and at 224 px, the room the painter gives the status word
+beside the axis and the eye, and the word's own width; ``info_room`` is the
+room a row that had the ⓘ had (the old painter set-up).  MEASURED
+(2026-10-27, Segoe UI 9 pt): room 40 px at the list's 228 px, 36 px at 224
+px, the same as an ⓘ row had (it was 60 / 56 on a row with no glyph); the
+words need 78 ("○ unprocessed", "segmenting..."), 102 ("reconstructing...")
+-- so they are cut with "…" there, as "● predicted" (66) already was on an ⓘ
+row.  Whether that is accepted is the owner's call on the 578 px shot: the
+"shows whole" test is a strict xfail until then (it turns red the day the
+words fit), never a silent re-baseline.
+
 Why 566 (R3 audit LOW-5): 566 px is the SPEC's viewport for the 578 px
 default dock (row 22) and the conservative side -- a narrower viewport
 wraps more, so it measures taller.  The live app measured 572 px at the
@@ -170,6 +185,51 @@ LONG_MODEL = ("wound-v2-membrane-nuclei-refined-2026-10-04-from-step2 · "
               "round 12 (lateral)")
 LONG_PATCH = "WholeScale_membrane_patch_0042_long.tiff"
 LONG_RUN = "wound-v2-membrane-nuclei-refined-2026-10-04"
+#: the longest patch name of the owner's real workspace
+LONG_REAL_PATCH = "WholeScale_patch_11.tiff"
+
+
+def one_channel_lines() -> tuple:
+    """The foot's ready line with the one-channel sentence, by name (the
+    longest real patch name) and by count, at a two-digit tick count."""
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
+    head = P.S3_GATE_READY.format(n=12)
+    return (P.S3_GATE_JOIN.join(
+                (head, P.S3_GATE_ONE_CHANNEL.format(patch=LONG_REAL_PATCH))),
+            P.S3_GATE_JOIN.join(
+                (head, P.S3_GATE_ONE_CHANNEL_PLURAL.format(k=12))))
+
+
+def foot_states() -> dict:
+    """The foot's idle lines as the gates build them: {state: tries},
+    the first try that fits the foot's two lines is shown, else the last."""
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
+    join = P.S3_GATE_JOIN.join
+    out = {}
+    for n in (1, 12):
+        head = P.S3_GATE_READY.format(n=n)
+        more = [P.S3_GATE_NOTHING_TO_RECONSTRUCT]
+        out[f"ready_{n}"] = [join([head])]
+        out[f"predict_first_{n}"] = [join([head] + more)]
+        for k, statuses in ((1, "finalized"), (10, "accepted, finalized")):
+            single = k == 1
+            full = [(P.S3_GATE_SKIPPED if single
+                     else P.S3_GATE_SKIPPED_PLURAL).format(
+                k=k, statuses=statuses)]
+            short = [(P.S3_GATE_SKIPPED_SHORT if single
+                      else P.S3_GATE_SKIPPED_SHORT_PLURAL).format(k=k)]
+            for m, tag in ((more, "first"), ([], "ready")):
+                out[f"protected_{k}_{tag}_{n}"] = [
+                    join([head] + m + full), join([head] + m + short),
+                    join([head] + short + m)]
+        out[f"one_channel_{n}"] = [join(
+            [head, P.S3_GATE_ONE_CHANNEL.format(patch=LONG_REAL_PATCH)])]
+        out[f"one_channel_plural_{n}"] = [join(
+            [head, P.S3_GATE_ONE_CHANNEL_PLURAL.format(k=n)])]
+    for t in (P.S3_GATE_PICK_MODEL, P.S3_GATE_PICK_CHANNEL,
+              P.S3_GATE_NOTHING_TICKED, P.S3_GATE_NONE_RUNNABLE):
+        out[t] = [t]
+    return out
 
 
 def _hfw(widget, width):
@@ -278,12 +338,18 @@ def measure_all(app) -> dict:
             w.pr_cell_width_lines.show_lines(*cw_texts)
             w.show_pr_model(LONG_MODEL, LONG_MODEL, LONG_MODEL, LONG_MODEL)
             # B: the Model card's trained line, its longest form -- two
-            # models on different channels, two 44-character Step 2 runs
+            # models on different channels, two 44-character Step 2 runs,
+            # each channel named by the longest item its box offers
             join = P.S3_MODEL_CHANNEL_JOIN.join
+            seg = P.S3_MODEL_CHANNEL.format(
+                role=P.S3_MODEL_ROLE_MEMBRANE,
+                item=max(P.S3_CHAN1_ITEMS, key=len))
+            helper = P.S3_MODEL_CHANNEL.format(
+                role=P.S3_MODEL_ROLE_NUCLEI,
+                item=max(P.S3_CHAN2_ITEMS, key=len))
             w.show_pr_trained(P.S3_MODEL_TRAINED_DIFFER.format(
-                lat=join((P.S3_MODEL_CHANNEL.format(name="membrane", index=1),
-                          P.S3_MODEL_CHANNEL.format(name="nuclei", index=0))),
-                ax=join((P.S3_MODEL_CHANNEL.format(name="membrane", index=0),)),
+                lat=join((seg, helper)),
+                ax=join((seg,)),
                 runs=P.S3_MODEL_TRAINED_DIFFER_RUNS.format(
                     lat=LONG_RUN, ax=LONG_RUN + "-b")), True)
             # the painted rows with a missing row and a ticked curating row
@@ -330,13 +396,50 @@ def measure_all(app) -> dict:
         for i in range(lay.count()):
             item = lay.itemAt(i)
             wid = item.widget()
-            if wid is w._patch_state_list or (wid is not None
-                                              and wid.isHidden()):
+            # a hidden widget, or a row layout whose links are all hidden
+            # (the lock hides Tick all / Untick all), takes no room and no
+            # spacing in Qt, so it is not measured either
+            if wid is w._patch_state_list or item.isEmpty():
                 continue
             total += (item.heightForWidth(width) if item.hasHeightForWidth()
                       else item.sizeHint().height())
             n += 1
         return total + lay.spacing() * n
+
+    def eye_words() -> dict:
+        """The status word's room and width on an eye row (an unprocessed
+        row, each running row) at the list's real width and at 224 px."""
+        from qtpy.QtCore import QRect
+        from qtpy.QtGui import QFontMetrics
+
+        from napari_epicycle.fusion_reconstruction import _step3_rows as R
+        from napari_epicycle.ui_shell import _stack_row_delegate as SD
+        lst = w._patch_state_list
+        d = lst.itemDelegate()
+        fm = QFontMetrics(d._fonts(lst.font())["word_small"])
+        # the painter as it was set up before the eye: the ⓘ in the slot
+        old = SD.StackRowDelegate(SD.MODE_NARROW, show_eye=False,
+                                  show_info=True, show_thumb=True,
+                                  keep_aspect=True)
+        got = {}
+        for width in (max(lst.viewport().width(), 60), 224):
+            info_rec = R.build_row(LONG_PATCH, "predicted", "CZYX",
+                                   made_by="made by cyto3")
+            gi = old.layout(QRect(0, 0, width, 0), info_rec, lst.font())
+            got[f"{width}:info_room"] = max(
+                gi["axis"].left() - gi["lines"]["l2"].left() - 6, 10)
+            for label, running in (("unprocessed", None),) + tuple(
+                    (k, k) for k in R.RUNNING_WORDS):
+                rec = R.build_row(LONG_PATCH, "unprocessed", "CZYX",
+                                  running=running)
+                g = d.layout(QRect(0, 0, width, 0), rec, lst.font())
+                text = f"{rec.get('dots') or ''} {rec.get('word') or ''}"
+                room = max(g["axis"].left() - g["lines"]["l2"].left() - 6,
+                           10)
+                got[f"{width}:{label}"] = {
+                    "room": room, "need": fm.horizontalAdvance(text.strip()),
+                    "eye": "eye" in g, "text": text.strip()}
+        return got
 
     for vp in VIEWPORTS:
         for _ in range(6):           # settle the dock so the viewport is vp
@@ -371,6 +474,36 @@ def measure_all(app) -> dict:
             g["needed"] = g["chrome"] + max(g["left_col"], g["right_col"])
             got[state] = g
         stage(notes=False, advanced=False)
+        got["eye_words"] = eye_words()
+        # the one-channel sentence on the ready line: whole in the foot's
+        # two lines, by the rule the status line draws with (two wrapped
+        # lines, the rest elided), in the neutral style it is shown in
+        from napari_epicycle.fusion_reconstruction import ui as UI
+        lbl = w.pipeline_status_label
+        lbl.setStyleSheet(UI._PR_STATUS_STYLES["neutral"])
+        got["one_channel_fits"] = {
+            text: UI._two_lines(lbl, text).replace(chr(10), " ") == text
+            for text in one_channel_lines()}
+        # why the sentence is never added after "Predict the ticked
+        # patches first.": the three together need a third line at 566
+        three = P.S3_GATE_JOIN.join((
+            P.S3_GATE_READY.format(n=1), P.S3_GATE_NOTHING_TO_RECONSTRUCT,
+            P.S3_GATE_ONE_CHANNEL.format(patch=LONG_REAL_PATCH)))
+        # every idle line the gates write, chosen by the code's own fit
+        # rule (pr_status_fits), then checked whole by the drawing rule
+        shown = {}
+        for state, tries in foot_states().items():
+            pick = tries[-1]
+            for cand in tries:
+                if w.pr_status_fits(cand, "neutral"):
+                    pick = cand
+                    break
+            lbl.setStyleSheet(UI._PR_STATUS_STYLES["neutral"])
+            shown[state] = [pick, UI._two_lines(lbl, pick).replace(
+                chr(10), " ") == pick]
+        got["foot_states"] = shown
+        got["one_channel_three_fits"] = (
+            UI._two_lines(lbl, three).replace(chr(10), " ") == three)
         out[str(vp)] = got
     return out
 
@@ -476,9 +609,73 @@ def test_the_columns_keep_steps_4s_numbers(measured, vp, state):
     assert got["right_w"] >= RIGHT_MIN
 
 
+def _eye_rows(measured, vp):
+    words = measured[str(vp)]["eye_words"]
+    return {k: v for k, v in words.items() if not k.endswith(":info_room")}
+
+
+@pytest.mark.parametrize("vp", VIEWPORTS)
+def test_an_eye_row_has_the_room_an_info_row_had(measured, vp):
+    """An unprocessed row and each running row carry the eye, and their
+    status word has exactly the room a row with the ⓘ had (the slot costs
+    no more than the ⓘ did), at the list's real width and at 224 px."""
+    words = measured[str(vp)]["eye_words"]
+    rows = _eye_rows(measured, vp)
+    assert any(k.startswith("224:") for k in rows)
+    for key, got in rows.items():
+        width = key.split(":")[0]
+        print(f"[CEIL] {vp} eye row {key}: room {got['room']} need "
+              f"{got['need']} (an info row: {words[width + ':info_room']})")
+        assert got["eye"], key
+        assert got["room"] == words[width + ":info_room"], key
+
+
+@windows_font_metrics
+@pytest.mark.xfail(strict=True, reason=(
+    "the status word of an eye row is cut at the 240 px column (40 px of "
+    "room for 78-102 px), as on the rows that had the info glyph; the "
+    "owner's call on the 578 px shot"))
+@pytest.mark.parametrize("vp", VIEWPORTS)
+def test_the_status_word_shows_whole_beside_the_eye(measured, vp):
+    for key, got in _eye_rows(measured, vp).items():
+        assert got["need"] <= got["room"], (key, got["room"], got["need"])
+
+
+@windows_font_metrics
+@pytest.mark.parametrize("vp", VIEWPORTS)
+def test_the_one_channel_line_fits_the_foots_two_lines(measured, vp):
+    """The ready line naming the longest real patch (and the count form)
+    shows whole in the foot's two lines at 566 and at 1000 px."""
+    got = measured[str(vp)]["one_channel_fits"]
+    assert set(got) == set(one_channel_lines())
+    assert all(got.values()), got
+
+
+@windows_font_metrics
+def test_the_one_channel_sentence_after_predict_first_would_not_fit(
+        measured):
+    """The teeth: with "Predict the ticked patches first." before it the
+    line needs a third line in the 578 px dock -- why the foot says one
+    sentence per state."""
+    assert measured["566"]["one_channel_three_fits"] is False
+
+
 def test_the_settings_scroll_inside_the_right_column(measured):
     """Advanced open grows the right column's CONTENT, not the section."""
     for vp in VIEWPORTS:
         got = measured[str(vp)]
         assert got["E"]["right"] > got["D"]["right"]
         assert got["E"]["needed"] == got["D"]["needed"]
+
+
+@windows_font_metrics
+@pytest.mark.parametrize("vp", VIEWPORTS)
+def test_every_idle_foot_line_shows_whole(measured, vp):
+    """The fit rule is the foot's two lines: every idle line the gates
+    can write is shown whole at 566 and at 1000 px (the protected clause
+    drops its statuses, then moves, only when two lines are not enough)."""
+    got = measured[str(vp)]["foot_states"]
+    assert set(got) == set(foot_states())
+    cut = {state: text for state, (text, whole) in got.items() if not whole}
+    print(f"[CEIL] {vp} foot lines: {json.dumps(got)}")
+    assert cut == {}, cut

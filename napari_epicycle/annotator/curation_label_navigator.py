@@ -10,6 +10,7 @@ Phase K — progressive disclosure extraction from Curation3DAnnotator.
 
 from __future__ import annotations
 
+from napari_epicycle.annotator._staged_op_text import STAGED_WORK_OPEN
 from qtpy.QtCore import QEvent, QRect, QSize, Qt
 from qtpy.QtGui import QColor, QFont, QPainter
 from qtpy.QtWidgets import (
@@ -223,6 +224,39 @@ _ROLE_SWATCH_COLOR = Qt.UserRole + 1  # different column, no conflict
 _SWATCH_OUTLINE = QColor(255, 255, 255, 46)
 
 
+def _direct_colour_rows(cmap, ids):
+    """``cmap.map(ids)`` read straight from a plain ``DirectLabelColormap``.
+
+    napari's ``DirectLabelColormap.map`` on an int64 array goes through a
+    numba typed dictionary, a compile of about a second the first time after
+    a new colour map (Accept on a whole patch, the main Undo).  What it
+    returns is ``color_dict[id]`` for an id the dictionary holds and the
+    colour map's default (the ``None`` entry, else transparent) for any
+    other id, as float32 RGBA rows -- built here by a dictionary lookup.
+
+    Returns ``None`` (the caller keeps the ``map`` call) for any other
+    colour map, a subclass with its own ``map``, or a selection-mode map.
+    """
+    try:
+        from napari.utils.colormaps import DirectLabelColormap
+    except Exception:
+        return None
+    if not isinstance(cmap, DirectLabelColormap):
+        return None
+    if type(cmap).map is not DirectLabelColormap.map:
+        return None
+    if getattr(cmap, "use_selection", False):
+        return None
+    import numpy as _np
+
+    color_dict = cmap.color_dict
+    default = cmap.default_color
+    rows = _np.zeros((len(ids), 4), dtype=_np.float32)
+    for i, lid in enumerate(ids):
+        rows[i] = color_dict[lid] if lid in color_dict else default
+    return rows
+
+
 def _batch_swatch_colors(label_layer, label_ids):
     """Return ``{label_id: QColor}`` for *label_ids* in one colormap map.
 
@@ -266,9 +300,13 @@ def _batch_swatch_colors(label_layer, label_ids):
 
     ids = [int(i) for i in label_ids]
     try:
-        arr = _np.asarray(
-            cmap.map(_np.array(ids, dtype=_np.intp))
-        ).reshape(-1, 4)
+        # A plain direct colour map is read by lookup (the same colours,
+        # without napari's numba compile); any other map keeps `map`.
+        arr = _direct_colour_rows(cmap, ids)
+        if arr is None:
+            arr = _np.asarray(
+                cmap.map(_np.array(ids, dtype=_np.intp))
+            ).reshape(-1, 4)
     except Exception:
         # Batched map failed — defer to the per-id helper, which applies
         # the same try/except → fallback contract for each id.
@@ -422,6 +460,16 @@ class _TierPillDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+#: The Delete Label button's tooltip (one sentence per line: a plain-text
+#: tooltip does not wrap).
+DELETE_LABEL_TIP = (
+    "Delete Label removes the highlighted row's object.\n"
+    "While objects are isolated, it removes the object your brush is on "
+    "(the Painting number) if that object is one of the isolated ones.\n"
+    "Undo puts it back."
+)
+
+
 class CurationLabelNavigator(QWidget):
     """Floating label navigation + triage panel for 3D curation."""
 
@@ -517,6 +565,9 @@ class CurationLabelNavigator(QWidget):
         # to `_is_op_active_for_navigator` (which syncs refine_state
         # before reading `any_op_active`).
         self._is_op_active_cb = None
+        # Returns the label id the open edit works on (0 when unknown) while
+        # a row click must be refused, else None.
+        self._select_blocked_cb = None
         # Transient status timer for the brief "Finish current op first"
         # message shown in the editing header when an isolation gate
         # fires.  Lazily created on first use.
@@ -745,12 +796,7 @@ class CurationLabelNavigator(QWidget):
         # DESTRUCTIVE_BTN_STYLE matches the other destructive button
         # (Mark Garbage / Discard) styling already in the navigator.
         self._delete_label_btn = QPushButton("Delete Label")
-        self._delete_label_btn.setToolTip(
-            "Zero the selected label in the volume (destructive).  "
-            "Use the controller's Undo to restore.  Disabled while a "
-            "refinement op (interpolation / split / smooth / merge) "
-            "or uncommitted paint stroke is in flight."
-        )
+        self._delete_label_btn.setToolTip(DELETE_LABEL_TIP)
         self._delete_label_btn.setStyleSheet(DESTRUCTIVE_BTN_STYLE)
 
         self._merge_btn = QPushButton("Merge Into\u2026")
@@ -791,8 +837,9 @@ class CurationLabelNavigator(QWidget):
         # Group order (top to bottom), separated by horizontal lines:
         #   1. Routine triage    : Good / Review / Bad / Garbage
         #   2. Final-confirm     : Curated  (separated to slow mis-clicks)
-        #   3. Label management  : + New Label  (future Delete Label here)
+        #   3. Label management  : + New Label, then Delete Label under it
         #   4. Navigation/relabel: Merge Into\u2026, then Prev / Next side-by-side
+        #   5. Batch tools       : Batch Refine
         # Fixed width keeps the table column the dominant horizontal element.
         self._sidebar_widget = QWidget()
         self._sidebar_widget.setFixedWidth(150)
@@ -1097,6 +1144,7 @@ class CurationLabelNavigator(QWidget):
         on_batch_refine=None,
         on_selection_changed=None,
         is_op_active=None,
+        is_select_blocked=None,
     ):
         """Inject all callbacks at once.
 
@@ -1145,6 +1193,7 @@ class CurationLabelNavigator(QWidget):
         self._on_batch_refine_cb = on_batch_refine
         self._on_selection_changed_cb = on_selection_changed
         self._is_op_active_cb = is_op_active
+        self._select_blocked_cb = is_select_blocked
         self._curation_debug(
             "navigator callbacks updated "
             f"navigate={bool(on_navigate)} "
@@ -1583,13 +1632,16 @@ class CurationLabelNavigator(QWidget):
         # also called it before this fix).
         self._fire_isolation_if_active()
 
-    def reset_selection_ui(self) -> None:
+    def reset_selection_ui(self, *, keep_isolate: bool = False) -> None:
         """Silently reset selection and isolate UI state without firing callbacks.
 
         Used during close cleanup and dock reuse to clear stale state from
         a previous annotator session.  Unlike ``clear_selection()``, this
         method does NOT fire the isolation callback — it only touches the
         UI widgets so the dock is visually clean for the next session.
+
+        ``keep_isolate=True`` leaves the Isolate box as the user set it (a
+        patch switch keeps the user's toggle).
         """
         # Switch-safety: this is the canonical (re)use entry point
         # (launcher reuse path + close cleanup both call it).  Clearing
@@ -1617,9 +1669,10 @@ class CurationLabelNavigator(QWidget):
         self._table.setCurrentCell(-1, -1)
         self._editing_header.setText("")
         # Uncheck Isolate silently — blockSignals prevents _on_isolate_toggled
-        self._isolate_cb.blockSignals(True)
-        self._isolate_cb.setChecked(False)
-        self._isolate_cb.blockSignals(False)
+        if not keep_isolate:
+            self._isolate_cb.blockSignals(True)
+            self._isolate_cb.setChecked(False)
+            self._isolate_cb.blockSignals(False)
 
     def clear_selection(self) -> None:
         """Programmatically clear the current table selection and isolation."""
@@ -1643,6 +1696,121 @@ class CurationLabelNavigator(QWidget):
                 self._on_isolation_changed_cb(set())
             except Exception:
                 pass
+
+    def clear_selection_silently(self) -> None:
+        """Deselect every row without telling anyone (no callbacks fire).
+
+        Used before auto-advance, so the next row arrives as a single
+        selection instead of joining the rows that were selected.
+        """
+        try:
+            self._table.blockSignals(True)
+            sel_model = self._table.selectionModel()
+            if sel_model is not None:
+                sel_model.blockSignals(True)
+            try:
+                self._table.clearSelection()
+            finally:
+                if sel_model is not None:
+                    sel_model.blockSignals(False)
+                self._table.blockSignals(False)
+            self._last_rendered_label_ids = set()
+            # With no next row the Render Selected button would otherwise
+            # still describe the rows just cleared.
+            refresh = getattr(self, "_update_render_button_state", None)
+            if refresh is not None:
+                refresh()
+        except Exception as exc:  # noqa: BLE001 - a deleted widget
+            print(f"[ISO-BRACKET] clear selection raised {exc!r}", flush=True)
+
+    def select_rows_silently(self, label_ids) -> None:
+        """Select exactly the rows of *label_ids* without the per-row
+        callbacks, so the table matches an isolation applied by another
+        path.  The table-selection handler fires once at the end (Render
+        button, Batch Refine count)."""
+        from qtpy.QtCore import QItemSelectionModel
+
+        wanted = {int(i) for i in label_ids}
+        present = set()
+        try:
+            for row_idx in range(self._table.rowCount()):
+                item = self._table.item(row_idx, _COL_ID)
+                data = item.data(Qt.UserRole) if item is not None else None
+                if data and data.get("label_id") is not None:
+                    present.add(int(data["label_id"]))
+        except Exception:  # noqa: BLE001 - a deleted widget
+            present = set()
+        if getattr(self, "_rebuild_pending", False):
+            # The table is about to be rebuilt and would drop this
+            # selection: the rebuild applies it.
+            self._pending_select_ids = set(wanted)
+            return
+        if not wanted <= present:
+            # A row that does not exist yet (restored by the next rebuild):
+            # keep the ids for it as well as selecting the rows there are.
+            self._pending_select_ids = set(wanted)
+        try:
+            self._table.blockSignals(True)
+            sel_model = self._table.selectionModel()
+            if sel_model is not None:
+                sel_model.blockSignals(True)
+            try:
+                self._table.clearSelection()
+                model = self._table.model()
+                for row_idx in range(self._table.rowCount()):
+                    item = self._table.item(row_idx, _COL_ID)
+                    data = item.data(Qt.UserRole) if item is not None else None
+                    if not data or data.get("label_id") is None:
+                        continue
+                    if int(data["label_id"]) in wanted and sel_model is not None:
+                        sel_model.select(
+                            model.index(row_idx, 0),
+                            QItemSelectionModel.Select | QItemSelectionModel.Rows)
+            finally:
+                if sel_model is not None:
+                    sel_model.blockSignals(False)
+                self._table.blockSignals(False)
+            self._last_rendered_label_ids = set(wanted)
+            # The blocked selection signal would have armed the Render
+            # button and updated the Batch Refine count: fire it once.
+            if not getattr(self, "_rebuild_pending", False):
+                self._on_table_selection_changed()
+        except Exception as exc:  # noqa: BLE001 - a deleted widget
+            print(f"[ISO-BRACKET] select rows raised {exc!r}", flush=True)
+
+    def set_current_row_silently(self, label_id) -> bool:
+        """Move the current row to *label_id* and keep the selection as it
+        is.  No navigate, select or isolation callback fires; only the
+        editing header is redrawn.  Returns False when no row shows that
+        label (nothing changes then)."""
+        from qtpy.QtCore import QItemSelectionModel
+
+        try:
+            wanted = int(label_id)
+            for row_idx in range(self._table.rowCount()):
+                item = self._table.item(row_idx, _COL_ID)
+                data = item.data(Qt.UserRole) if item is not None else None
+                if not data or data.get("label_id") is None:
+                    continue
+                if int(data["label_id"]) != wanted:
+                    continue
+                # The table's own signals do not cover its selection model's.
+                sel_model = self._table.selectionModel()
+                if sel_model is None:
+                    return False
+                sel_model.blockSignals(True)
+                try:
+                    # NoUpdate: moves the cursor without touching the selection.
+                    sel_model.setCurrentIndex(
+                        self._table.model().index(row_idx, 0),
+                        QItemSelectionModel.NoUpdate)
+                finally:
+                    sel_model.blockSignals(False)
+                self._update_editing_header()
+                return True
+        except Exception as exc:  # noqa: BLE001 - a deleted widget
+            print(f"[DELETE-LABEL] set current row raised {exc!r}", flush=True)
+        return False
 
     def select_next_triage(self) -> bool:
         """Select the first visible label with a triage tier (review/bad/garbage).
@@ -1703,7 +1871,53 @@ class CurationLabelNavigator(QWidget):
         except Exception:
             return False
 
-    def _show_op_active_status(self, msec: int = 2000) -> None:
+    def _select_block_anchor(self):
+        """The label id a refused row click snaps back to, or None when the
+        click may proceed.  A raising callback never blocks."""
+        cb = getattr(self, "_select_blocked_cb", None)
+        if cb is None:
+            return None
+        try:
+            return cb()
+        except Exception:
+            return None
+
+    def _snap_back_selection(self, label_id) -> None:
+        """Put the table highlight back on ``label_id`` without firing any
+        selection callback (same guard as ``select_label``).  With no such
+        row (unknown anchor, filtered out) the highlight is cleared, so the
+        clicked row is not left selected.  Selects through the model, not
+        ``selectRow``, so a held Ctrl / Shift cannot extend the selection."""
+        from qtpy.QtCore import QItemSelectionModel
+
+        target = None
+        for row_idx in range(self._table.rowCount()):
+            item = self._table.item(row_idx, _COL_ID)
+            data = item.data(Qt.UserRole) if item is not None else None
+            if data and data.get("label_id") == label_id:
+                target = row_idx
+                break
+        sel_model = self._table.selectionModel()
+        if sel_model is not None:
+            sel_model.blockSignals(True)
+        try:
+            if target is None:
+                self._table.clearSelection()
+            else:
+                idx = self._table.model().index(target, 0)
+                sel_model.select(
+                    idx,
+                    QItemSelectionModel.ClearAndSelect
+                    | QItemSelectionModel.Rows)
+                sel_model.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
+        finally:
+            if sel_model is not None:
+                sel_model.blockSignals(False)
+        if sel_model is not None:
+            self._on_table_selection_changed()
+
+    def _show_op_active_status(self, text: str = STAGED_WORK_OPEN,
+                               msec: int = 2000) -> None:
         """Show a brief 'finish current op first' message in the editing
         header.  After ``msec`` milliseconds, restore the normal
         ``_update_editing_header`` content.
@@ -1716,9 +1930,7 @@ class CurationLabelNavigator(QWidget):
             from qtpy.QtCore import QTimer
         except ImportError:
             return
-        self._editing_header.setText(
-            "⚠ Finish or reject current refinement op first"
-        )
+        self._editing_header.setText("⚠ " + str(text))
         if self._op_active_status_timer is None:
             self._op_active_status_timer = QTimer(self)
             self._op_active_status_timer.setSingleShot(True)
@@ -2002,6 +2214,13 @@ class CurationLabelNavigator(QWidget):
         # Remember current multi-selection so we can restore after rebuild
         prev_selected_ids = self.selected_label_ids()
         prev_current_id = self.current_label_id()
+        # Rows an isolation asked to be selected while this rebuild was
+        # still pending: they replace the old selection.
+        pending_ids = getattr(self, "_pending_select_ids", None)
+        self._pending_select_ids = None
+        if pending_ids is not None:
+            prev_selected_ids = set(pending_ids)
+            prev_current_id = None
 
         # --- Search filter (overrides tier filter when non-empty) ---
         search_ids = self._parse_search_ids()
@@ -2317,7 +2536,14 @@ class CurationLabelNavigator(QWidget):
                     elif first_match is None:
                         first_match = row_idx
         if first_match is not None:
-            self._table.setCurrentCell(first_match, 0)
+            # NoUpdate: setCurrentCell would clear the multi-selection just
+            # restored above and leave one row.
+            sel_model.setCurrentIndex(
+                self._table.model().index(first_match, 0),
+                QItemSelectionModel.NoUpdate)
+        if pending_ids is not None:
+            self._last_rendered_label_ids = set(prev_selected_ids)
+            self._on_table_selection_changed()
 
         # Search auto-scroll: when there's a non-empty search and the
         # previous selection wasn't restored at a search-matched row,
@@ -2365,6 +2591,14 @@ class CurationLabelNavigator(QWidget):
             f"cb_select={bool(self._on_select_label_cb)} "
             f"cb_isolate={bool(self._on_isolation_changed_cb)}"
         )
+
+        # An open edit owns the target: no pan, no select, no isolation.
+        anchor = self._select_block_anchor()
+        if anchor is not None:
+            print(f"[STAGED-OP] row click refused - edit open on label {anchor}")
+            self._snap_back_selection(anchor)
+            self._show_op_active_status(STAGED_WORK_OPEN)
+            return
 
         self._update_editing_header()
 
@@ -2508,7 +2742,10 @@ class CurationLabelNavigator(QWidget):
             return
         if self._on_mark_tier_cb:
             try:
-                self._on_mark_tier_cb(lid, tier)
+                # A callback that returns False refused the mark: the label
+                # keeps its tier, so there is nothing to advance past.
+                if self._on_mark_tier_cb(lid, tier) is False:
+                    return
             except Exception:
                 pass
         if self._auto_advance_cb.isChecked():
@@ -2569,7 +2806,9 @@ class CurationLabelNavigator(QWidget):
         if cb is None:
             return
         try:
-            cb(lid)
+            # A refused Delete (False) removed nothing: nothing to advance past.
+            if cb(lid) is False:
+                return
         except Exception:
             pass
         if self._auto_advance_cb.isChecked():
@@ -2610,12 +2849,7 @@ class CurationLabelNavigator(QWidget):
                 "ready to paint into a new cell.  The row is registered "
                 "in this list only after you paint with it."
             )
-            self._delete_label_btn.setToolTip(
-                "Zero the selected label in the volume (destructive).  "
-                "Use the controller's Undo to restore.  Disabled while "
-                "a refinement op (interpolation / split / smooth / "
-                "merge) or uncommitted paint stroke is in flight."
-            )
+            self._delete_label_btn.setToolTip(DELETE_LABEL_TIP)
         else:
             disabled_msg = (
                 "Disabled while a refinement op is active "
@@ -2625,6 +2859,18 @@ class CurationLabelNavigator(QWidget):
             )
             self._new_label_btn.setToolTip(disabled_msg)
             self._delete_label_btn.setToolTip(disabled_msg)
+
+    def set_mark_buttons_enabled(self, enabled: bool) -> None:
+        """Enable / disable the five Mark (tier) buttons together.
+
+        Used while the annotator is load-locked, beside New / Delete / Merge,
+        so a tier mark cannot land on a patch that is being swapped.
+        """
+        enabled = bool(enabled)
+        for name in ("good", "review", "bad", "garbage", "curated"):
+            btn = getattr(self, f"_mark_{name}_btn", None)
+            if btn is not None:
+                btn.setEnabled(enabled)
 
     # ``_on_discard_garbage_clicked`` and ``_on_recalc_clicked`` removed
     # 2026-05-10 per user UX feedback — the corresponding buttons are
@@ -2666,6 +2912,16 @@ class CurationLabelNavigator(QWidget):
         self._isolate_cb.blockSignals(True)
         self._isolate_cb.setChecked(checked)
         self._isolate_cb.blockSignals(False)
+
+    def is_isolate_checked(self) -> bool:
+        """True while the Isolate box is ticked."""
+        return bool(self._isolate_cb.isChecked())
+
+    def set_paint_isolate_checked(self, checked: bool) -> None:
+        """Set the Isolate-while-painting box without firing its callback."""
+        self._paint_isolate_cb.blockSignals(True)
+        self._paint_isolate_cb.setChecked(checked)
+        self._paint_isolate_cb.blockSignals(False)
 
     def set_merge_enabled(self, enabled: bool) -> None:
         """Enable/disable the Merge Into button.
@@ -2714,10 +2970,31 @@ class CurationLabelNavigator(QWidget):
             self._show_op_active_status()
             self._update_render_button_state()
             return
+        if checked and not self.selected_label_ids():
+            # Nothing selected: the box stays ticked and isolates nothing;
+            # the next row clicked is isolated.
+            self._update_render_button_state()
+            return
         if self._on_isolation_changed_cb:
             try:
                 ids = self.selected_label_ids() if checked else set()
-                self._on_isolation_changed_cb(ids)
+                if checked:
+                    self._on_isolation_changed_cb(ids)
+                else:
+                    # Said by name: the controller leaves the table rows
+                    # alone for an untick, so a re-tick isolates them again.
+                    import inspect
+                    try:
+                        _params = inspect.signature(
+                            self._on_isolation_changed_cb).parameters
+                        _named = ("reason" in _params or any(
+                            p.kind is p.VAR_KEYWORD for p in _params.values()))
+                    except (TypeError, ValueError):
+                        _named = False
+                    if _named:
+                        self._on_isolation_changed_cb(ids, reason="box_untick")
+                    else:
+                        self._on_isolation_changed_cb(ids)
                 # Track render state for the Render Selected button.
                 self._last_rendered_label_ids = set(ids)
             except Exception:

@@ -65,6 +65,10 @@ def test_a_warn_push_draws_s1_amber_and_a_ready_one_grey(widget):
 
     assert "#e6c26a" in ADD_S1_WARN_STYLE
     lbl = widget.add_status_label
+    # the same sentence, grey then amber: the colour changes, never the
+    # height (measured on one text -- two texts wrap differently)
+    widget.update_add_ui_state(status_text=AP.ADD_S1_PICK_WALL_CHANNEL,
+                               status_kind="ready")
     h0 = lbl.sizeHint().height()
     widget.update_add_ui_state(status_text=AP.ADD_S1_PICK_WALL_CHANNEL,
                                status_kind="warn")

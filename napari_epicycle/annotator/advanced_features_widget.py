@@ -37,6 +37,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from functools import partial as _partial
 from pathlib import Path as _Path
 
 from napari_epicycle.ui_shell.theme import (
@@ -80,10 +81,11 @@ from napari_epicycle.ui_shell.theme import (
     panel_form_label,
 )
 
-#: The Advanced Features dock had no help system before Reshape R1; the Split
-#: tab's `?` is its first entry (follow-up F4).  Same guides dir the
+#: The Advanced Features dock had no help system before the guided Split; the Split
+#: tab's `?` is its first entry.  Same guides dir the
 #: 3D annotator's own help buttons use.
 from napari_epicycle.ui_shell._guides import guides_dir as _guides_dir
+from napari_epicycle.annotator import _reshape_text as _RT
 _GUIDES_DIR = _guides_dir()
 
 # Refinement workflow button color palette (2026-05-16) — applied
@@ -96,7 +98,7 @@ _REFINEMENT_ACCEPT_STYLE = PRIMARY_BTN_STYLE_GREEN   # commit
 _REFINEMENT_REJECT_STYLE = DESTRUCTIVE_BTN_STYLE     # undo to snapshot
 
 # ---------------------------------------------------------------------------
-# Reshape R1 -- the two "guided Split" pickers.
+# The two "guided Split" pickers.
 #
 # Both default to TODAY'S behaviour, so a user who never opens the collapsed
 # row sees no change at all.  The orchestrator branches on these
@@ -438,7 +440,21 @@ ADD_WALL_KINDS = ("membrane", "gradient", "intensity", "frangi", "meijering")
 #: Tooltip-only exceptions, named: the preset combo's item tooltips and
 #: the six sliders inside Numbers....
 from packages.epicycle_annotator.add_preview import (  # noqa: E402
-    ADD_ACCEPT_REFINE_TIP as _AP_ADD_ACCEPT_REFINE_TIP,
+    ADD_CLEAR_TIP as _AP_ADD_CLEAR_TIP,
+    ADD_HELP_BRIDGE as _AP_ADD_HELP_BRIDGE,
+    ADD_HELP_DARK_BELOW as _AP_ADD_HELP_DARK_BELOW,
+    ADD_HELP_GROW as _AP_ADD_HELP_GROW,
+    ADD_HELP_GROWTH_LIMIT as _AP_ADD_HELP_GROWTH_LIMIT,
+    ADD_HELP_INCLUDE_MEMBRANE as _AP_ADD_HELP_INCLUDE_MEMBRANE,
+    ADD_HELP_LIVE_TICK as _AP_ADD_HELP_LIVE_TICK,
+    ADD_HELP_LOOK_FOR as _AP_ADD_HELP_LOOK_FOR,
+    ADD_HELP_NUC_OUTLINE as _AP_ADD_HELP_NUC_OUTLINE,
+    ADD_HELP_WALL_COST as _AP_ADD_HELP_WALL_COST,
+    ADD_MARKER_SPACING_DEFAULT as _AP_ADD_MARKER_SPACING_DEFAULT,
+    ADD_HELP_NUC_EDGE as _AP_ADD_HELP_NUC_EDGE,
+    ADD_HELP_NUC_RADIUS as _AP_ADD_HELP_NUC_RADIUS,
+    ADD_HELP_TWO_GAP as _AP_ADD_HELP_TWO_GAP,
+    ADD_WHOLE_TIP as _AP_ADD_WHOLE_TIP,
 )
 
 ADD_HELP_LINES = {
@@ -448,13 +464,22 @@ ADD_HELP_LINES = {
     "add_start_btn": (
         "Drops a box where the crosshair is. Scroll the side views to the "
         "empty space first."),
+    # what they do -- plain help: the two are never grey
+    "add_whole_btn": _AP_ADD_WHOLE_TIP,
+    "add_size_whole_btn": _AP_ADD_WHOLE_TIP,
+    "add_look_for_combo": _AP_ADD_HELP_LOOK_FOR,
+    "add_nuc_radius_sb": _AP_ADD_HELP_NUC_RADIUS,
+    "add_nuc_edge_sb": _AP_ADD_HELP_NUC_EDGE,
+    "add_two_gap_sb": _AP_ADD_HELP_TWO_GAP,
     "add_size_s_btn": "Resize the box to about an eighth of the patch.",
     "add_size_m_btn": "Resize the box to about a quarter of the patch.",
     "add_size_l_btn": (
         "Resize the box to about half of the patch (for cells, at most 4 "
         "million voxels)."),
     "add_numbers_btn": "Type the box's centre and size, one number per axis.",
-    "add_recenter_btn": "Move the box so its centre is where the crosshair is.",
+    # the button shows its glyph alone; the word lives here
+    "add_recenter_btn": (
+        "Recenter: move the box so its centre is where the crosshair is."),
     "add_marker_source_combo": (
         "Where each new object grows from: another run's objects, nuclei "
         "in a second channel, or your clicks."),
@@ -466,12 +491,17 @@ ADD_HELP_LINES = {
         "The automatic split between background and nuclei in this box."),
     "add_place_markers_btn": (
         "While this is on, a click inside the box in a side view places a "
-        "marker; Ctrl + click removes one."),
-    "add_click_undo_btn": "Removes the last marker placed.",
+        "marker and starts a new object. Shift + click adds to the current "
+        "object, Alt + click picks an object, Ctrl + click removes a "
+        "marker, Ctrl + Z takes back the last one and Esc leaves no object "
+        "current."),
+    "add_click_undo_btn": (
+        "Removes the last marker placed (Ctrl + Z in a side view)."),
     "add_click_clear_btn": "Removes every marker in this box.",
     "add_click_list": (
-        "Each marker becomes the object of its colour. Untick one to leave "
-        "it out of the next cut."),
+        "Each object has a row in its colour, with its seed count when it "
+        "grows from several markers. Click a row to make that object "
+        "current; untick one and the next Preview grows nothing from it."),
     "add_wall_channel_combo": "The channel the membrane is bright in.",
     "add_prep_zcorrect_cb": "Lifts deep, dim slices to match the shallow ones.",
     "add_prep_bgsub_cb": "Takes away smooth background glow.",
@@ -494,6 +524,7 @@ ADD_HELP_LINES = {
         "Finds the new objects in the box. Nothing is written until "
         "Accept."),
     "add_stop_btn": "Stops the preview. Nothing from this box is added.",
+    "add_clear_btn": _AP_ADD_CLEAR_TIP,
     "add_all_btn": "Ticks every object in the list.",
     "add_none_btn": "Unticks every object in the list.",
     "add_show_walls_cb": (
@@ -514,14 +545,41 @@ ADD_HELP_LINES = {
     "add_dark_clearance_sb": (
         "Dark areas are left empty. The fill may reach this far into them "
         "before it stops."),
-    "add_dark_factor_sb": (
-        "Signal below this share of the patch's usual brightness counts as "
-        "dark space. Lower it if dim cells come out empty."),
+    "add_dark_factor_sb": _AP_ADD_HELP_DARK_BELOW,
+    # Cells: the tissue outline and how cells grow
+    "add_outline_combo": (
+        "Where new cells may grow: inside the outline of the objects you "
+        "cleared, inside a shrink-wrap around the stain, or (as before) "
+        "wherever the box edges and dark space let them."),
+    "add_show_outline_cb": (
+        "Draws the edge of the tissue outline in the main view and in the "
+        "three side views, so you can scroll the slices and see where the "
+        "tissue ends."),
+    # Nuclei: the Tissue outline card's own combo, and its Show tick (the
+    # same words as Cells')
+    "add_nuc_outline_combo": _AP_ADD_HELP_NUC_OUTLINE,
+    "add_nuc_show_outline_cb": (
+        "Draws the edge of the tissue outline in the main view and in the "
+        "three side views, so you can scroll the slices and see where the "
+        "tissue ends."),
+    "add_grow_combo": _AP_ADD_HELP_GROW,
+    "add_wall_cost_sb": _AP_ADD_HELP_WALL_COST,
+    "add_growth_limit_sb": _AP_ADD_HELP_GROWTH_LIMIT,
+    "add_include_membrane_cb": _AP_ADD_HELP_INCLUDE_MEMBRANE,
+    "add_bridge_sb": _AP_ADD_HELP_BRIDGE,
     "add_separate_cb": (
-        "Splits objects that touch. Off: one object per bright blob."),
+        "Splits objects that touch, so a marker takes the nucleus it sits "
+        "on, not its neighbours. Off: one object per bright blob; at the "
+        "markers, two clicks in one blob still split it."),
     "add_min_distance_sb": (
         "The closest two object centres may be, in voxels. Lower gives "
         "more, smaller objects."),
+    "add_marker_spacing_sb": (
+        "How far apart the middles of two nuclei must be for them to count "
+        "as two, in voxels of the full-size image across (the same distance "
+        "in microns between slices). The default suits most nuclei; much "
+        "higher joins close neighbours to the nucleus you click; much lower "
+        "can let a click spread through rough, uneven stain."),
     "add_clahe_clip_sb": "How strongly Local contrast evens the box out.",
     "add_clear_border_cb": (
         "Objects that reach the box edge were probably cut by it, so they "
@@ -533,20 +591,20 @@ ADD_HELP_LINES = {
     "add_auto_smooth_cb": (
         "Smooths each new object's surface in the preview, so what you see "
         "is what Accept writes."),
-    "add_smooth_sigma_sb": "How much smoothing, in voxels. 1.5 is gentle.",
+    "add_smooth_sigma_sb": (
+        "How much smoothing, in voxels of the full-size image. 1.5 is "
+        "gentle."),
+    "add_live_cb": _AP_ADD_HELP_LIVE_TICK,
     "add_batch_refine_btn": ADD_REFINE_ALL_TIP,
-    # the named constant itself (A-L7, the A1-A4 audit)
-    "add_accept_refine_btn": _AP_ADD_ACCEPT_REFINE_TIP,
     "add_refine_piece_btn": (
         "Takes the object selected in the list to the Refine tab."),
     "add_again_btn": (
         "Start again in the same box, with the same preset and marker "
         "source."),
-    "add_undo_all_btn": "Take back every object added this session.",
 }
 
-#: The box row's Numbers... / Recenter: PANEL_BTN_STYLE with 5 px of side
-#: padding, so "Size S M L Numbers... Recenter" fits the 290 px inside the
+#: The box row's Whole / Numbers... / ⌖: PANEL_BTN_STYLE with 5 px of side
+#: padding, so "S M L Whole Numbers... ⌖" fits the 290 px inside the
 #: card at the 316 px viewport (B2 fix pass U-M5d).
 _ADD_TIGHT_BTN_STYLE = PANEL_BTN_STYLE.replace("padding: 4px 10px;",
                                                "padding: 4px 5px;")
@@ -561,19 +619,29 @@ _ADD_PRESET_VALUES = {
     "nuclei": {
         "add_clahe_cb": False, "add_clahe_clip_sb": 0.01,
         "add_separate_cb": True, "add_min_distance_sb": 3,
+        # the markers' own Spacing (Anywhere's stays 3)
+        "add_marker_spacing_sb": _AP_ADD_MARKER_SPACING_DEFAULT,
         "add_clear_border_cb": True, "add_edge_margin_sb": 3,
         "add_min_size_sb": 0,
         "add_auto_smooth_cb": True, "add_smooth_sigma_sb": 1.5,
+        # Inside each cell's three knobs
+        "add_nuc_radius_sb": 2.5, "add_nuc_edge_sb": 0.25,
+        "add_two_gap_sb": 0.70,
     },
     "cells": {
         "add_wall_kind_combo": 0,
         "add_prep_zcorrect_cb": True, "add_prep_bgsub_cb": False,
         "add_prep_lift_cb": False, "add_prep_denoise_cb": False,
-        "add_click_radius_sb": 2.0, "add_core_erode_sb": 1.0,
+        "add_click_radius_sb": 1.0, "add_core_erode_sb": 1.0,
         "add_dark_clearance_sb": 2.0, "add_dark_factor_sb": 0.5,
         "add_clear_border_cb": True, "add_edge_margin_sb": 3,
         "add_min_size_sb": 0,
         "add_auto_smooth_cb": True, "add_smooth_sigma_sb": 1.5,
+        # Spread from each marker's three knobs (Grow by, Tissue outline and
+        # Bridge gaps follow the box and the patch instead: see
+        # ``_apply_add_cells_rules``)
+        "add_wall_cost_sb": 40.0, "add_growth_limit_sb": 28.0,
+        "add_include_membrane_cb": True,
     },
 }
 _ADD_PRESET_KEYS = tuple(sorted(
@@ -583,6 +651,7 @@ _ADD_PRESET_KEYS = tuple(sorted(
 _ADD_ADVANCED_SIGNALS = (
     ("add_separate_cb", "toggled"),
     ("add_min_distance_sb", "valueChanged"),
+    ("add_marker_spacing_sb", "valueChanged"),
     ("add_min_size_sb", "valueChanged"),
     ("add_clahe_clip_sb", "valueChanged"),
     ("add_clear_border_cb", "toggled"),
@@ -595,10 +664,18 @@ _ADD_ADVANCED_SIGNALS = (
     ("add_dark_factor_sb", "valueChanged"),
     ("add_dark_outside_cb", "toggled"),
     ("add_wall_kind_combo", "currentIndexChanged"),
+    ("add_nuc_radius_sb", "valueChanged"),
+    ("add_nuc_edge_sb", "valueChanged"),
+    ("add_two_gap_sb", "valueChanged"),
     ("add_prep_zcorrect_cb", "toggled"),
     ("add_prep_bgsub_cb", "toggled"),
     ("add_prep_lift_cb", "toggled"),
     ("add_prep_denoise_cb", "toggled"),
+    ("add_grow_combo", "currentIndexChanged"),
+    ("add_wall_cost_sb", "valueChanged"),
+    ("add_growth_limit_sb", "valueChanged"),
+    ("add_include_membrane_cb", "toggled"),
+    ("add_bridge_sb", "valueChanged"),
 )
 
 
@@ -725,6 +802,8 @@ class _AddBoxNumbers(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(2)
+        # sliders only: the whole patch is a size on the box row (Whole); a
+        # slider move makes a whole patch a box again
         try:
             from superqt import QLabeledSlider as _Slider
         except Exception:  # pragma: no cover - superqt is a napari dep
@@ -921,6 +1000,14 @@ REFINE_ABOUT_BODY = (
 #: cp1252-safe wherever it is quoted.
 _CHEVRON_CLOSED = "\u25b8"
 _CHEVRON_OPEN = "\u25be"
+
+#: The Reshape tab's smoothing choice, item order = combo index.
+SMOOTH_MODE_LABELS = (
+    "Off",
+    "Smooth pieces",
+    "Keep the object",
+)
+SMOOTH_MODE_OFF, SMOOTH_MODE_PIECES, SMOOTH_MODE_KEEP = 0, 1, 2
 
 #: The two sigma row labels.  Same escape rule: a literal sigma in the
 #: source is not cp1252-encodable, which is the class of hazard the
@@ -1255,12 +1342,17 @@ HELP_LINES = {
     "split_min_size_sb": (
         "How small a piece has to be to count as a sliver, in voxels."
     ),
-    "split_auto_smooth_cb": (
-        "Rounds off the staircase edges of a hand-painted cut. The preview "
-        "already shows it."
+    "split_smooth_mode_combo": (
+        "Rounds off the staircase edges of a hand-painted cut; the preview "
+        "shows it. 'Keep the object' loses no voxel and never cuts through "
+        "a marker."
     ),
     "split_auto_advance_cb": (
         "After Accept, jump straight to the next object in the triage list."
+    ),
+    "split_pieces_cap_sb": (
+        "After Accept, the view keeps up to this many of the new pieces "
+        "isolated; with more than this, only the largest piece stays."
     ),
     # --- the Detect Seeds row -------
     "split_detect_min_dist_sb": (
@@ -2855,7 +2947,7 @@ class AdvancedFeaturesWidget(QWidget):
         _s3.setSpacing(2)
 
         # ------------------------------------------------------------------
-        # Reshape R1 -- "Seeds from" / "Walls from".
+        # Guided Split -- "Seeds from" / "Walls from".
         #
         # Two pickers, COLLAPSED behind a one-line summary, both opening on
         # today's behaviour.  Touch nothing and the split below behaves
@@ -3117,7 +3209,8 @@ class AdvancedFeaturesWidget(QWidget):
         self.split_wall_channel_combo = QComboBox()
         self.split_wall_channel_combo.setStyleSheet(PANEL_INPUT_STYLE)
         self.split_wall_channel_combo.setToolTip(
-            "The image channel the walls are read from."
+            "The image channel the walls are read from.  Blank means no "
+            "channel is chosen: the tool says so rather than guessing one."
         )
         _wch_row.addWidget(self.split_wall_channel_combo, 1)
         _wc.addLayout(_wch_row)
@@ -3743,7 +3836,7 @@ class AdvancedFeaturesWidget(QWidget):
         _s5.addWidget(self.split_piece_card_caption)
 
         # ------------------------------------------------------------------
-        # Reshape R1 -- the checkable piece list.
+        # Guided Split -- the checkable piece list.
         #
         # Unticking a piece does NOT re-solve; it only narrows what Accept
         # commits.  On a split, an unticked piece RETURNS TO THE TARGET CELL
@@ -4184,20 +4277,38 @@ class AdvancedFeaturesWidget(QWidget):
         _adv_row(_cut, "Sliver size", self.split_min_size_sb,
                  indent=_SUB_INDENT, attr="split_min_size_sb")
 
-        # Auto-smooth split results on Accept -- read by the manual path at
+        # Smoothing of the cut pieces -- read by the manual path at
         # preview time, so it stays in Advanced rather than disappearing.
-        self.split_auto_smooth_cb = QCheckBox("Auto-smooth results")
-        self.split_auto_smooth_cb.setChecked(True)
-        self.split_auto_smooth_cb.setToolTip(
+        self.split_smooth_mode_combo = QComboBox()
+        self.split_smooth_mode_combo.addItems(list(SMOOTH_MODE_LABELS))
+        self.split_smooth_mode_combo.setCurrentIndex(SMOOTH_MODE_PIECES)
+        self.split_smooth_mode_combo.setStyleSheet(PANEL_INPUT_STYLE)
+        self.split_smooth_mode_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.split_smooth_mode_combo.setMinimumContentsLength(10)
+        self.split_smooth_mode_combo.setToolTip(
             "Rounds off the staircase edges a cut leaves behind.\n\n"
-            "Two things it is easy to get wrong about this box: it runs at "
+            "Smooth pieces: each piece is smoothed on its own. Thin pieces "
+            "can shrink or vanish, and the object can lose voxels.\n"
+            "Keep the object: the cuts between pieces can move, but never "
+            "across a painted marker. The object keeps every voxel it "
+            "had.\n\n"
+            "Two things it is easy to get wrong about this choice: it runs at "
             "PREVIEW, so what you see is already smoothed and what you see "
             "is what Accept writes; and it reaches the HAND-PAINTED path "
             "only. A cut that came from 'Markers from' or from any wall "
             "other than 'Pinch points' ignores it."
         )
-        _cut.addWidget(self.split_auto_smooth_cb)
-        _cut.addWidget(self._helper_line("split_auto_smooth_cb"))
+        _adv_row(_cut, "Smoothing", self.split_smooth_mode_combo,
+                 attr="split_smooth_mode_combo")
+        # The old tick, kept as an adapter for code that still asks
+        # "is smoothing on?".  Never shown; the combo drives it.
+        self.split_auto_smooth_cb = QCheckBox("Auto-smooth results", self)
+        self.split_auto_smooth_cb.setChecked(True)
+        self.split_auto_smooth_cb.setVisible(False)
+        self.split_auto_smooth_cb.setToolTip(
+            "Kept for older code; the Smoothing choice above drives it."
+        )
 
         # Auto-smooth sigma container (hidden when auto-smooth unchecked)
         self._smooth_sigma_container = QWidget()
@@ -4230,8 +4341,8 @@ class AdvancedFeaturesWidget(QWidget):
         smooth_sigma_row.addWidget(self.smooth_sigma_xy_sb, 1)
         _cut.addWidget(self._smooth_sigma_container)
         # Wire show/hide to auto-smooth checkbox
-        self.split_auto_smooth_cb.toggled.connect(
-            self._smooth_sigma_container.setVisible
+        self.split_smooth_mode_combo.currentIndexChanged.connect(
+            self._on_split_smooth_mode_changed
         )
 
         # Auto-advance after accept toggle.
@@ -4242,6 +4353,21 @@ class AdvancedFeaturesWidget(QWidget):
         )
         _cut.addWidget(self.split_auto_advance_cb)
         _cut.addWidget(self._helper_line("split_auto_advance_cb"))
+
+        # How many new pieces stay isolated after Accept.  Each piece costs
+        # a small 3D layer, so a large cut shows only its largest piece.  Read
+        # when Accept is pressed; not saved between sessions.
+        self.split_pieces_cap_sb = QSpinBox()
+        self.split_pieces_cap_sb.setRange(1, 50)
+        self.split_pieces_cap_sb.setValue(10)
+        self.split_pieces_cap_sb.setStyleSheet(PANEL_INPUT_STYLE)
+        self.split_pieces_cap_sb.setToolTip(
+            "After Accept, up to this many of the new pieces stay isolated "
+            "in the 3D view.  With more pieces than this, only the largest "
+            "one stays."
+        )
+        _adv_row(_cut, "Pieces kept in view after Accept",
+                 self.split_pieces_cap_sb, attr="split_pieces_cap_sb")
 
         self._split_advanced_container.setVisible(False)
         layout.addWidget(self._split_advanced_container)
@@ -4338,7 +4464,7 @@ class AdvancedFeaturesWidget(QWidget):
         on_select_fragment=None,
         on_detect_seeds=None,
         on_threshold_changed=None,
-        # --- Reshape R1: the guided-Split additions ---
+        # --- the guided-Split additions ---
         on_seeds_from_changed=None,
         on_walls_from_changed=None,
         on_guide_browse=None,
@@ -4455,7 +4581,7 @@ class AdvancedFeaturesWidget(QWidget):
                 self._on_fragment_item_changed
             )
 
-        # --- Reshape R1 wiring -----------------------------
+        # --- guided-Split wiring ---------------------------
         # Each is stashed so the pure view helpers can fire it, and each
         # button is disconnect-then-connect exactly like the rows above, so
         # re-wiring on relaunch cannot stack duplicate connections.
@@ -4574,7 +4700,7 @@ class AdvancedFeaturesWidget(QWidget):
                     pass
 
     # ------------------------------------------------------------------ #
-    # Reshape R1 -- guided Split
+    # Guided Split
     #
     # Everything below is PURE VIEW LOGIC plus one serialisable params
     # getter.  No engine call, no napari, no volume access -- the
@@ -5296,6 +5422,9 @@ class AdvancedFeaturesWidget(QWidget):
             if w is not None:
                 w.setVisible(False)
         self._set_marker_count_text("")
+        # The verdicts belong to the rows that have just gone.
+        self._marker_touching = {}
+        self._set_seed_count_text(0)
         print("[MARKERS] list cleared")
 
     def _set_marker_count_text(self, text: str) -> None:
@@ -5303,19 +5432,59 @@ class AdvancedFeaturesWidget(QWidget):
         if label is not None:
             label.setText(str(text))
 
-    def _refresh_marker_count_line(self) -> None:
-        """"Found 3 markers", or "3 of 5 ticked" once some are off."""
+    def _set_seed_count_text(self, n) -> None:
+        """The "Markers: N" line above the painting rows (N = ticked rows)."""
+        label = getattr(self, "split_seed_label", None)
+        if label is not None:
+            label.setText(_RT.MARKERS_COUNT.format(n=int(n)))
+
+    def _touching_ids_in_list(self) -> set:
+        """The listed rows the touching rule left unticked at the Find."""
+        touching = getattr(self, "_marker_touching", None) or {}
         lst = getattr(self, "split_marker_list", None)
-        if lst is None or not lst.count():
+        if not touching or lst is None:
+            return set()
+        listed = set()
+        for i in range(lst.count()):
+            it = lst.item(i)
+            mid = it.data(Qt.UserRole) if it is not None else None
+            if mid is not None:
+                listed.add(int(mid))
+        return {int(k) for k in touching} & listed
+
+    def _refresh_marker_count_line(self) -> None:
+        """"Found 3 markers", or "3 of 5 ticked" once some are off.
+
+        After a Find on markers taken from labels, while the rows the
+        touching rule left unticked are exactly the unticked ones, the
+        line says so instead -- "2 markers kept, 3 touching ones left
+        unticked", or that none was kept.  The "Markers: N" line follows
+        the ticks in every case.
+        """
+        lst = getattr(self, "split_marker_list", None)
+        if lst is None:
+            return
+        if not lst.count():
+            self._set_seed_count_text(0)
             return
         total = lst.count()
         kept = len(self.get_checked_marker_ids() or [])
-        if kept == total:
+        self._set_seed_count_text(kept)
+        touching = self._touching_ids_in_list()
+        unticked = set(self.get_unticked_marker_ids() or [])
+        if touching and unticked == touching:
+            if kept == 0:
+                self._set_marker_count_text(_RT.none_kept_line(total))
+            else:
+                self._set_marker_count_text(_RT.MARKERS_KEPT_LINE.format(
+                    kept=kept, s=_RT.plural(kept), n=len(touching),
+                    s2=_RT.plural(len(touching))))
+        elif kept == total:
             self._set_marker_count_text(
-                "Found {} marker{}".format(total, "" if total == 1 else "s")
-            )
+                _RT.MARKERS_FOUND_LINE.format(n=total, s=_RT.plural(total)))
         else:
-            self._set_marker_count_text("{} of {} ticked".format(kept, total))
+            self._set_marker_count_text(
+                _RT.MARKERS_TICKED_LINE.format(kept=kept, total=total))
 
     def _on_split_marker_check_changed(self, item=None, *_args) -> None:
         """A marker was ticked or unticked.
@@ -5423,8 +5592,9 @@ class AdvancedFeaturesWidget(QWidget):
         """The TICKED marker ids, or ``None`` when nothing was found.
 
         ``None`` and ``[]`` are different answers: ``None`` means no Find
-        has happened (Preview finds them fresh and keeps them all), and
-        ``[]`` means the user unticked every one (Preview refuses).
+        has happened (Preview finds them fresh -- for markers taken from
+        labels it leaves the touching ones out), and ``[]`` means every
+        row is unticked (Preview refuses).
         """
         lst = getattr(self, "split_marker_list", None)
         if lst is None or not lst.count():
@@ -5476,6 +5646,11 @@ class AdvancedFeaturesWidget(QWidget):
         for name in names or ():
             combo.addItem(str(name))
         self._restore_channel_choice(combo, prev)
+        if not prev:
+            # First fill with nothing remembered: stay blank (as Add does)
+            # so the "pick a channel" refusal fires instead of a silent
+            # guess of the first image layer.
+            combo.setCurrentIndex(-1)
         combo.blockSignals(False)
 
     def _set_split_result_visible(self, visible: bool) -> None:
@@ -5715,8 +5890,12 @@ class AdvancedFeaturesWidget(QWidget):
 
         override = getattr(self, "_add_footer_override", None)
         text = btn.text()
-        if text == "Done":
-            label.setText(AP.ADD_FOOT_REVIEW)
+        if text == "Undo all":
+            # REVIEW: Done (keeps the objects) + Undo all -- or the
+            # orchestrator's line when a later Clear stands in the way
+            n = self.add_pieces_list.count() if hasattr(
+                self, "add_pieces_list") else 0
+            label.setText(override or AP.foot_review(n))
         elif text == "Discard":
             label.setText(AP.ADD_FOOT_CANDIDATES)
         elif override:
@@ -5725,6 +5904,12 @@ class AdvancedFeaturesWidget(QWidget):
             label.setText(AP.ADD_FOOT_BOX)
         else:
             label.setText(AP.ADD_FOOT_IDLE)
+        # the secondary's tooltip is the line under it, in every state
+        # but REVIEW (Undo all keeps its own) -- so it never names a word
+        # the button does not show, and in a "+ Add another" box it says
+        # Close box goes back to the review
+        if text != "Undo all":
+            btn.setToolTip(label.text())
 
     def _refresh_refine_footer_summary(self) -> None:
         """Same line, same job, on the Refine tab."""
@@ -5849,6 +6034,7 @@ class AdvancedFeaturesWidget(QWidget):
             )
         if hasattr(self, "_split_image_seed_container"):
             self._split_image_seed_container.setVisible(show_image)
+        self._refresh_guide_load_enabled()
         if hasattr(self, "_split_find_container"):
             # ONE FINDER PER CARD.  Find markers is the
             # finder for sources 1-4 -- index 1 joined them, because
@@ -6016,12 +6202,30 @@ class AdvancedFeaturesWidget(QWidget):
             combo.addItem(getattr(src, "label", str(src)), src)
         combo.blockSignals(False)
         if not combo.count():
-            combo.addItem(
-                "No other run of this patch has labels to trust", None
-            )
+            combo.addItem(_RT.NO_RUN_ITEM, None)
             combo.setEnabled(False)
         else:
             combo.setEnabled(True)
+        self._refresh_guide_load_enabled()
+
+    def _refresh_guide_load_enabled(self) -> None:
+        """Load mask is grey while "another run" shows an empty picker.
+
+        There is nothing it could load then; on "a mask file" it is live
+        again, because Browse is what fills it there.
+        """
+        btn = getattr(self, "split_guide_load_btn", None)
+        seeds = getattr(self, "split_seeds_from_combo", None)
+        combo = getattr(self, "split_guide_source_combo", None)
+        if btn is None or seeds is None:
+            return
+        empty_run_picker = (
+            int(seeds.currentIndex()) == SEEDS_FROM_RUN_LABELS
+            and combo is not None
+            and not any(combo.itemData(i) is not None
+                        for i in range(combo.count()))
+        )
+        btn.setEnabled(not empty_run_picker)
 
     def selected_guide_source(self):
         """The picked ``GuideSource``, or None."""
@@ -6031,6 +6235,15 @@ class AdvancedFeaturesWidget(QWidget):
             return self.split_guide_source_combo.currentData()
         except Exception:
             return None
+
+    def _on_split_smooth_mode_changed(self, idx) -> None:
+        on = int(idx) != SMOOTH_MODE_OFF
+        self.split_auto_smooth_cb.setChecked(on)
+        self._smooth_sigma_container.setVisible(on)
+
+    def get_split_smooth_mode(self) -> int:
+        """0 = off, 1 = smooth the pieces, 2 = smooth and keep the object."""
+        return int(self.split_smooth_mode_combo.currentIndex())
 
     def get_split_params(self) -> dict:
         """The whole Split recipe as a plain, serialisable dict.
@@ -6090,6 +6303,7 @@ class AdvancedFeaturesWidget(QWidget):
             "seed_preproc": self._marker_prep_chain(),
             "wall_preproc": self._wall_prep_chain(),
             "search_padding": _val("split_search_padding_sb", 15),
+            "pieces_cap": _val("split_pieces_cap_sb", 10),
             # --- Brick 2b: the eleven remaining engine knobs.  Every
             # default here is `reshape.spec.DEFAULT_PARAMS`'s own, so a
             # user who never opens Advanced gets the same answer as
@@ -6168,7 +6382,8 @@ class AdvancedFeaturesWidget(QWidget):
         errors can then report.
 
         A first fill -- nothing ever chosen, nothing remembered -- has
-        nothing to restore, so index 0 stands there.
+        nothing to restore, so index 0 stands there for Add's main combo
+        only; the Refine, wall and marker setters blank it afterwards.
         """
         if not prev:
             return
@@ -6193,6 +6408,11 @@ class AdvancedFeaturesWidget(QWidget):
         for name in names or ():
             combo.addItem(str(name))
         self._restore_channel_choice(combo, prev)
+        if not prev:
+            # First fill with nothing remembered: stay blank (as Add does)
+            # so the "pick a channel" refusal fires instead of a silent
+            # guess of the first image layer.
+            combo.setCurrentIndex(-1)
         combo.blockSignals(False)
 
     def update_split_guided_ui(
@@ -6213,8 +6433,13 @@ class AdvancedFeaturesWidget(QWidget):
         busy_text=None,
         busy_progress=None,
         blocked_reason=None,
+        guide_note_kind=None,
     ) -> None:
         """Partial, None-guarded update of every guided-Split affordance.
+
+        ``guide_note_kind`` is how ``guide_note`` is drawn: ``"info"`` in
+        grey, ``"warn"`` in amber (a refusal or a caution).  Not passed,
+        the note keeps the amber it always had.
 
         Mirrors ``update_add_ui_state``'s contract: every parameter defaults
         to None and only the ones passed are applied, so a caller can nudge
@@ -6308,6 +6533,9 @@ class AdvancedFeaturesWidget(QWidget):
             self.split_engine_msg_label.setVisible(bool(text))
 
         if guide_note is not None and hasattr(self, "split_guide_note_label"):
+            self.split_guide_note_label.setStyleSheet(
+                PANEL_HELP_STYLE if guide_note_kind == _RT.GUIDE_NOTE_INFO
+                else PANEL_WARN_STYLE)
             self.split_guide_note_label.setText(str(guide_note))
             self.split_guide_note_label.setVisible(bool(guide_note))
 
@@ -6623,7 +6851,7 @@ class AdvancedFeaturesWidget(QWidget):
         """Small solid-colour icon matching seed *sid*'s colour in the views
         (napari's default Labels colormap, which the Refine layer uses), so the
         seed list reads as a colour legend.  Falls back to grey on any error."""
-        from qtpy.QtGui import QColor, QIcon, QPixmap
+        from qtpy.QtGui import QColor
 
         color = QColor(204, 204, 204)
         try:
@@ -6641,10 +6869,17 @@ class AdvancedFeaturesWidget(QWidget):
             )
         except Exception:
             pass
+        return self._colour_swatch_icon(color)
+
+    @staticmethod
+    def _colour_swatch_icon(color):
+        """The swatch chip of one ``QColor`` (the seed list's and the Add
+        channel items')."""
         # The mockup's `.sw`: a 12 px rounded chip.  Painted at 4x and
         # let the view scale it down, so the corners stay clean at the
         # 12 px icon size the ticklists ask for.
         from qtpy.QtCore import QRectF
+        from qtpy.QtGui import QColor, QIcon, QPixmap
         from qtpy.QtGui import QPainter, QPainterPath
 
         pix = QPixmap(48, 48)
@@ -6697,6 +6932,10 @@ class AdvancedFeaturesWidget(QWidget):
         marker_note: str | None = None,
         # --- fix pass H2: a Find that has to spare SOME ticks ---------
         marker_preserve_ids: list | None = None,
+        # --- markers taken from labels: the rows the touching rule
+        # leaves unticked, as {marker id: contact}; the contact's
+        # inside / object_voxels say why on the row's tooltip.
+        marker_start_off: dict | None = None,
         # --- Brick U3: the wall-picture tick ------------
         walls_toggle_enabled: bool | None = None,
         # ...and WHY it is grey, when there is something worth saying
@@ -6724,14 +6963,22 @@ class AdvancedFeaturesWidget(QWidget):
         if marker_ids is not None:
             self._populate_marker_list(
                 marker_ids, marker_stats or {},
-                preserve_ids=marker_preserve_ids)
+                preserve_ids=marker_preserve_ids,
+                start_off=marker_start_off)
         if marker_busy is not None:
             self._set_marker_busy(bool(marker_busy))
         if marker_note is not None:
             self._set_marker_count_text(str(marker_note))
 
         if seed_count is not None and hasattr(self, "split_seed_label"):
-            self.split_seed_label.setText(f"Markers: {seed_count}")
+            # The TICKED rows when there is a list; the pushed count when
+            # there is none.
+            _lst = getattr(self, "split_marker_list", None)
+            if _lst is not None and _lst.count():
+                self._set_seed_count_text(
+                    len(self.get_checked_marker_ids() or []))
+            else:
+                self._set_seed_count_text(seed_count)
         # `seed_ids=` fills THE marker list now.  Every
         # existing orchestrator call site keeps working; what changes is
         # that painted markers land in the same tickable list a Find
@@ -6917,7 +7164,7 @@ class AdvancedFeaturesWidget(QWidget):
 
     def _populate_marker_list(self, marker_ids, marker_stats,
                               preserve: bool = False,
-                              preserve_ids=None) -> None:
+                              preserve_ids=None, start_off=None) -> None:
         """Fill the one marker list.
 
         Every marker starts TICKED: a marker the detector found is an
@@ -6939,11 +7186,30 @@ class AdvancedFeaturesWidget(QWidget):
         a marker the user deliberately unticked is the panel undoing a
         decision behind their back.  Only the named ids may keep an OFF
         state; everything else is ticked.
+
+        ``start_off`` is a Find on markers taken from labels: the labels
+        that only touch the object start UNTICKED, with the word
+        "touching" on the row and the reason on its tooltip.  The
+        verdicts stay with their rows through a reconcile; a Find that
+        brings none forgets them.
         """
         lst = getattr(self, "split_marker_list", None)
         if lst is None:
             return
         stats = {int(k): v for k, v in (marker_stats or {}).items()}
+        wanted = {int(m) for m in (marker_ids or ())}
+        if start_off is not None:
+            self._marker_touching = {
+                int(k): v for k, v in dict(start_off).items()}
+        elif not preserve:
+            self._marker_touching = {}
+        touching = {
+            k: v for k, v in (
+                getattr(self, "_marker_touching", None) or {}).items()
+            if k in wanted
+        }
+        self._marker_touching = dict(touching)
+        start_unticked = set(touching) if start_off is not None else set()
         spare = (None if preserve_ids is None
                  else {int(i) for i in preserve_ids})
         was_off = set()
@@ -6979,6 +7245,9 @@ class AdvancedFeaturesWidget(QWidget):
                 text += "  {}  {:,}".format(_DOT_SEP, int(voxels))
             elif centre is not None:
                 text += "  {}  {}".format(_DOT_SEP, self._marker_place(centre))
+            if mid in touching:
+                text += "  {}  {}".format(_DOT_SEP, _RT.MARKER_ROW_TOUCHING)
+                tip += "\n" + self._touching_tip(touching[mid])
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, mid)
             try:
@@ -6988,7 +7257,8 @@ class AdvancedFeaturesWidget(QWidget):
             item.setToolTip(tip)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(
-                Qt.Unchecked if mid in was_off else Qt.Checked)
+                Qt.Unchecked if (mid in was_off or mid in start_unticked)
+                else Qt.Checked)
             self._style_marker_row(item)
             lst.addItem(item)
         lst.blockSignals(False)
@@ -6998,6 +7268,25 @@ class AdvancedFeaturesWidget(QWidget):
         self._refresh_split_guided_summary()
         print("[MARKERS] list now holds {} marker(s), {} kept from before"
               .format(lst.count(), len(was_off)))
+
+    @staticmethod
+    def _touching_tip(contact) -> str:
+        """The touching row's tooltip, from a contact dict or object."""
+        def _get(name):
+            if isinstance(contact, dict):
+                return contact.get(name, 0)
+            return getattr(contact, name, 0)
+
+        try:
+            n = int(_get("inside") or 0)
+            obj = int(_get("object_voxels") or 0)
+        except Exception:
+            n, obj = 0, 0
+        share = 100.0 * n / obj if obj > 0 else 0.0
+        # One voxel of a big object rounds to "0.0", which reads as none.
+        pct = ("under 0.1" if 0.0 < share < 0.05
+               else "{:.1f}".format(share))
+        return _RT.MARKER_TOUCHING_TIP.format(n=n, s=_RT.plural(n), pct=pct)
 
     @staticmethod
     def _marker_stat(value):
@@ -7107,6 +7396,10 @@ class AdvancedFeaturesWidget(QWidget):
                 return
             # Partial init from a previous error — fall through to retry.
             self._detect_plot_widget = None
+        if self._detect_plot_placeholder is None:
+            # released for a panel being torn down: nowhere to put a plot
+            # (built anyway it would be parentless, a window of its own)
+            return
 
         try:
             import pyqtgraph as pg
@@ -7206,8 +7499,8 @@ class AdvancedFeaturesWidget(QWidget):
         pw.setXRange(float(edges[0]), float(edges[-1]), padding=0.05)
 
     def _set_detect_threshold(self, value: float) -> None:
-        """Set threshold line position without firing the callback."""
-        self._ensure_detect_plot()
+        """Set threshold line position without firing the callback.  Never
+        BUILDS the plot (only ``_update_detect_histogram`` does)."""
         if self._detect_thresh_line is not None:
             self._detect_thresh_line.blockSignals(True)
             self._detect_thresh_line.setValue(value)
@@ -7251,7 +7544,20 @@ class AdvancedFeaturesWidget(QWidget):
         self._add_footer_override = None
         self._add_busy_state = False
         self._add_source_keys = []
+        # the Markers ▸ From list as the orchestrator gave it; on a Cells
+        # whole patch the combo offers only its "Objects from ..." items and
+        # Click markers, and the box's own pick waits here until the patch
+        # is a box again
+        self._add_source_entries_all = []
+        self._add_sources_offered_whole = False
+        self._add_source_box_key = None
         self._add_nuclei_auto_value = None
+        # the two Auto lines: being measured, or measured flat (nothing for
+        # Otsu to split) -- the text is written by _apply_add_visibility
+        self._add_brightness_pending = False
+        self._add_brightness_flat = False
+        self._add_nuclei_pending = False
+        self._add_nuclei_flat = False
         self._add_run_count = None
         self._add_ui = {"box": False, "review": False, "candidates": False,
                         "default_spacing": False, "single_channel": False}
@@ -7339,10 +7645,22 @@ class AdvancedFeaturesWidget(QWidget):
         _s2 = QVBoxLayout(self._add_s2_container)
         make_panel_card(self._add_s2_container)
         _s2.addWidget(panel_card_header("The box", self._add_s2_container))
-        self.add_start_btn = QPushButton("Place box at the crosshair")
+        # no box: ONE row, [Place box] [Whole patch], both always enabled
+        # -- the whole patch is a box size, never a grey door; a choice that
+        # cannot fill a whole patch greys Preview and S1 says why
+        self._add_idle_row = QWidget(self._add_s2_container)
+        _irow = QHBoxLayout(self._add_idle_row)
+        _irow.setContentsMargins(0, 0, 0, 0)
+        _irow.setSpacing(4)
+        self.add_start_btn = QPushButton("Place box", self._add_idle_row)
         self.add_start_btn.setStyleSheet(PANEL_BTN_STYLE)
         self.add_start_btn.setToolTip(AP.ADD_HELP_BOX_EMPTY)
-        _s2.addWidget(self.add_start_btn)
+        _irow.addWidget(self.add_start_btn, 1)
+        self.add_whole_btn = QPushButton(AP.ADD_WHOLE_BTN, self._add_idle_row)
+        self.add_whole_btn.setStyleSheet(PANEL_BTN_STYLE)
+        self.add_whole_btn.setToolTip(AP.ADD_WHOLE_TIP)
+        _irow.addWidget(self.add_whole_btn, 1)
+        _s2.addWidget(self._add_idle_row)
 
         self._add_box_container = QWidget()
         _brow = QHBoxLayout(self._add_box_container)
@@ -7376,15 +7694,23 @@ class AdvancedFeaturesWidget(QWidget):
                 lambda _c=False, f=frac: self._fire_add_size_preset(f))
             setattr(self, "add_size_{}_btn".format(key.lower()), b)
             _brow.addWidget(b)
+        # the fourth size: the whole patch (only S, M, L or a Numbers...
+        # slider make it a box again).  It takes the room the word
+        # "Recenter" gave up, so the row is no wider than it was
+        self.add_size_whole_btn = QPushButton(AP.ADD_WHOLE_SIZE_BTN)
+        self.add_size_whole_btn.setStyleSheet(_ADD_TIGHT_BTN_STYLE)
+        self.add_size_whole_btn.setToolTip(AP.ADD_WHOLE_TIP)
+        _brow.addWidget(self.add_size_whole_btn)
         self.add_numbers_btn = QPushButton("Numbers…")
         self.add_numbers_btn.setStyleSheet(_ADD_TIGHT_BTN_STYLE)
         self.add_numbers_btn.setToolTip(
             "Type the box's centre and size, one number per axis.")
         _brow.addWidget(self.add_numbers_btn)
-        self.add_recenter_btn = QPushButton("⌖ Recenter")
+        # Recenter: its glyph alone, the words in its tooltip
+        self.add_recenter_btn = QPushButton("⌖")
         self.add_recenter_btn.setStyleSheet(_ADD_TIGHT_BTN_STYLE)
         self.add_recenter_btn.setToolTip(
-            "Move the box so its centre is where the crosshair is.")
+            "Recenter: move the box so its centre is where the crosshair is.")
         _brow.addWidget(self.add_recenter_btn)
         _brow.addStretch(1)
         self._add_box_container.setVisible(False)
@@ -7439,6 +7765,33 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_channel_combo.setToolTip(
             "The image channel the nuclei are bright in.")
         _bc.addLayout(self._refine_row("Channel", self.add_channel_combo))
+        # "Look for nuclei" directly under Channel: Anywhere (index 0, the
+        # brightness finder as it always was) or Inside each cell of another
+        # run.  Read BY INDEX through ``_add_look_keys``; a run is listed
+        # but never pre-selected.
+        self._add_look_keys = [(AP.LOOK_ANYWHERE, None)]
+        self.add_look_for_combo = QComboBox()
+        self.add_look_for_combo.addItem(AP.ADD_LOOK_ANYWHERE)
+        self.add_look_for_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.add_look_for_combo.setMinimumContentsLength(10)
+        self._add_look_row = QWidget(self._add_brightness_container)
+        _lr = self._refine_row(AP.ADD_LOOK_FOR_LABEL, self.add_look_for_combo)
+        _lr.setContentsMargins(0, 0, 0, 0)
+        self._add_look_row.setLayout(_lr)
+        _bc.addWidget(self._add_look_row)
+        # Inside: what it does (or why it cannot), and the run's cells in
+        # the box -- shown before a result only
+        self._add_inside_help = QLabel(AP.ADD_HELP_INSIDE)
+        self._add_inside_help.setWordWrap(True)
+        self._add_inside_help.setStyleSheet(_HELPER_LINE_STYLE)
+        self._add_inside_help.setVisible(False)
+        _bc.addWidget(self._add_inside_help)
+        self._add_inside_count = QLabel(AP.ADD_INSIDE_COUNT_PENDING)
+        self._add_inside_count.setWordWrap(True)
+        self._add_inside_count.setStyleSheet(_HELPER_LINE_STYLE)
+        self._add_inside_count.setVisible(False)
+        _bc.addWidget(self._add_inside_count)
         self.add_clahe_cb = QCheckBox("Local contrast")
         self.add_clahe_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
         self.add_clahe_cb.setToolTip(
@@ -7471,7 +7824,11 @@ class AdvancedFeaturesWidget(QWidget):
             "Put the threshold at the automatic split between background "
             "and the bright objects (Otsu).")
         _thr.addWidget(self.add_otsu_btn)
-        _bc.addLayout(_thr)
+        # a row widget, so Inside each cell can hide it (no threshold there)
+        _thr.setContentsMargins(0, 0, 0, 0)
+        self._add_threshold_row = QWidget(self._add_brightness_container)
+        self._add_threshold_row.setLayout(_thr)
+        _bc.addWidget(self._add_threshold_row)
         self._add_threshold_help = QLabel(AP.ADD_HELP_THRESHOLD)
         self._add_threshold_help.setWordWrap(True)
         self._add_threshold_help.setStyleSheet(_HELPER_LINE_STYLE)
@@ -7508,7 +7865,13 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_marker_source_combo.setSizeAdjustPolicy(
             QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.add_marker_source_combo.setMinimumContentsLength(10)
-        _mk.addLayout(self._refine_row("From", self.add_marker_source_combo))
+        # a row widget (no margins: the same height as the bare row), so
+        # the Nuclei preset can hide it -- its markers are the clicks
+        self._add_source_row = QWidget(self._add_markers_container)
+        _sr = self._refine_row("From", self.add_marker_source_combo)
+        _sr.setContentsMargins(0, 0, 0, 0)
+        self._add_source_row.setLayout(_sr)
+        _mk.addWidget(self._add_source_row)
         self._add_source_help = QLabel("")
         self._add_source_help.setWordWrap(True)
         self._add_source_help.setStyleSheet(_HELPER_LINE_STYLE)
@@ -7560,8 +7923,11 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_run_count_label.setWordWrap(True)
         self.add_run_count_label.setStyleSheet(_HELPER_LINE_STYLE)
         # click rows
-        # Two lines (B2 fix pass U-H1): Place markers + the count, then
-        # Undo last + Clear -- one line needed 337 px in a 316 px viewport.
+        # Two lines: Place markers + the ball's radius, then Undo last +
+        # Remove all -- one line needed 337 px in a 316 px viewport.  The
+        # "7 placed" count is off the card body (built, hidden): with the
+        # ball beside Place markers it does not fit, and the Markers title
+        # and the first line carry the count.
         self._add_click_rows = QWidget()
         _krv = QVBoxLayout(self._add_click_rows)
         _krv.setContentsMargins(0, 0, 0, 0)
@@ -7578,21 +7944,52 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_place_markers_btn.setCheckable(True)
         self.add_place_markers_btn.setStyleSheet(PANEL_BTN_STYLE)
         self.add_place_markers_btn.setToolTip(
-            "While this is on, a click inside the box in a side view places "
-            "a marker.")
+            ADD_HELP_LINES["add_place_markers_btn"])
         _kr.addWidget(self.add_place_markers_btn)
-        self.add_click_count_label = QLabel(AP.click_count_text(0))
+        self.add_click_count_label = QLabel(AP.click_count_text(0),
+                                            self._add_click_rows)
         self.add_click_count_label.setStyleSheet(PANEL_HELP_STYLE)
-        _kr.addWidget(self.add_click_count_label)
-        _kr.addStretch(1)
+        self.add_click_count_label.setVisible(False)
+        # the ball: "Ball" and its radius, shown with the click rows.  No
+        # live typing: a value counts once it is finished, and the balls
+        # are redrawn once the arrow steps stop
+        self.add_click_radius_sb = QDoubleSpinBox()
+        self.add_click_radius_sb.setRange(0.5, 5.0)
+        self.add_click_radius_sb.setDecimals(1)
+        self.add_click_radius_sb.setSingleStep(0.5)
+        self.add_click_radius_sb.setValue(1.0)
+        self.add_click_radius_sb.setSuffix(" µm")
+        self.add_click_radius_sb.setKeyboardTracking(False)
+        self.add_click_radius_sb.setStyleSheet(PANEL_INPUT_STYLE)
+        self.add_click_radius_sb.setMinimumWidth(
+            self._readable_spin_width(self.add_click_radius_sb))
+        self._add_click_radius_row = QWidget(self._add_click_rows)
+        _crr = QHBoxLayout(self._add_click_radius_row)
+        _crr.setContentsMargins(0, 0, 0, 0)
+        _crr.setSpacing(4)
+        self._add_ball_label = QLabel(AP.ADD_BALL_LABEL,
+                                      self._add_click_radius_row)
+        self._add_ball_label.setStyleSheet(PANEL_ROW_LABEL_STYLE)
+        _crr.addWidget(self._add_ball_label)
+        # the spin and its row take the rest of the line: a row held at its
+        # own hint cut the spin's " µm" and arrows off with real fonts
+        _crr.addWidget(self.add_click_radius_sb, 1)
+        _kr.addWidget(self._add_click_radius_row, 1)
         self.add_click_undo_btn = QPushButton("Undo last")
         self.add_click_undo_btn.setStyleSheet(PANEL_BTN_STYLE)
-        self.add_click_undo_btn.setToolTip("Remove the last marker placed.")
+        self.add_click_undo_btn.setToolTip(
+            ADD_HELP_LINES["add_click_undo_btn"])
         _kr2.addWidget(self.add_click_undo_btn)
-        self.add_click_clear_btn = QPushButton("Clear")
+        # "Remove all", not "Clear": one Clear on the page (Clear objects)
+        self.add_click_clear_btn = QPushButton("Remove all")
         self.add_click_clear_btn.setStyleSheet(PANEL_BTN_STYLE)
         self.add_click_clear_btn.setToolTip("Remove every marker in this box.")
         _kr2.addWidget(self.add_click_clear_btn)
+        # neither button keeps the keyboard: the side view clicked last
+        # keeps it, so the next Ctrl+Z still reaches Add's marker undo
+        # there (on the panel it would undo the active layer's paint)
+        for _b in (self.add_click_undo_btn, self.add_click_clear_btn):
+            _b.setFocusPolicy(Qt.NoFocus)
         _kr2.addStretch(1)
         # one checkable row per marker, "Object {id}" and
         # its z / y / x, the swatch of the id it will become.  A VIEW of
@@ -7611,6 +8008,9 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_click_list.setFocusPolicy(Qt.NoFocus)
         self.add_click_list.itemChanged.connect(
             self._on_add_click_list_changed)
+        # a click on a row (not on its tick) makes that object current
+        self.add_click_list.itemPressed.connect(self._on_add_row_pressed)
+        self.add_click_list.itemClicked.connect(self._on_add_row_clicked)
         self.add_click_list.setVisible(False)
         _krv.addWidget(self.add_click_list)
         _mk.addWidget(self._add_click_rows)
@@ -7665,10 +8065,101 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_wall_kind_combo.setToolTip(
             "What the edge between two cells looks like in the channel.")
         _wl.addLayout(self._refine_row("Wall type", self.add_wall_kind_combo))
+        # where new cells may grow, read BY INDEX through AP.OUTLINE_KEYS;
+        # "Outline of the objects you cleared" is grey, the reason in its
+        # own words, until a Clear is in force on this patch
+        self.add_outline_combo = QComboBox()
+        for _key in AP.OUTLINE_KEYS:
+            self.add_outline_combo.addItem(AP.outline_item_text(_key))
+        self.add_outline_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.add_outline_combo.setMinimumContentsLength(10)
+        self.add_outline_combo.setCurrentIndex(
+            AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
+        self._add_outline_row = QWidget(self._add_walls_container)
+        _olr = self._refine_row(AP.ADD_OUTLINE_LABEL, self.add_outline_combo)
+        _olr.setContentsMargins(0, 0, 0, 0)
+        self._add_outline_row.setLayout(_olr)
+        _wl.addWidget(self._add_outline_row)
+        # placed, not a tooltip only: what the choice does
+        self._add_outline_help = QLabel(AP.ADD_HELP_OUTLINE_NONE)
+        self._add_outline_help.setWordWrap(True)
+        self._add_outline_help.setStyleSheet(_HELPER_LINE_STYLE)
+        _wl.addWidget(self._add_outline_help)
+        self.add_show_outline_cb = QCheckBox(AP.ADD_SHOW_OUTLINE)
+        self.add_show_outline_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
+        self.add_show_outline_cb.setVisible(False)
+        _wl.addWidget(self.add_show_outline_cb)
+        # under the tick while it is on: "Measuring the tissue outline…" or
+        # where it is drawn
+        self._add_show_outline_legend = QLabel("")
+        self._add_show_outline_legend.setWordWrap(True)
+        self._add_show_outline_legend.setStyleSheet(_HELPER_LINE_STYLE)
+        self._add_show_outline_legend.setVisible(False)
+        _wl.addWidget(self._add_show_outline_legend)
         self._add_walls_container.setVisible(False)
         _cc.addWidget(self._add_walls_container)
+
+        # Nuclei ▸ Anywhere / the markers: the Tissue outline card, an
+        # option OFF by default -- its own combo (read BY INDEX through
+        # AP.OUTLINE_KEYS, Cells' items and words) and its own Show tick, so
+        # each preset keeps its own choice; the same outline is measured
+        # for both
+        self.add_nuc_outline_btn = self._subsection_chevron(
+            AP.nuclei_outline_summary(AP.OUTLINE_NONE),
+            AP.ADD_HELP_NUC_OUTLINE)
+        self.add_nuc_outline_btn.setProperty("_epicycle_elide_title", True)
+        self.add_nuc_outline_btn.setVisible(False)
+        _cc.addWidget(self.add_nuc_outline_btn)
+        self._add_nuc_outline_container = QWidget()
+        _no = QVBoxLayout(self._add_nuc_outline_container)
+        _no.setContentsMargins(_SUB_INDENT, 0, 0, 0)
+        _no.setSpacing(2)
+        self.add_nuc_outline_combo = QComboBox()
+        for _key in AP.OUTLINE_KEYS:
+            self.add_nuc_outline_combo.addItem(AP.outline_item_text(_key))
+        self.add_nuc_outline_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.add_nuc_outline_combo.setMinimumContentsLength(10)
+        self.add_nuc_outline_combo.setCurrentIndex(
+            AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
+        self._add_nuc_outline_row = QWidget(self._add_nuc_outline_container)
+        _nor = self._refine_row(AP.ADD_OUTLINE_LABEL,
+                                self.add_nuc_outline_combo)
+        _nor.setContentsMargins(0, 0, 0, 0)
+        self._add_nuc_outline_row.setLayout(_nor)
+        _no.addWidget(self._add_nuc_outline_row)
+        # the take-off that keeps the markers with the card open, the
+        # spacing amber and an Auto status under 3.1 screens (759 -> 686 px
+        # offscreen): what each choice does is its item's tooltip in the
+        # list (and the guide), not a line on the page -- constructed,
+        # hidden, its words kept current
+        self._add_nuc_outline_help = QLabel(AP.ADD_HELP_NUC_OUTLINE_NONE)
+        self._add_nuc_outline_help.setWordWrap(True)
+        self._add_nuc_outline_help.setStyleSheet(_HELPER_LINE_STYLE)
+        self._add_nuc_outline_help.setVisible(False)
+        _no.addWidget(self._add_nuc_outline_help)
+        self.add_nuc_show_outline_cb = QCheckBox(AP.ADD_SHOW_OUTLINE)
+        self.add_nuc_show_outline_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
+        self.add_nuc_show_outline_cb.setVisible(False)
+        _no.addWidget(self.add_nuc_show_outline_cb)
+        self._add_nuc_show_outline_legend = QLabel("")
+        self._add_nuc_show_outline_legend.setWordWrap(True)
+        self._add_nuc_show_outline_legend.setStyleSheet(_HELPER_LINE_STYLE)
+        self._add_nuc_show_outline_legend.setVisible(False)
+        _no.addWidget(self._add_nuc_show_outline_legend)
+        self._add_nuc_outline_container.setVisible(False)
+        _cc.addWidget(self._add_nuc_outline_container)
         self._add_cells_container.setVisible(False)
         _s3.addWidget(self._add_cells_container)
+        # ONE amber slot for what the other run or the whole patch warns
+        # of (the first that applies; two notes that each fit do not fit
+        # together) -- before a result only
+        self._add_derive_note = QLabel("")
+        self._add_derive_note.setWordWrap(True)
+        self._add_derive_note.setStyleSheet(PANEL_WARN_STYLE)
+        self._add_derive_note.setVisible(False)
+        _s3.addWidget(self._add_derive_note)
         tune.addWidget(self._add_s3_container)
 
         # ==================================================================
@@ -7731,6 +8222,8 @@ class AdvancedFeaturesWidget(QWidget):
             "is ticked.")
         self.add_candidate_list.itemChanged.connect(
             self._on_add_candidate_check_changed)
+        self.add_candidate_list.itemPressed.connect(self._on_add_row_pressed)
+        self.add_candidate_list.itemClicked.connect(self._on_add_row_clicked)
         _s5.addWidget(self.add_candidate_list)
         # The counts note: at most ADD_NOTES_LINES lines, ELIDED (not
         # clipped), top-aligned, the full text in its tooltip
@@ -7782,26 +8275,117 @@ class AdvancedFeaturesWidget(QWidget):
         _ca = QVBoxLayout(self._add_cells_adv)
         _ca.setContentsMargins(0, 0, 0, 0)
         _ca.setSpacing(2)
-        self.add_click_radius_sb = _dspin(0.5, 5.0, 1, 2.0, 0.5, " µm")
-        _ca.addLayout(self._refine_row("Click ball radius",
-                                       self.add_click_radius_sb, advanced=True))
+        # a Cells whole patch: what fills it, at the top where Grow by sits
+        # (Grow by, Wall cost and Growth limit are hidden there)
+        self._add_whole_fill_label = QLabel(AP.ADD_HELP_WHOLE_FILL,
+                                            self._add_cells_adv)
+        self._add_whole_fill_label.setWordWrap(True)
+        self._add_whole_fill_label.setStyleSheet(_HELPER_LINE_STYLE)
+        self._add_whole_fill_label.setVisible(False)
+        _ca.addWidget(self._add_whole_fill_label)
+        # Grow by, read BY INDEX through AP.GROW_KEYS: the fill as before,
+        # or Spread from each marker (on a box; a whole patch hides the row
+        # and keeps the box's pick)
+        self.add_grow_combo = QComboBox()
+        self.add_grow_combo.addItems([AP.ADD_GROW_FLOOD, AP.ADD_GROW_SPREAD])
+        self.add_grow_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.add_grow_combo.setMinimumContentsLength(10)
+        self._add_grow_row = QWidget(self._add_cells_adv)
+        _grr = self._refine_row(AP.ADD_GROW_LABEL, self.add_grow_combo,
+                                advanced=True)
+        _grr.setContentsMargins(0, 0, 0, 0)
+        self._add_grow_row.setLayout(_grr)
+        _ca.addWidget(self._add_grow_row)
+        # Spread's own two rows (one wrapper each), shown with Spread on a
+        # box only
+        self._add_spread_adv = QWidget(self._add_cells_adv)
+        _sp = QVBoxLayout(self._add_spread_adv)
+        _sp.setContentsMargins(0, 0, 0, 0)
+        _sp.setSpacing(2)
+        # the engine's ranges (0-100, 2-40, 0-30: ``test_add_outline_wiring``
+        # pins them to the engine's own) and its defaults
+        from packages.epicycle_annotator.reshape import spec as _RS
+
+        self.add_wall_cost_sb = _dspin(0.0,
+                                       100.0, 0,
+                                       float(_RS.DEFAULT_PARAMS["wall_cost"]),
+                                       5.0)
+        self._add_wall_cost_row = QWidget(self._add_spread_adv)
+        _wcr = self._refine_row(AP.ADD_WALL_COST_LABEL, self.add_wall_cost_sb,
+                                advanced=True)
+        _wcr.setContentsMargins(0, 0, 0, 0)
+        self._add_wall_cost_row.setLayout(_wcr)
+        _sp.addWidget(self._add_wall_cost_row)
+        self.add_growth_limit_sb = _dspin(
+            2.0, 40.0, 0,
+            float(_RS.DEFAULT_PARAMS["growth_limit"]), 1.0)
+        self._add_growth_limit_row = QWidget(self._add_spread_adv)
+        _glr = self._refine_row(AP.ADD_GROWTH_LIMIT_LABEL,
+                                self.add_growth_limit_sb, advanced=True)
+        _glr.setContentsMargins(0, 0, 0, 0)
+        self._add_growth_limit_row.setLayout(_glr)
+        _sp.addWidget(self._add_growth_limit_row)
+        self._add_spread_adv.setVisible(False)
+        _ca.addWidget(self._add_spread_adv)
+        # Include membrane: with Spread on a box, and on a whole patch (the
+        # fill hands the membrane at a new cell's edge to it too)
+        self.add_include_membrane_cb = QCheckBox(AP.ADD_INCLUDE_MEMBRANE,
+                                                 self._add_cells_adv)
+        self.add_include_membrane_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
+        self.add_include_membrane_cb.setChecked(
+            bool(_RS.DEFAULT_PARAMS["include_membrane"]))
+        self.add_include_membrane_cb.setVisible(False)
+        _ca.addWidget(self.add_include_membrane_cb)
+        # the run source's own row, shown only with that source (hide,
+        # don't grey): the shrink with another run's objects (the click
+        # ball's radius sits beside Place markers)
         self.add_core_erode_sb = _dspin(0.0, 5.0, 1, 1.0, 0.5, " µm")
-        _ca.addLayout(self._refine_row("Shrink run objects",
-                                       self.add_core_erode_sb, advanced=True))
-        self.add_dark_outside_cb = QCheckBox("Treat dark space as outside")
+        self._add_core_erode_row = QWidget(self._add_cells_adv)
+        _cer = self._refine_row("Shrink run objects", self.add_core_erode_sb,
+                                advanced=True)
+        _cer.setContentsMargins(0, 0, 0, 0)
+        self._add_core_erode_row.setLayout(_cer)
+        _ca.addWidget(self._add_core_erode_row)
+        self.add_dark_outside_cb = QCheckBox(AP.ADD_DARK_OUTSIDE_LABEL)
         self.add_dark_outside_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
         self.add_dark_outside_cb.setChecked(True)
         self.add_dark_outside_cb.setToolTip(AP.ADD_HELP_DARK_OUTSIDE)
         _ca.addWidget(self.add_dark_outside_cb)
         self.add_dark_clearance_sb = _dspin(0.0, 10.0, 1, 2.0, 0.5, " µm")
         self.add_dark_clearance_sb.setToolTip(AP.ADD_HELP_DARK)
-        _ca.addLayout(self._refine_row("Dark space reach",
-                                       self.add_dark_clearance_sb,
-                                       advanced=True))
+        # Dark space reach and Dark below as row widgets (no margins: the
+        # same height as the bare rows), so Nuclei's shrink-wrap can show
+        # Dark below alone
+        self._add_dark_reach_row = QWidget(self._add_cells_adv)
+        _drr = self._refine_row("Dark space reach",
+                                self.add_dark_clearance_sb, advanced=True)
+        _drr.setContentsMargins(0, 0, 0, 0)
+        self._add_dark_reach_row.setLayout(_drr)
+        _ca.addWidget(self._add_dark_reach_row)
         self.add_dark_factor_sb = _dspin(0.05, 1.0, 2, 0.5, 0.05)
         self.add_dark_factor_sb.setToolTip(AP.ADD_HELP_DARK_BELOW)
-        _ca.addLayout(self._refine_row("Dark below", self.add_dark_factor_sb,
-                                       advanced=True))
+        # the shrink-wrap is measured again only when a value is FINISHED,
+        # not on every key press
+        self.add_dark_factor_sb.setKeyboardTracking(False)
+        self._add_dark_below_row = QWidget(self._add_cells_adv)
+        _dbr = self._refine_row("Dark below", self.add_dark_factor_sb,
+                                advanced=True)
+        _dbr.setContentsMargins(0, 0, 0, 0)
+        self._add_dark_below_row.setLayout(_dbr)
+        _ca.addWidget(self._add_dark_below_row)
+        # the shrink-wrap's closing (Shrink-wrap around the stain only)
+        self.add_bridge_sb = _dspin(0.0,
+                                    30.0, 1,
+                                    AP.ADD_BRIDGE_UM, 1.0, " µm")
+        self.add_bridge_sb.setKeyboardTracking(False)
+        self._add_bridge_row = QWidget(self._add_cells_adv)
+        _brr = self._refine_row(AP.ADD_BRIDGE_LABEL, self.add_bridge_sb,
+                                advanced=True)
+        _brr.setContentsMargins(0, 0, 0, 0)
+        self._add_bridge_row.setLayout(_brr)
+        self._add_bridge_row.setVisible(False)
+        _ca.addWidget(self._add_bridge_row)
         # on screen, not only a tooltip (mockup 8; U-M6).  Advanced is
         # outside the ceiling; its other knobs stay tooltip-only (a
         # recorded deviation from the mockup, which draws only this one).
@@ -7812,9 +8396,38 @@ class AdvancedFeaturesWidget(QWidget):
         _adv.addWidget(self._add_cells_adv)
 
         self._add_nuclei_adv = QWidget()
-        _na = QVBoxLayout(self._add_nuclei_adv)
+        _nadv = QVBoxLayout(self._add_nuclei_adv)
+        _nadv.setContentsMargins(0, 0, 0, 0)
+        _nadv.setSpacing(2)
+        # Anywhere's three rows and Inside's three rows: one set shows
+        self._add_anywhere_adv = QWidget(self._add_nuclei_adv)
+        _na = QVBoxLayout(self._add_anywhere_adv)
         _na.setContentsMargins(0, 0, 0, 0)
         _na.setSpacing(2)
+        _nadv.addWidget(self._add_anywhere_adv)
+        self._add_inside_adv = QWidget(self._add_nuclei_adv)
+        _ia = QVBoxLayout(self._add_inside_adv)
+        _ia.setContentsMargins(0, 0, 0, 0)
+        _ia.setSpacing(2)
+        from packages.epicycle_annotator import add_derive as _AD
+
+        self.add_nuc_radius_sb = _dspin(_AD.NUC_RADIUS_RANGE[0],
+                                        _AD.NUC_RADIUS_RANGE[1], 1,
+                                        _AD.NUC_RADIUS_UM, 0.5, " µm")
+        _ia.addLayout(self._refine_row("Nucleus radius",
+                                       self.add_nuc_radius_sb, advanced=True))
+        self.add_nuc_edge_sb = _dspin(_AD.NUC_EDGE_RANGE[0],
+                                      _AD.NUC_EDGE_RANGE[1], 2,
+                                      _AD.NUC_EDGE, 0.05)
+        _ia.addLayout(self._refine_row("Nucleus edge", self.add_nuc_edge_sb,
+                                       advanced=True))
+        self.add_two_gap_sb = _dspin(_AD.TWO_GAP_RANGE[0],
+                                     _AD.TWO_GAP_RANGE[1], 2,
+                                     _AD.TWO_GAP, 0.05)
+        _ia.addLayout(self._refine_row("Gap that splits two nuclei",
+                                       self.add_two_gap_sb, advanced=True))
+        self._add_inside_adv.setVisible(False)
+        _nadv.addWidget(self._add_inside_adv)
         self.add_separate_cb = QCheckBox("Separate touching objects")
         self.add_separate_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
         self.add_separate_cb.setChecked(True)
@@ -7828,8 +8441,28 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_min_distance_sb.setToolTip(
             "The closest two object centres may be, in voxels. Lower gives "
             "more, smaller objects.")
-        _na.addLayout(self._refine_row("Spacing", self.add_min_distance_sb,
-                                       advanced=True))
+        # a row widget (no margins: the same height as the bare row), so
+        # the markers can show their own Spacing in its place
+        self._add_spacing_row = QWidget(self._add_anywhere_adv)
+        _spr = self._refine_row("Spacing", self.add_min_distance_sb,
+                                advanced=True)
+        _spr.setContentsMargins(0, 0, 0, 0)
+        self._add_spacing_row.setLayout(_spr)
+        _na.addWidget(self._add_spacing_row)
+        # the markers' own Spacing, a twin (a preset application writes
+        # Anywhere's untouched box back to 3, and what the user touched is
+        # kept per box), in its own row of the same height, shown in place
+        # of Anywhere's on the markers only
+        self.add_marker_spacing_sb = QSpinBox()
+        self.add_marker_spacing_sb.setRange(1, 30)
+        self.add_marker_spacing_sb.setValue(_AP_ADD_MARKER_SPACING_DEFAULT)
+        self._add_marker_spacing_row = QWidget(self._add_anywhere_adv)
+        _mspr = self._refine_row("Spacing", self.add_marker_spacing_sb,
+                                 advanced=True)
+        _mspr.setContentsMargins(0, 0, 0, 0)
+        self._add_marker_spacing_row.setLayout(_mspr)
+        self._add_marker_spacing_row.setVisible(False)
+        _na.addWidget(self._add_marker_spacing_row)
         self.add_clahe_clip_sb = _dspin(0.001, 1.0, 3, 0.01, 0.01)
         self.add_clahe_clip_sb.setToolTip(
             "How strongly Local contrast evens the box out.")
@@ -7850,8 +8483,13 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_edge_margin_sb.setValue(3)
         self.add_edge_margin_sb.setToolTip(
             "How many voxels in from the box edge count as the edge.")
-        _adv.addLayout(self._refine_row("Edge zone", self.add_edge_margin_sb,
-                                        advanced=True))
+        # hidden with the tick on a whole patch (no face is a box edge)
+        self._add_edge_zone_row = QWidget(self._add_advanced_container)
+        _ezr = self._refine_row("Edge zone", self.add_edge_margin_sb,
+                                advanced=True)
+        _ezr.setContentsMargins(0, 0, 0, 0)
+        self._add_edge_zone_row.setLayout(_ezr)
+        _adv.addWidget(self._add_edge_zone_row)
         self.add_min_size_sb = QSpinBox()
         self.add_min_size_sb.setRange(0, 1000000)
         self.add_min_size_sb.setValue(0)
@@ -7869,9 +8507,18 @@ class AdvancedFeaturesWidget(QWidget):
         _adv.addWidget(self.add_auto_smooth_cb)
         self.add_smooth_sigma_sb = _dspin(0.1, 10.0, 1, 1.5, 0.5)
         self.add_smooth_sigma_sb.setToolTip(
-            "How much smoothing, in voxels. 1.5 is gentle.")
+            "How much smoothing, in voxels of the full-size image. 1.5 "
+            "is gentle.")
         _adv.addLayout(self._refine_row("Smoothing", self.add_smooth_sigma_sb,
                                         advanced=True))
+        # the markers run after every change while this is on (shown with
+        # the click markers only; kept per workspace by the orchestrator)
+        self.add_live_cb = QCheckBox(AP.ADD_LIVE_LABEL)
+        self.add_live_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
+        self.add_live_cb.setChecked(True)
+        self.add_live_cb.setToolTip(AP.ADD_HELP_LIVE_TICK)
+        self.add_live_cb.setVisible(False)
+        _adv.addWidget(self.add_live_cb)
         self._add_advanced_help = QLabel("")
         self._add_advanced_help.setWordWrap(True)
         self._add_advanced_help.setStyleSheet(PANEL_WARN_STYLE)
@@ -7901,14 +8548,20 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_pieces_list.setToolTip(
             "Every object added this session. Select one to refine it.")
         review.addWidget(self.add_pieces_list)
-        piece_btn_row = QHBoxLayout()
+        # ONE row: Refine all ▸ · Refine ▸ · + Add another (Undo all is the
+        # footer's secondary in REVIEW, beside Done)
+        self._add_review_btn_row = QWidget(self._add_review_container)
+        piece_btn_row = QHBoxLayout(self._add_review_btn_row)
+        piece_btn_row.setContentsMargins(0, 0, 0, 0)
+        # 5 px side padding and 3 px gaps: the three fit the 312 px live width
+        piece_btn_row.setSpacing(3)
         self.add_batch_refine_btn = QPushButton(ADD_REFINE_ALL_BTN)
-        self.add_batch_refine_btn.setStyleSheet(PANEL_BTN_STYLE)
+        self.add_batch_refine_btn.setStyleSheet(_ADD_TIGHT_BTN_STYLE)
         self.add_batch_refine_btn.setToolTip(ADD_REFINE_ALL_TIP)
         self.add_batch_refine_btn.setVisible(False)
         piece_btn_row.addWidget(self.add_batch_refine_btn)
         self.add_refine_piece_btn = QPushButton("Refine ▸")
-        self.add_refine_piece_btn.setStyleSheet(PANEL_BTN_STYLE)
+        self.add_refine_piece_btn.setStyleSheet(_ADD_TIGHT_BTN_STYLE)
         self.add_refine_piece_btn.setEnabled(False)
         self.add_refine_piece_btn.setToolTip(
             "Take the object selected in the list to the Refine tab.")
@@ -7920,17 +8573,11 @@ class AdvancedFeaturesWidget(QWidget):
             "version).")
         self.add_merge_pieces_btn.setVisible(False)
         piece_btn_row.addWidget(self.add_merge_pieces_btn)
-        review.addLayout(piece_btn_row)
-        review_action_row = QHBoxLayout()
         self.add_again_btn = QPushButton("+ Add another")
-        self.add_again_btn.setStyleSheet(PANEL_BTN_STYLE)
+        self.add_again_btn.setStyleSheet(_ADD_TIGHT_BTN_STYLE)
         self.add_again_btn.setToolTip(AP.ADD_AGAIN_TIP)
-        review_action_row.addWidget(self.add_again_btn)
-        self.add_undo_all_btn = QPushButton("Undo all")
-        self.add_undo_all_btn.setStyleSheet(_REFINEMENT_REJECT_STYLE)
-        self.add_undo_all_btn.setToolTip(AP.ADD_UNDO_ALL_TIP)
-        review_action_row.addWidget(self.add_undo_all_btn)
-        review.addLayout(review_action_row)
+        piece_btn_row.addWidget(self.add_again_btn)
+        review.addWidget(self._add_review_btn_row)
         self._add_review_help = QLabel("")
         self._add_review_help.setWordWrap(True)
         self._add_review_help.setStyleSheet(_HELPER_LINE_STYLE)
@@ -7951,6 +8598,25 @@ class AdvancedFeaturesWidget(QWidget):
         _prl = QHBoxLayout(_prow)
         _prl.setContentsMargins(0, 0, 0, 0)
         _prl.setSpacing(4)
+        # Clear objects: ONE menu button in the pinned row (0 px of height
+        # in every state), Qt's own arrow on the right (the Refine Recipes
+        # rule, no arrow character in the text).  Shown while a box is
+        # placed, no candidates are up and not in the review.
+        self.add_clear_menu = QMenu(self)
+        self.add_clear_menu.setToolTipsVisible(True)
+        self.add_clear_box_action = self.add_clear_menu.addAction(
+            AP.ADD_CLEAR_ITEM_BOX)
+        self.add_clear_patch_action = self.add_clear_menu.addAction(
+            AP.ADD_CLEAR_ITEM_PATCH)
+        self.add_clear_box_action.triggered.connect(self._fire_add_clear_box)
+        self.add_clear_patch_action.triggered.connect(
+            self._fire_add_clear_patch)
+        self.add_clear_btn = QPushButton(AP.ADD_CLEAR_BTN)
+        self.add_clear_btn.setStyleSheet(
+            PANEL_BTN_STYLE + _RECIPES_MENU_INDICATOR_STYLE)
+        self.add_clear_btn.setMenu(self.add_clear_menu)
+        self.add_clear_btn.setVisible(False)
+        _prl.addWidget(self.add_clear_btn)
         self.add_preview_btn = QPushButton("Preview")
         self.add_preview_btn.setStyleSheet(PANEL_PRIMARY_BTN_STYLE)
         self.add_preview_btn.setEnabled(False)
@@ -8011,22 +8677,13 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_accept_btn = QPushButton("Accept")
         self.add_accept_btn.setStyleSheet(_REFINEMENT_ACCEPT_STYLE)
         self.add_accept_btn.setEnabled(False)
-        self.add_reject_btn = QPushButton("Cancel")
+        # the secondary: one word per meaning -- Close box (a box is up, and
+        # grey with the same word before one is), Discard (a result is on
+        # screen), Undo all (REVIEW); grey while busy (Stop is the one exit)
+        self.add_reject_btn = QPushButton("Close box")
         self.add_reject_btn.setStyleSheet(_REFINEMENT_REJECT_STYLE)
         self.add_reject_btn.setEnabled(False)
-        # Accept, then Batch Refine on the session -- only
-        # while candidates are on screen, enabled exactly when Accept is.
-        # MEASURED: "Accept (12)" + this + "Discard" need 381 px on one row
-        # (319 px even at 3 px side padding) against the 312 px live width;
-        # as a second footer line it shrank the viewport 245 -> 220 px and
-        # put 7a+ / 7d over the 3.1 ceiling.  So it takes the footer's
-        # reserved two-line summary SLOT while candidates are up (the slot
-        # keeps its fixed height -- the footer never moves); the summary's
-        # candidates sentence rides the Accept tooltip meanwhile.
-        self.add_accept_refine_btn = QPushButton(AP.ADD_ACCEPT_REFINE_BTN)
-        self.add_accept_refine_btn.setStyleSheet(PANEL_BTN_STYLE)
-        self.add_accept_refine_btn.setEnabled(False)
-        self.add_accept_refine_btn.setVisible(False)
+        self._add_reject_wanted = False
         add_btn_row.addWidget(self.add_accept_btn)
         add_btn_row.addWidget(self.add_reject_btn)
         _ft.addLayout(add_btn_row)
@@ -8036,7 +8693,6 @@ class AdvancedFeaturesWidget(QWidget):
         _slot.setContentsMargins(0, 0, 0, 0)
         _slot.setSpacing(0)
         _slot.addWidget(self._add_footer_summary)
-        _slot.addWidget(self.add_accept_refine_btn, 0, Qt.AlignTop)
         self._add_footer_slot.setFixedHeight(
             self._add_footer_summary.height()
             if self._add_footer_summary.height() > 0
@@ -8049,6 +8705,8 @@ class AdvancedFeaturesWidget(QWidget):
             lambda c: self._on_add_subsection_toggled("add_markers_btn", c))
         self.add_walls_btn.toggled.connect(
             lambda c: self._on_add_subsection_toggled("add_walls_btn", c))
+        self.add_nuc_outline_btn.toggled.connect(
+            _partial(self._on_add_subsection_toggled, "add_nuc_outline_btn"))
         self.add_wall_prep_btn.toggled.connect(self._on_add_wall_prep_toggled)
         for _attr in _ADD_PRESET_KEYS:
             _w = getattr(self, _attr, None)
@@ -8065,11 +8723,48 @@ class AdvancedFeaturesWidget(QWidget):
             self._on_add_preset_index_changed)
         self.add_marker_source_combo.currentIndexChanged.connect(
             self._on_add_source_index_changed)
+        self.add_look_for_combo.currentIndexChanged.connect(
+            self._on_add_look_for_index_changed)
+        for _w in (self.add_nuc_radius_sb, self.add_nuc_edge_sb,
+                   self.add_two_gap_sb):
+            _w.valueChanged.connect(lambda *_a: self._refresh_add_summaries())
+        self.add_whole_btn.clicked.connect(self._fire_add_whole)
+        self.add_size_whole_btn.clicked.connect(self._fire_add_whole)
         self.add_dark_outside_cb.toggled.connect(
             lambda _c: self._apply_add_visibility())
+        # the markers' Spacing shows only while the tick is on
+        self.add_separate_cb.toggled.connect(self._on_add_separate_toggled)
+        # Grow by, Tissue outline and Bridge gaps: the user's choice is kept
+        # (a default never overwrites it), and each redraws the page
+        for _attr, _sig in (("add_grow_combo", "currentIndexChanged"),
+                            ("add_outline_combo", "currentIndexChanged"),
+                            ("add_bridge_sb", "valueChanged")):
+            getattr(getattr(self, _attr), _sig).connect(
+                lambda *_a, a=_attr: self._mark_add_touched(a))
+        self.add_grow_combo.currentIndexChanged.connect(
+            lambda *_a: (self._apply_add_visibility(),
+                         self._refresh_add_summaries()))
+        self.add_outline_combo.currentIndexChanged.connect(
+            self._on_add_outline_index_changed)
+        self.add_show_outline_cb.toggled.connect(
+            lambda _c: self._apply_add_visibility())
+        # Nuclei's own Tissue outline: the user's pick is kept (its untouched
+        # default is always No outline), its own slot, its own Show tick
+        self.add_nuc_outline_combo.currentIndexChanged.connect(
+            lambda *_a: self._mark_add_touched("add_nuc_outline_combo"))
+        self.add_nuc_outline_combo.currentIndexChanged.connect(
+            self._on_add_nuc_outline_index_changed)
+        self.add_nuc_show_outline_cb.toggled.connect(
+            lambda _c: self._apply_add_visibility())
+        for _w in (self.add_wall_cost_sb, self.add_growth_limit_sb,
+                   self.add_include_membrane_cb, self.add_bridge_sb):
+            _sig = (_w.toggled if isinstance(_w, QCheckBox)
+                    else _w.valueChanged)
+            _sig.connect(lambda *_a: self._refresh_add_summaries())
         for _w in (self.add_click_radius_sb, self.add_core_erode_sb,
                    self.add_dark_clearance_sb, self.add_dark_factor_sb,
                    self.add_separate_cb, self.add_min_distance_sb,
+                   self.add_marker_spacing_sb,
                    self.add_clahe_clip_sb, self.add_edge_margin_sb,
                    self.add_min_size_sb, self.add_smooth_sigma_sb,
                    self.add_auto_smooth_cb, self.add_clear_border_cb,
@@ -8090,6 +8785,8 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_nuclei_channel_combo.currentIndexChanged.connect(
             lambda *_a: self._apply_add_visibility())
         self.set_add_marker_sources([])
+        # Look for nuclei offers the markers before any run is listed
+        self.set_add_look_for_items([])
         self._set_add_channel_blank(self.add_nuclei_channel_combo)
         self._set_add_channel_blank(self.add_wall_channel_combo)
         self._apply_add_visibility()
@@ -8150,32 +8847,76 @@ class AdvancedFeaturesWidget(QWidget):
         lb.setText(lb.fontMetrics().elidedText(full, Qt.ElideRight, width))
 
     def _on_add_advanced_toggled(self, checked: bool) -> None:
-        self._add_advanced_container.setVisible(bool(checked))
+        self._add_advanced_container.setVisible(
+            bool(checked) and not self._add_advanced_toggle.isHidden())
         self._refresh_chevron_text(self._add_advanced_toggle)
 
     def _on_add_wall_prep_toggled(self, checked: bool) -> None:
         self._add_wall_prep_container.setVisible(bool(checked))
         self._refresh_chevron_text(self.add_wall_prep_btn)
 
+    #: the page's cards (chevron, body): one open at a time among the
+    #: chevrons on the page
+    _ADD_CARDS = (("add_markers_btn", "_add_markers_container"),
+                  ("add_walls_btn", "_add_walls_container"),
+                  ("add_nuc_outline_btn", "_add_nuc_outline_container"))
+
     def _on_add_subsection_toggled(self, attr: str, checked: bool) -> None:
-        """Markers and Walls: opening one closes the other."""
+        """Markers, Walls and (Nuclei) Tissue outline: opening one closes
+        the others.  Only this preset's cards take part: a card that is not
+        on this preset (Walls on Nuclei, Nuclei's Tissue outline on Cells)
+        is left as it is, so Cells comes back with its cards as the user
+        left them.  Nuclei's Tissue outline takes part on Nuclei even while
+        it is hidden for a moment (candidates up, a whole patch), so it never
+        comes back open beside the card opened since.  The bodies are
+        decided in ``_apply_add_visibility``."""
         if getattr(self, "_add_subsection_syncing", False):
             return
         self._add_subsection_syncing = True
         try:
             if checked:
-                other = ("add_walls_btn" if attr == "add_markers_btn"
-                         else "add_markers_btn")
-                btn = getattr(self, other)
-                if btn.isChecked():
-                    btn.setChecked(False)
+                nuclei = self.get_add_preset() != "cells"
+                for other, _body in self._ADD_CARDS:
+                    if other == attr:
+                        continue
+                    btn = getattr(self, other, None)
+                    if (btn is not None and btn.isChecked()
+                            and (self._add_chevron_shown(other)
+                                 or (nuclei
+                                     and other == "add_nuc_outline_btn"))):
+                        btn.setChecked(False)
         finally:
             self._add_subsection_syncing = False
-        self._add_markers_container.setVisible(
-            self.add_markers_btn.isChecked())
-        self._add_walls_container.setVisible(self.add_walls_btn.isChecked())
-        self._refresh_chevron_text(self.add_markers_btn)
-        self._refresh_chevron_text(self.add_walls_btn)
+        self._apply_add_visibility()
+        for btn_attr, _body in self._ADD_CARDS:
+            btn = getattr(self, btn_attr, None)
+            if btn is not None:
+                self._refresh_chevron_text(btn)
+
+    def _apply_add_card_bodies(self) -> None:
+        """A card's body shows only when its chevron is on the page AND
+        open: a card left open on Cells never shows its body on Nuclei.  On
+        Nuclei the two cards are never open together: Markers wins."""
+        if (hasattr(self, "add_nuc_outline_btn")
+                and self.get_add_preset() != "cells"
+                and self.add_nuc_outline_btn.isChecked()
+                and self.add_markers_btn.isChecked()
+                and self._add_chevron_shown("add_markers_btn")
+                and self._add_chevron_shown("add_nuc_outline_btn")):
+            btn = self.add_nuc_outline_btn
+            btn.blockSignals(True)
+            try:
+                btn.setChecked(False)
+            finally:
+                btn.blockSignals(False)
+            self._refresh_chevron_text(btn)
+        for btn_attr, body_attr in self._ADD_CARDS:
+            if not hasattr(self, btn_attr):
+                continue
+            shown = self._add_chevron_shown(btn_attr)
+            getattr(self, btn_attr).setVisible(shown)
+            getattr(self, body_attr).setVisible(
+                shown and getattr(self, btn_attr).isChecked())
 
     @staticmethod
     def _set_add_channel_blank(combo) -> None:
@@ -8184,13 +8925,43 @@ class AdvancedFeaturesWidget(QWidget):
         except Exception:
             pass
 
+    def _on_add_separate_toggled(self, _checked=False) -> None:
+        """Separate touching objects changed: the markers' Spacing row
+        follows it (shown only while it is ticked)."""
+        self._apply_add_visibility()
+
     def _mark_add_touched(self, attr: str) -> None:
         if not getattr(self, "_add_applying_preset", False):
             self._add_touched.add(attr)
 
-    def clear_add_touched(self) -> None:
-        """A full Add exit forgets which keys the user touched (4.1a)."""
-        self._add_touched = set()
+    def clear_add_touched(self, *, keep_source: bool = False) -> None:
+        """A full Add exit forgets which keys the user touched (4.1a).
+
+        ``keep_source`` keeps the Markers source the user picked: the end
+        of a box or a whole patch passes it, so the next one starts from
+        that source (a run picked under Markers is not put back to the
+        preset's default).  Another patch or run forgets it
+        (``forget_add_source``)."""
+        keep = "add_marker_source_combo"
+        kept = keep_source and keep in self._add_touched
+        self._add_touched = {keep} if kept else set()
+
+    def forget_add_source(self) -> None:
+        """Markers back to the preset's default source, and no longer the
+        user's pick (another patch or run: the run picked belongs to the
+        patch it was picked on).  A pick set aside for a whole patch is
+        forgotten too; the default waits for a box (a whole patch's list is
+        never given a default: the user picks a run or Click markers)."""
+        self._add_touched.discard("add_marker_source_combo")
+        self._add_source_box_key = None
+        if self._add_sources_offered_whole:
+            return
+        was = getattr(self, "_add_applying_preset", False)
+        self._add_applying_preset = True        # a default is not a pick
+        try:
+            self._select_default_add_source()
+        finally:
+            self._add_applying_preset = was
 
     def get_add_preset(self) -> str:
         from packages.epicycle_annotator.add_preview import ADD_PRESETS
@@ -8233,14 +9004,26 @@ class AdvancedFeaturesWidget(QWidget):
                     w.setCurrentIndex(int(val))
                 else:
                     w.setValue(val)
+            if preset == "nuclei":
+                self._apply_add_look_for_defaults()
             if (preset == "cells"
-                    and "add_marker_source_combo" not in self._add_touched):
-                # the source is a touched key (U-M1): a switch keeps the
-                # one the user chose
+                    and "add_marker_source_combo" not in self._add_touched
+                    and not self._add_sources_offered_whole):
+                # the source the user picked is kept across a switch; a
+                # whole patch's list is never given a default (it holds
+                # the runs and Click markers)
                 self._select_default_add_source()
                 if not (self.add_markers_btn.isChecked()
                         or self.add_walls_btn.isChecked()):
                     self.add_markers_btn.setChecked(True)
+            if (preset == "cells" and self.add_markers_btn.isChecked()
+                    and self.add_walls_btn.isChecked()):
+                # Markers was opened on Nuclei while Cells' Walls card was
+                # open (hidden there, so left alone): Cells comes back with
+                # its Walls card open, one card at a time
+                self.add_markers_btn.setChecked(False)
+            if preset != "cells" and self.add_look_markers():
+                self._add_open_markers_card()
             self.add_place_markers_btn.setChecked(False)
         finally:
             self._add_applying_preset = False
@@ -8259,32 +9042,19 @@ class AdvancedFeaturesWidget(QWidget):
 
     def set_add_marker_sources(self, entries) -> None:
         """``entries`` = ``[(text, enabled, key)]`` with ``key`` =
-        ``(kind, run_id)``; the index -> key map lives beside the combo."""
+        ``(kind, run_id)``; the index -> key map lives beside the combo.
+        The full list is kept: on a Cells whole patch the combo offers only
+        its "Objects from ..." items and Click markers
+        (``_offer_add_sources``)."""
+        self._add_source_entries_all = [
+            (str(text), bool(enabled), tuple(key))
+            for text, enabled, key in (entries or ())]
         combo = self.add_marker_source_combo
         prev = self.get_add_marker_source() if self._add_source_keys else None
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            self._add_source_keys = []
-            for text, enabled, key in entries or ():
-                combo.addItem(str(text))
-                i = combo.count() - 1
-                self._add_source_keys.append(tuple(key))
-                combo.setItemData(i, str(text), Qt.ToolTipRole)
-                if not enabled:
-                    item = combo.model().item(i)
-                    if item is not None:
-                        item.setEnabled(False)
-            target = -1
-            if prev is not None and prev in self._add_source_keys:
-                j = self._add_source_keys.index(prev)
-                if self._add_source_enabled(j):
-                    target = j
-            combo.setCurrentIndex(target)
-        finally:
-            combo.blockSignals(False)
-        if combo.currentIndex() < 0:
-            # a default is not the user's choice (U-M1)
+        self._fill_add_source_combo(prev)
+        if combo.currentIndex() < 0 and not self._add_sources_offered_whole:
+            # a default is not the user's choice; a whole patch's list
+            # (the runs and Click markers) is never given one
             was = getattr(self, "_add_applying_preset", False)
             self._add_applying_preset = True
             try:
@@ -8293,6 +9063,93 @@ class AdvancedFeaturesWidget(QWidget):
                 self._add_applying_preset = was
         self._apply_add_visibility()
 
+    def _add_offered_source_entries(self) -> list:
+        """The From items the combo offers now: all of them on a box; on a
+        Cells whole patch "Objects from ..." (the grey no-run item included)
+        and Click markers -- the nuclei masks hidden, not grey."""
+        entries = list(getattr(self, "_add_source_entries_all", []))
+        if self._add_sources_offered_whole:
+            return [e for e in entries if e[2][0] in ("labels", "paint")]
+        return entries
+
+    def _fill_add_source_combo(self, want) -> None:
+        """Rebuild the From combo from the offered items with ``want`` (a
+        key) current when it is offered and enabled, else blank.  Every
+        index change here is silent: a rebuild is never the user's pick."""
+        combo = self.add_marker_source_combo
+        idx = int(combo.currentIndex())
+        old_keys = list(self._add_source_keys)
+        before = tuple(old_keys[idx]) if 0 <= idx < len(old_keys) else None
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            self._add_source_keys = []
+            for text, enabled, key in self._add_offered_source_entries():
+                combo.addItem(text)
+                i = combo.count() - 1
+                self._add_source_keys.append(tuple(key))
+                combo.setItemData(i, text, Qt.ToolTipRole)
+                if not enabled:
+                    item = combo.model().item(i)
+                    if item is not None:
+                        item.setEnabled(False)
+            target = -1
+            if want is not None and tuple(want) in self._add_source_keys:
+                j = self._add_source_keys.index(tuple(want))
+                if self._add_source_enabled(j):
+                    target = j
+            combo.setCurrentIndex(target)
+        finally:
+            combo.blockSignals(False)
+        now = self.get_add_marker_source()
+        if now != before and now[0] == "labels":
+            # another run (or none) is current: the old run's count goes
+            self._add_run_markers = None
+
+    def _offer_add_sources(self) -> bool:
+        """A Cells whole patch grows its cells from another run's objects or
+        from Click markers, so while the box is the whole patch the From
+        combo lists the "Objects from ..." items and Click markers.  Rebuilt
+        once per change of the whole-patch flag, silently (no source
+        callback, nothing marked touched).  Going whole, a run or Click
+        markers picked on the box stays picked; nuclei masks are set aside
+        and the combo is blank (a run is never pre-selected).  Back on a box
+        the set-aside pick returns -- unless the user picked a run or Click
+        markers on the whole patch, which then stays.  True when the list
+        was rebuilt."""
+        ui = getattr(self, "_add_ui", {})
+        want = bool(ui.get("whole_patch")) and bool(ui.get("box"))
+        if want == bool(self._add_sources_offered_whole):
+            return False
+        idx = int(self.add_marker_source_combo.currentIndex())
+        keys = self._add_source_keys
+        cur = tuple(keys[idx]) if 0 <= idx < len(keys) else None
+        # set before the rebuild: the rebuild reads it
+        self._add_sources_offered_whole = want
+        if want:
+            keep = (cur if cur is not None
+                    and ((cur[0] == "labels" and cur[1] is not None)
+                         or cur[0] == "paint") else None)
+            self._add_source_box_key = None if keep is not None else cur
+            self._fill_add_source_combo(keep)
+        else:
+            back = self._add_source_box_key
+            self._add_source_box_key = None
+            self._fill_add_source_combo(back if back is not None else cur)
+            combo = self.add_marker_source_combo
+            if combo.currentIndex() < 0:
+                # the pick is gone (dropped or grey): a box never shows a
+                # blank From (it would read as clicks) -- the default, and
+                # it is not the user's pick
+                combo.blockSignals(True)
+                try:
+                    combo.setCurrentIndex(self._default_add_source_index())
+                finally:
+                    combo.blockSignals(False)
+                if self.get_add_marker_source()[0] != "labels":
+                    self._add_run_markers = None
+        return True
+
     def _add_source_enabled(self, idx: int) -> bool:
         try:
             item = self.add_marker_source_combo.model().item(int(idx))
@@ -8300,18 +9157,20 @@ class AdvancedFeaturesWidget(QWidget):
         except Exception:
             return False
 
-    def _select_default_add_source(self) -> None:
+    def _default_add_source_index(self) -> int:
         """Nuclei masks on >= 2 channels, clicks on 1; a run is listed first
-        but never pre-selected."""
+        but never pre-selected.  -1 when neither is offered."""
         keys = list(self._add_source_keys)
-        pick = -1
         for want in ("nuclei_masks", "paint"):
             for i, key in enumerate(keys):
                 if key[0] == want and self._add_source_enabled(i):
-                    pick = i
-                    break
-            if pick >= 0:
-                break
+                    return i
+        return -1
+
+    def _select_default_add_source(self) -> None:
+        """Nuclei masks on >= 2 channels, clicks on 1; a run is listed first
+        but never pre-selected."""
+        pick = self._default_add_source_index()
         if pick >= 0:
             self.add_marker_source_combo.setCurrentIndex(pick)
 
@@ -8325,15 +9184,22 @@ class AdvancedFeaturesWidget(QWidget):
                                        for i in autos)
 
     def get_add_marker_source(self):
+        """``(kind, run_id)``.  A blank combo on a Cells whole patch is "a
+        run, none picked": ``("labels", None)``."""
         idx = int(self.add_marker_source_combo.currentIndex())
         keys = getattr(self, "_add_source_keys", [])
         if 0 <= idx < len(keys):
             return tuple(keys[idx])
+        if getattr(self, "_add_sources_offered_whole", False):
+            return ("labels", None)
         return ("paint", None)
 
     def _on_add_source_index_changed(self, _idx: int) -> None:
         self._add_source_note = ""            # a refusal was about the old one
-        self._mark_add_touched("add_marker_source_combo")   # U-M1
+        # the user's pick: a pick set aside for a whole patch is replaced
+        self._add_source_box_key = None
+        # the user's pick: kept across preset switches and box ends
+        self._mark_add_touched("add_marker_source_combo")
         self.add_place_markers_btn.setChecked(False)
         self._apply_add_visibility()
         self._refresh_add_summaries()
@@ -8343,6 +9209,197 @@ class AdvancedFeaturesWidget(QWidget):
                 cb(self.get_add_marker_source())
             except Exception as exc:
                 print("[ADD] source callback raised: {!r}".format(exc))
+
+    # --- Look for nuclei (the Nuclei preset) ------------------------------
+    def set_add_look_for_items(self, entries) -> None:
+        """``entries`` = ``[(text, enabled, key)]`` with ``key`` =
+        ``("inside", run_id)`` (``run_id`` None for the disabled no-run
+        item).  Index 0, Anywhere, is always first and is not passed; "At
+        the markers I place" (key ``("markers", None)``, always enabled) is
+        always last and is not passed either.  The current key is kept when
+        it is still offered and enabled; otherwise Anywhere -- a run is
+        never pre-selected."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        combo = self.add_look_for_combo
+        prev = self.get_add_look_for()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem(AP.ADD_LOOK_ANYWHERE)
+            combo.setItemData(0, AP.ADD_LOOK_ANYWHERE, Qt.ToolTipRole)
+            self._add_look_keys = [(AP.LOOK_ANYWHERE, None)]
+            self._add_look_nuclei = {}
+            for entry in entries or ():
+                text, enabled, key = tuple(entry)[:3]
+                combo.addItem(str(text))
+                i = combo.count() - 1
+                self._add_look_keys.append(tuple(key))
+                # a 4th entry: that run's target says nuclei
+                self._add_look_nuclei[tuple(key)] = bool(
+                    tuple(entry)[3]) if len(tuple(entry)) > 3 else False
+                # the grey no-run item carries how to get a run (the page
+                # does not: the help would sit there on every Nuclei page
+                # of a single-run workspace)
+                no_run_item = tuple(key)[1] is None
+                combo.setItemData(
+                    i, AP.ADD_HELP_INSIDE_NO_RUN if no_run_item
+                    else str(text), Qt.ToolTipRole)
+                if not enabled:
+                    item = combo.model().item(i)
+                    if item is not None:
+                        item.setEnabled(False)
+            # the last item: one click per nucleus (a box or a whole
+            # patch)
+            combo.addItem(AP.ADD_LOOK_MARKERS)
+            combo.setItemData(combo.count() - 1, AP.ADD_LOOK_MARKERS,
+                              Qt.ToolTipRole)
+            self._add_look_keys.append((AP.LOOK_MARKERS, None))
+            target = 0
+            if prev in self._add_look_keys[1:]:
+                j = self._add_look_keys.index(prev)
+                if self._add_look_enabled(j):
+                    target = j
+            combo.setCurrentIndex(target)
+        finally:
+            combo.blockSignals(False)
+        self._sync_add_look_tooltip()
+        if self.get_add_look_for() != prev:
+            # the run it read is gone: back to Anywhere, said like a change
+            self._on_add_look_for_index_changed(combo.currentIndex())
+        else:
+            self._apply_add_visibility()
+
+    def _sync_add_look_tooltip(self) -> None:
+        """The closed combo cuts a run item's text (its name, its target,
+        "(reconstruction, not curated)"), so the combo's tooltip is the
+        current item's whole text; on Anywhere (nothing cut) it is the
+        control's help line."""
+        combo = self.add_look_for_combo
+        idx = int(combo.currentIndex())
+        if idx <= 0:
+            combo.setToolTip(ADD_HELP_LINES["add_look_for_combo"])
+        else:
+            combo.setToolTip(combo.itemText(idx))
+
+    def _add_look_enabled(self, idx: int) -> bool:
+        try:
+            item = self.add_look_for_combo.model().item(int(idx))
+            return item is not None and item.isEnabled()
+        except Exception:
+            return False
+
+    def get_add_look_for(self):
+        """``("anywhere", None)``, ``("inside", run_id)`` or ``("markers",
+        None)`` -- by index."""
+        from packages.epicycle_annotator.add_preview import LOOK_ANYWHERE
+
+        idx = int(self.add_look_for_combo.currentIndex())
+        keys = getattr(self, "_add_look_keys", [])
+        if 0 <= idx < len(keys):
+            return tuple(keys[idx])
+        return (LOOK_ANYWHERE, None)
+
+    def add_look_inside(self) -> bool:
+        from packages.epicycle_annotator.add_preview import LOOK_INSIDE
+
+        return (self.get_add_preset() != "cells"
+                and self.get_add_look_for()[0] == LOOK_INSIDE)
+
+    def add_look_markers(self) -> bool:
+        """The Nuclei preset with Look for nuclei ▸ At the markers I
+        place."""
+        from packages.epicycle_annotator.add_preview import LOOK_MARKERS
+
+        return (self.get_add_preset() != "cells"
+                and self.get_add_look_for()[0] == LOOK_MARKERS)
+
+    def _add_chevron_shown(self, attr: str) -> bool:
+        """Is this card's chevron on the page for the preset and Look for
+        nuclei now?  Markers: on Cells, and on Nuclei with the markers;
+        Walls: on Cells only; Tissue outline (Nuclei's): on Anywhere and the
+        markers, a box, not a whole patch, before a result."""
+        if self.get_add_preset() == "cells":
+            return attr in ("add_markers_btn", "add_walls_btn")
+        if attr == "add_nuc_outline_btn":
+            return self._add_nuc_outline_offered()
+        return attr == "add_markers_btn" and self.add_look_markers()
+
+    def _add_nuc_outline_offered(self) -> bool:
+        """Nuclei ▸ Anywhere or the markers, on a box (not a whole patch),
+        with no candidates up and not in the review: the Tissue outline card
+        is on the page (never on Inside each cell: the cells confine the
+        nuclei)."""
+        ui = getattr(self, "_add_ui", {})
+        box = bool(ui.get("box"))
+        return (self.get_add_preset() != "cells"
+                and not self.add_look_inside()
+                and box and not bool(ui.get("whole_patch"))
+                and not bool(ui.get("candidates"))
+                and not bool(ui.get("review")))
+
+    def _add_open_markers_card(self) -> None:
+        """Open the Markers card (a Cells preset switch does the same when no
+        card is open); on Nuclei ▸ the markers it opens whatever else was
+        open, and the other cards on the page close."""
+        if not self._add_chevron_shown("add_markers_btn"):
+            return
+        if self.get_add_preset() != "cells":
+            if not self.add_markers_btn.isChecked():
+                self.add_markers_btn.setChecked(True)
+            else:
+                self._on_add_subsection_toggled("add_markers_btn", True)
+            return
+        shown = [a for a in ("add_markers_btn", "add_walls_btn")
+                 if self._add_chevron_shown(a)]
+        if shown and not any(getattr(self, a).isChecked() for a in shown):
+            self.add_markers_btn.setChecked(True)
+
+    def _add_has_other_run(self) -> bool:
+        return any(k[0] == "inside" and k[1] is not None
+                   for k in getattr(self, "_add_look_keys", []))
+
+    def _apply_add_look_for_defaults(self) -> None:
+        """Inside each cell starts with "Smooth the added objects" OFF (its
+        recipe already tidies each nucleus); Anywhere has it on -- unless
+        the user set it this session."""
+        if "add_auto_smooth_cb" in self._add_touched:
+            return
+        inside = self.add_look_inside()
+        was = getattr(self, "_add_applying_preset", False)
+        self._add_applying_preset = True
+        try:
+            self.add_auto_smooth_cb.setChecked(not inside)
+        finally:
+            self._add_applying_preset = was
+
+    def _on_add_look_for_index_changed(self, _idx: int) -> None:
+        self._add_source_note = ""            # a refusal was about the old run
+        self._sync_add_look_tooltip()
+        self._apply_add_look_for_defaults()
+        # a click on Anywhere or Inside must never place a hidden marker:
+        # Place markers goes off at every Look-for change (as at a preset
+        # or source change)
+        self.add_place_markers_btn.setChecked(False)
+        if self.add_look_markers():
+            # the markers' card opens (a Cells preset switch opens it too)
+            self._add_open_markers_card()
+        self._apply_add_visibility()
+        self._refresh_add_summaries()
+        cb = getattr(self, "_on_add_look_for_cb", None)
+        if cb is not None:
+            try:
+                cb(self.get_add_look_for())
+            except Exception as exc:
+                print("[ADD] look-for callback raised: {!r}".format(exc))
+
+    def _fire_add_whole(self, *_a) -> None:
+        cb = getattr(self, "_on_add_whole_cb", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception as exc:
+                print("[ADD] whole-patch callback raised: {!r}".format(exc))
 
     def get_add_wall_params(self) -> dict:
         ticks = {k: getattr(self, "add_prep_{}_cb".format(k)).isChecked()
@@ -8396,6 +9453,211 @@ class AdvancedFeaturesWidget(QWidget):
             lst.blockSignals(False)
         self._on_add_candidate_check_changed()
 
+    # --- Cells: Grow by, the tissue outline, Bridge gaps ---------------------
+    @staticmethod
+    def _set_add_item_enabled(combo, idx, on) -> None:
+        try:
+            item = combo.model().item(int(idx))
+            if item is not None:
+                item.setEnabled(bool(on))
+        except Exception:
+            pass
+
+    def get_add_grow(self) -> str:
+        """``"flood"`` (Fill to the walls) or ``"compete"`` (Spread from
+        each marker) -- by index."""
+        from packages.epicycle_annotator.add_preview import GROW_KEYS
+
+        idx = int(self.add_grow_combo.currentIndex())
+        return GROW_KEYS[idx] if 0 <= idx < len(GROW_KEYS) else GROW_KEYS[0]
+
+    def get_add_outline(self) -> str:
+        """``"cleared"`` / ``"shrink"`` / ``"none"`` -- by index."""
+        from packages.epicycle_annotator.add_preview import (
+            OUTLINE_KEYS,
+            OUTLINE_NONE,
+        )
+
+        idx = int(self.add_outline_combo.currentIndex())
+        return OUTLINE_KEYS[idx] if 0 <= idx < len(OUTLINE_KEYS) else (
+            OUTLINE_NONE)
+
+    def set_add_outline(self, key) -> None:
+        """Pick ``key`` QUIETLY (the orchestrator's fall-back when the Clears
+        behind the cleared-objects outline were undone); not a user choice,
+        so the touched set is not changed."""
+        from packages.epicycle_annotator.add_preview import OUTLINE_KEYS
+
+        if key not in OUTLINE_KEYS:
+            return
+        combo = self.add_outline_combo
+        combo.blockSignals(True)
+        try:
+            combo.setCurrentIndex(OUTLINE_KEYS.index(key))
+        finally:
+            combo.blockSignals(False)
+        self._apply_add_visibility()
+        self._refresh_add_summaries()
+
+    def _on_add_outline_index_changed(self, _idx: int) -> None:
+        self._apply_add_visibility()
+        self._refresh_add_summaries()
+        cb = getattr(self, "_on_add_outline_cb", None)
+        if cb is not None:
+            try:
+                cb(self.get_add_outline())
+            except Exception as exc:
+                print("[ADD] outline callback raised: {!r}".format(exc))
+
+    # --- Nuclei: the Tissue outline card (an option, off by default) ------
+    def get_add_nuc_outline(self) -> str:
+        """Nuclei's own Tissue outline: ``"cleared"`` / ``"shrink"`` /
+        ``"none"`` -- by index."""
+        from packages.epicycle_annotator.add_preview import (
+            OUTLINE_KEYS,
+            OUTLINE_NONE,
+        )
+
+        combo = getattr(self, "add_nuc_outline_combo", None)
+        if combo is None:
+            return OUTLINE_NONE
+        idx = int(combo.currentIndex())
+        return OUTLINE_KEYS[idx] if 0 <= idx < len(OUTLINE_KEYS) else (
+            OUTLINE_NONE)
+
+    def set_add_nuc_outline(self, key) -> None:
+        """Pick ``key`` QUIETLY (the orchestrator's fall-back when the Clears
+        behind the cleared-objects outline were undone); not a user choice,
+        so the touched set is not changed."""
+        from packages.epicycle_annotator.add_preview import OUTLINE_KEYS
+
+        if key not in OUTLINE_KEYS:
+            return
+        combo = self.add_nuc_outline_combo
+        combo.blockSignals(True)
+        try:
+            combo.setCurrentIndex(OUTLINE_KEYS.index(key))
+        finally:
+            combo.blockSignals(False)
+        self._apply_add_visibility()
+        self._refresh_add_summaries()
+
+    def _on_add_nuc_outline_index_changed(self, _idx: int) -> None:
+        self._apply_add_visibility()
+        self._refresh_add_summaries()
+        cb = getattr(self, "_on_add_outline_cb", None)
+        if cb is not None:
+            try:
+                cb(self.get_add_nuc_outline())
+            except Exception as exc:
+                print("[ADD] outline callback raised: {!r}".format(exc))
+
+    def _add_nuc_outline_on(self) -> str:
+        """The Nuclei outline asked for now: its pick on Anywhere and the
+        markers on a box, ``"none"`` on Cells, on Inside each cell and on a
+        whole patch (the orchestrator's rule: the pick is kept for the next
+        box)."""
+        from packages.epicycle_annotator.add_preview import OUTLINE_NONE
+
+        if (self.get_add_preset() == "cells" or self.add_look_inside()
+                or bool(getattr(self, "_add_ui", {}).get("whole_patch"))):
+            return OUTLINE_NONE
+        return self.get_add_nuc_outline()
+
+    def _apply_add_bridge_default(self) -> None:
+        """Bridge gaps starts at 10 um, or 16 um on a patch with one channel
+        (a count rule: it never guesses which stain that channel is) --
+        unless the user set it this session."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        if "add_bridge_sb" in self._add_touched:
+            return
+        single = bool(self._add_ui.get("single_channel"))
+        want = AP.ADD_BRIDGE_UM_ONE_CHANNEL if single else AP.ADD_BRIDGE_UM
+        sb = self.add_bridge_sb
+        if abs(float(sb.value()) - float(want)) > 1e-9:
+            sb.blockSignals(True)
+            try:
+                sb.setValue(float(want))
+            finally:
+                sb.blockSignals(False)
+
+    def _apply_add_cells_rules(self) -> None:
+        """The Cells choices that follow the box and the patch, applied
+        QUIETLY (never a user choice):
+
+        * Grow by is the box's own pick: a whole patch hides the row (it is
+          filled to the walls whatever the row says) and keeps the pick;
+        * an install that cannot spread greys Spread from each marker, and
+          a pick of it falls back to the fill -- on a whole patch too, so a
+          late "no" about numba moves the hidden pick from Spread to Fill;
+        * "Outline of the objects you cleared" is grey, its reason in its
+          words, until a Clear is in force; an untouched Tissue outline
+          is the cleared outline on a whole patch when there is one, else
+          the shrink-wrap there, and "No outline (as before)" on a box."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        ui = self._add_ui
+        cells = self.get_add_preset() == "cells"
+        whole_cells = (cells and bool(ui.get("whole_patch"))
+                       and bool(ui.get("box")))
+        numba_ok = ui.get("numba_ok") is not False
+        in_force = bool(ui.get("cleared_in_force"))
+        g = self.add_grow_combo
+        g.blockSignals(True)
+        try:
+            g.setItemText(0, AP.ADD_GROW_FLOOD)
+            self._set_add_item_enabled(g, 0, True)
+            g.setItemText(1, AP.ADD_GROW_SPREAD if numba_ok
+                          else AP.ADD_GROW_SPREAD_GREY)
+            self._set_add_item_enabled(g, 1, numba_ok)
+            for i in range(g.count()):
+                g.setItemData(i, g.itemText(i), Qt.ToolTipRole)
+            spread = AP.GROW_KEYS.index(AP.GROW_SPREAD)
+            if not numba_ok and g.currentIndex() == spread:
+                g.setCurrentIndex(AP.GROW_KEYS.index(AP.GROW_FLOOD))
+        finally:
+            g.blockSignals(False)
+        o = self.add_outline_combo
+        ci = AP.OUTLINE_KEYS.index(AP.OUTLINE_CLEARED)
+        o.blockSignals(True)
+        try:
+            o.setItemText(ci, AP.ADD_OUTLINE_CLEARED if in_force
+                          else AP.ADD_OUTLINE_CLEARED_GREY)
+            self._set_add_item_enabled(o, ci, in_force)
+            for i in range(o.count()):
+                o.setItemData(i, o.itemText(i), Qt.ToolTipRole)
+            if "add_outline_combo" not in self._add_touched:
+                if whole_cells:
+                    want = (AP.OUTLINE_CLEARED if in_force
+                            else AP.OUTLINE_SHRINK)
+                else:
+                    want = AP.OUTLINE_NONE
+                if want != self.get_add_outline():
+                    o.setCurrentIndex(AP.OUTLINE_KEYS.index(want))
+        finally:
+            o.blockSignals(False)
+        # Nuclei's own Tissue outline: the same grey cleared item; its
+        # untouched default is always No outline (never picked for the user)
+        n = getattr(self, "add_nuc_outline_combo", None)
+        if n is None:
+            return
+        n.blockSignals(True)
+        try:
+            n.setItemText(ci, AP.ADD_OUTLINE_CLEARED if in_force
+                          else AP.ADD_OUTLINE_CLEARED_GREY)
+            self._set_add_item_enabled(n, ci, in_force)
+            # each item's tooltip says what that choice does (the help line
+            # is off the page: the take-off under the 3.1-screen ceiling)
+            for i, key in enumerate(AP.OUTLINE_KEYS[:n.count()]):
+                n.setItemData(i, AP.nuclei_outline_help(key),
+                              Qt.ToolTipRole)
+            if ("add_nuc_outline_combo" not in self._add_touched
+                    and self.get_add_nuc_outline() != AP.OUTLINE_NONE):
+                n.setCurrentIndex(AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
+        finally:
+            n.blockSignals(False)
+
     def _apply_add_visibility(self) -> None:
         """Every hidden-widget switch of the page, from one place."""
         ui = getattr(self, "_add_ui", {})
@@ -8405,37 +9667,174 @@ class AdvancedFeaturesWidget(QWidget):
         review = bool(ui.get("review"))
         cands = bool(ui.get("candidates"))
         kind = self.get_add_marker_source()[0]
+        whole = bool(ui.get("whole_patch")) and box
+        inside = self.add_look_inside()
+        # Nuclei ▸ At the markers I place: the Markers card with the clicks
+        # (a box or the whole patch); the histogram folds while the markers
+        # are the method
+        markers = self.add_look_markers()
+        if hasattr(self, "add_grow_combo"):
+            self._apply_add_cells_rules()
+        numba_ok = ui.get("numba_ok") is not False
         self._add_tune_container.setVisible(not review)
         self._add_review_container.setVisible(review)
-        self.add_start_btn.setVisible(not box)
+        # no box: [Place box] [Whole patch]; a box: S M L Whole Numbers... ⌖.
+        # The Whole buttons are never grey (a choice that cannot fill a
+        # whole patch greys Preview, and S1 says why)
+        self._add_idle_row.setVisible(not box)
+        for _b in (self.add_start_btn, self.add_whole_btn):
+            _b.setVisible(not box)
         self._add_box_container.setVisible(box)
         from packages.epicycle_annotator import add_preview as AP
 
-        self._add_box_help.setText(AP.ADD_HELP_DRAG if box
-                                   else AP.ADD_HELP_BOX_EMPTY)
+        if whole:
+            box_help = AP.ADD_HELP_WHOLE
+        else:
+            box_help = AP.ADD_HELP_DRAG if box else AP.ADD_HELP_BOX_EMPTY
+        self._add_box_help.setText(box_help)
+        # the whole patch does not move: Recenter is grey
+        self.add_recenter_btn.setEnabled(not whole)
         busy = bool(getattr(self, "_add_busy_state", False))
         # hidden while a result is on screen AND while busy (U-LOW)
         self._add_box_help.setVisible(not cands and not (box and busy))
         self._add_brightness_container.setVisible(not cells)
+        # Inside each cell reads no threshold: the Brightness card keeps
+        # Channel and Look for nuclei, and says what Inside does instead.
+        # The histogram shows on Anywhere only: on the markers the clicks
+        # pick the nuclei and the threshold only sets their edge; on
+        # Anywhere it folds while a Nuclei card (Tissue outline) is on the
+        # page AND open
+        nuc_offered = (hasattr(self, "add_nuc_outline_btn")
+                       and self._add_nuc_outline_offered())
+        nuc_card_open = nuc_offered and self.add_nuc_outline_btn.isChecked()
+        plot_shown = not inside and not markers and not nuc_card_open
+        for w in (self.add_clahe_cb, self._add_threshold_row):
+            w.setVisible(not inside)
+        for w in (getattr(self, "_add_plot_placeholder", None),
+                  getattr(self, "_add_plot_widget", None)):
+            if w is not None:
+                w.setVisible(plot_shown)
+        # a whole patch the page cannot fill measures nothing (the same
+        # rule the box-info gather reads): no Auto line says "Measuring..."
+        if inside:
+            look = AP.LOOK_INSIDE
+        elif markers:
+            look = AP.LOOK_MARKERS
+        else:
+            look = AP.LOOK_ANYWHERE
+        nothing_measured = whole and AP.whole_measures_nothing(
+            preset, kind, look)
+        # the Brightness Auto line: measured for a box, or a whole patch
+        # with the markers
+        if not box:
+            threshold_help = AP.ADD_AUTO_NEEDS_BOX
+        elif self.add_channel_combo.currentIndex() < 0:
+            # no Brightness channel: nothing is measured, so never
+            # "Measuring..."
+            threshold_help = AP.ADD_HELP_THRESHOLD
+        elif self._add_brightness_flat:
+            threshold_help = AP.ADD_AUTO_NOTHING_TO_SPLIT
+        elif self._add_brightness_pending:
+            threshold_help = AP.ADD_AUTO_PENDING
+        else:
+            threshold_help = AP.ADD_HELP_THRESHOLD
+        self._add_threshold_help.setText(threshold_help)
+        # the threshold help is hidden while candidates are up (the result
+        # card is the news then), on Inside, and on a whole patch that
+        # measures nothing (S1 says why Preview is grey); with the
+        # histogram folded its own help ("drag the red line") goes too, an
+        # Auto status line stays
+        folded_help = (not plot_shown
+                       and threshold_help == AP.ADD_HELP_THRESHOLD)
+        self._add_threshold_help.setVisible(
+            not inside and not cands and not nothing_measured
+            and not folded_help)
+        pre_result = not cands and not review
+        note = (getattr(self, "_add_source_note", "")
+                or str(ui.get("levels_note") or ""))
+        if inside:
+            look_key = self.get_add_look_for()
+            picked_nuclei = (getattr(self, "_add_look_nuclei", None)
+                             or {}).get(look_key, False)
+            if look_key[1] is None:
+                # Inside with no run (the no-run item is disabled, so only
+                # an item that vanished could leave it current): how to
+                # get one.  Never shown under Anywhere -- there the words
+                # live in the grey item's tooltip
+                generic = AP.ADD_HELP_INSIDE_NO_RUN
+            elif picked_nuclei:
+                generic = AP.ADD_HELP_INSIDE_PICKED_NUCLEI
+            else:
+                generic = AP.ADD_HELP_INSIDE
+            # a refused run's reason first, then a refused channel's
+            look_help = note or generic
+        else:
+            look_help = ""
+        self._add_inside_help.setText(look_help)
+        self._add_inside_help.setVisible(
+            not cells and pre_result and bool(look_help))
+        self._add_inside_count.setVisible(
+            not cells and inside and pre_result and box)
+        derive_note = str(ui.get("derive_note") or "")
+        self._add_derive_note.setText(derive_note)
+        derive_shown = bool(derive_note) and pre_result
+        self._add_derive_note.setVisible(derive_shown)
+        if hasattr(self, "add_clear_box_action"):
+            # Clear's "mostly inside this box" means nothing on the whole
+            # patch: only "Every object in the patch…" is offered
+            self.add_clear_box_action.setVisible(not whole)
         # idle Cells shows only the preset and its help; the Markers and
-        # Walls chevrons appear once a box exists (mockup 1; U-M5e)
-        self._add_cells_container.setVisible(cells and box)
+        # Walls chevrons appear once a box exists (mockup 1; U-M5e).  On
+        # Nuclei the container holds the Markers card while the markers are
+        # the method, on a box or the whole patch
+        self._add_cells_container.setVisible(
+            (cells and box) or (markers and box) or nuc_offered)
+        self._apply_add_card_bodies()
         self._add_preset_help.setText(AP.ADD_HELP_CELLS if cells
                                       else AP.ADD_HELP_NUCLEI)
-        self._add_nuclei_rows.setVisible(kind == "nuclei_masks")
-        self.add_run_count_label.setVisible(kind == "labels")
-        self._add_click_rows.setVisible(kind == "paint")
+        # Nuclei ▸ the markers with a marker placed: the preset's help line
+        # (what Nuclei finds) gives its room to the clicks' hint line, which
+        # stays at every marker count -- the take-off that keeps the
+        # markers' states under the 3.1-screen ceiling
+        n_markers = max(self.add_click_list.count(),
+                        int(getattr(self, "_add_click_n", 0) or 0))
+        self._add_preset_help.setVisible(not (markers and n_markers > 0))
+        # the From row and what each source shows are Cells' (on Nuclei the
+        # markers are the clicks)
+        self._add_source_row.setVisible(cells)
+        self._add_nuclei_rows.setVisible(cells and kind == "nuclei_masks")
+        # the run count only for a picked run (a whole patch's blank combo
+        # counts nothing)
+        self.add_run_count_label.setVisible(
+            cells and kind == "labels"
+            and self.get_add_marker_source()[1] is not None)
+        clicks = (cells and kind == "paint") or markers
+        self._add_click_rows.setVisible(clicks)
+        # "Update as I click" under Advanced: wherever the markers are
+        # clicks -- Nuclei ▸ At the markers I place and Cells ▸ Click
+        # markers (a Cells box over the live limit, and a whole patch, wait
+        # for Preview: S1 says so)
+        self.add_live_cb.setVisible(clicks)
         # the marker list before a result only -- over
         # candidates / REVIEW S5's list is the list; kept, not cleared
         self.add_click_list.setVisible(
-            cells and kind == "paint" and self.add_click_list.count() > 0
+            clicks and self.add_click_list.count() > 0
             and not cands and not review)
-        if kind == "nuclei_masks":
+        if markers:
+            # Nuclei: the clicks' hint line, at every marker count (it names
+            # Shift+click and Ctrl+Z, which matter once a marker is placed)
+            help_text = AP.ADD_HELP_CLICK_KEYS
+        elif kind == "nuclei_masks":
             if not self.add_nuclei_channel_name():
                 # nothing to measure: "pending" would never end (live-shot
                 # fix F9)
                 help_text = AP.ADD_AUTO_NEEDS_CHANNEL
-            elif getattr(self, "_add_nuclei_auto_value", None) is None:
+            elif not box or nothing_measured:
+                # measured for a box only, never for a whole patch
+                help_text = AP.ADD_HELP_NUCLEI_MASKS
+            elif self._add_nuclei_flat:
+                help_text = AP.ADD_AUTO_NOTHING_TO_SPLIT
+            elif self._add_nuclei_pending:
                 help_text = AP.ADD_AUTO_PENDING
             else:
                 help_text = AP.ADD_HELP_NUCLEI_MASKS
@@ -8443,68 +9842,208 @@ class AdvancedFeaturesWidget(QWidget):
             help_text = (getattr(self, "_add_source_note", "")
                          or AP.help_run(self.add_core_erode_sb.value()))
         else:
-            help_text = AP.help_clicks(self.add_click_radius_sb.value())
+            # Cells ▸ Click markers: the same hint line (the ball's size is
+            # beside Place markers)
+            help_text = AP.ADD_HELP_CLICK_KEYS
         self._add_source_help.setText(help_text)
+        # Cells keeps its help line for every source, as always; on the
+        # Nuclei markers the hint line stays whatever the marker count,
+        # before and over a result (live, a result is on screen from the
+        # first click on, and extending happens over it)
+        self._add_source_help.setVisible(cells or markers)
         # only when BOTH automatic sources are grey (U-LOW), and
         # only BEFORE a result: a pre-result instruction, off over
         # candidates and REVIEW -- the take-off that replaced 4.11 step (4)
-        # when A3's outline row put 7c 0.5 px over
+        # when A3's outline row put 7c 0.5 px over.  Off on a whole patch:
+        # Click markers are picked already and the patch's own lines say
+        # how they fill; with the marker list and the longest amber the
+        # page was 790 px, over its 3.1-screen ceiling
         self._add_membrane_only_label.setVisible(
             cells and kind == "paint" and self._add_auto_sources_grey()
-            and not cands and not review)
+            and not whole and not cands and not review)
         self._add_result_container.setVisible(cands)
-        self._add_cells_adv.setVisible(cells)
+        # (Cells' Advanced: below, with Nuclei's shrink-wrap rows)
         self._add_nuclei_adv.setVisible(not cells)
+        # Separate touching objects shows on Anywhere and the markers (one
+        # tick for both: the markers' on / off); the markers show their own
+        # Spacing in place of Anywhere's, and only while the tick is on (it
+        # does nothing unticked: hidden, never grey)
+        self.add_separate_cb.setVisible(True)
+        self._add_spacing_row.setVisible(not markers)
+        self._add_marker_spacing_row.setVisible(
+            markers and self.add_separate_cb.isChecked())
+        # Cells: Grow by on a box, Wall cost and Growth limit with Spread on
+        # a box, Include membrane with Spread or on a whole patch (which is
+        # filled to the walls whatever Grow by says: its line says so, the
+        # three rows are hidden, never grey), Bridge gaps with the
+        # shrink-wrap; the Walls card's Tissue outline, its help (before a
+        # result only) and Show (with an outline chosen)
+        outline = self.get_add_outline() if cells else "none"
+        by_outline = cells and outline != "none"
+        # Nuclei's own Tissue outline (Anywhere and the markers; "none" on
+        # Cells and Inside each cell)
+        nuc_outline = (self._add_nuc_outline_on()
+                       if hasattr(self, "add_nuc_outline_combo") else "none")
+        nuc_by_outline = not cells and nuc_outline != "none"
+        nuc_shrink = not cells and nuc_outline == "shrink"
+        whole_cells = cells and whole
+        live_rule = whole_cells and bool(ui.get("live_whole_rule"))
+        spread = cells and not whole and self.get_add_grow() == "compete"
+        # the same slot, the live rule's words or the background fill's
+        self._add_whole_fill_label.setText(
+            AP.ADD_HELP_WHOLE_FILL_LIVE if live_rule
+            else AP.ADD_HELP_WHOLE_FILL)
+        self._add_whole_fill_label.setVisible(whole_cells)
+        self._add_grow_row.setVisible(cells and not whole)
+        self._add_spread_adv.setVisible(spread)
+        self._add_wall_cost_row.setVisible(spread)
+        self._add_growth_limit_row.setVisible(spread)
+        self.add_include_membrane_cb.setVisible(
+            spread or (whole_cells and not live_rule))
+        self._add_bridge_row.setVisible((cells and outline == "shrink")
+                                        or nuc_shrink)
+        self._add_outline_help.setText(AP.outline_help(outline))
+        self._add_outline_help.setVisible(cells and not cands and not review)
+        self.add_show_outline_cb.setVisible(by_outline)
+        # the Show legend: one computation, for the tick on the page
+        show_cb = (self.add_show_outline_cb if cells
+                   else getattr(self, "add_nuc_show_outline_cb", None))
+        shown_by = by_outline if cells else nuc_by_outline
+        legend = ""
+        if shown_by and show_cb is not None and show_cb.isChecked():
+            if ui.get("outline_refused"):
+                legend = AP.ADD_SHOW_OUTLINE_REFUSED
+            elif ui.get("outline_drawing"):
+                legend = AP.ADD_OUTLINE_DRAWING
+            elif ui.get("outline_pending") or not ui.get("outline_drawn",
+                                                         True):
+                legend = AP.ADD_OUTLINE_PENDING
+            elif not ui.get("outline_in_side_views", True):
+                legend = AP.ADD_SHOW_OUTLINE_MAIN_ONLY
+            else:
+                legend = AP.ADD_HELP_SHOW_OUTLINE
+        cells_legend = legend if cells else ""
+        self._add_show_outline_legend.setText(cells_legend)
+        self._add_show_outline_legend.setVisible(bool(cells_legend))
+        if hasattr(self, "add_nuc_outline_combo"):
+            # the Nuclei card's help (its words kept current; the line is
+            # off the page, in the items' tooltips), Show with an outline
+            # chosen, the legend while Show is ticked
+            nuc_legend = "" if cells else legend
+            self._add_nuc_outline_help.setText(
+                AP.nuclei_outline_help(self.get_add_nuc_outline()))
+            self.add_nuc_show_outline_cb.setVisible(nuc_by_outline)
+            self._add_nuc_show_outline_legend.setText(nuc_legend)
+            self._add_nuc_show_outline_legend.setVisible(bool(nuc_legend))
+        # Anywhere's Separate / Spacing / Local contrast strength, or
+        # Inside's Nucleus radius / Nucleus edge / Gap that splits two nuclei
+        self._add_anywhere_adv.setVisible(not inside)
+        self._add_inside_adv.setVisible(inside)
         # the spacing never greys a micron row; at
         # the default (1, 1, 1) the amber note under S1 says so instead --
         # Cells only, and not over candidates or REVIEW (the ceiling states)
         dark_on = self.add_dark_outside_cb.isChecked()
         # D-1: the dark-off leak note, the spacing note's rules (Cells, no
-        # candidates, not REVIEW)
-        dark_note = cells and not dark_on and not review and not cands
-        self.add_dark_off_note.setVisible(dark_note)
+        # candidates, not REVIEW) -- not under a tissue outline, which
+        # decides what is outside whatever the tick says
+        dark_note = (cells and not dark_on and not by_outline and not review
+                     and not cands)
+        # one amber slot on the page: a derive note (Cells) takes it, and
+        # the dark-off note gives way (its reason, ADD_DARK_OFF, is in the
+        # Advanced help slot anyway); on a whole patch no face is a box face
+        dark_amber = dark_note and not derive_shown
+        self.add_dark_off_note.setText(AP.ADD_NOTE_DARK_OFF_LEAK_WHOLE if whole
+                                       else AP.ADD_NOTE_DARK_OFF_LEAK)
+        self.add_dark_off_note.setVisible(dark_amber)
         # A-M2 (the A1-A4 audit): QC Features -> Settings... is GREY while a
         # box holds the Step 3 lock, so the boxed note says Cancel first
         spacing_text = (AP.ADD_NOTE_DEFAULT_SPACING_BOXED if box
                         else AP.ADD_NOTE_DEFAULT_SPACING)
         self.add_spacing_note.setText(spacing_text)
-        spacing_note = (cells and bool(ui.get("default_spacing"))
-                        and not review and not cands)
+        # (not on a Cells whole patch: there S1 refuses at the default
+        # spacing and says the same thing).  The Nuclei markers follow
+        # Cells: their Ball is in microns, on a box or the whole patch; so
+        # does a Nuclei Tissue outline (measured in microns)
+        spacing_note = ((cells or markers or nuc_by_outline)
+                        and bool(ui.get("default_spacing"))
+                        and not review and not cands
+                        and not (whole and not markers))
         # the two amber notes STACKED put 7f at 812 px against 759.5; the
         # dark-off note wins S1's slot and the spacing note moves to the
-        # Advanced help slot (751 px)
-        spacing_moved = spacing_note and dark_note
+        # Advanced help slot (751 px).  A derive note (Cells) wins over both:
+        # the spacing note moves the same way
+        spacing_moved = spacing_note and (dark_amber or derive_shown)
         self.add_spacing_note.setVisible(spacing_note and not spacing_moved)
-        for w in (self.add_click_radius_sb, self.add_core_erode_sb,
-                  self.add_dark_outside_cb):
-            w.setEnabled(True)
-        self.add_dark_clearance_sb.setEnabled(dark_on)
-        self.add_dark_factor_sb.setEnabled(dark_on)
+        # the run source's own Advanced row, only with its source (the
+        # ball shows with the click rows)
+        self._add_core_erode_row.setVisible(cells and kind == "labels")
+        # under a tissue outline the tick and Dark space reach are not used
+        # (grey, the reason in the Advanced help slot); Dark below still
+        # sets the shrink-wrap
+        self.add_dark_outside_cb.setEnabled(not by_outline)
+        self.add_dark_clearance_sb.setEnabled(dark_on and not by_outline)
+        # Nuclei's shrink-wrap: Dark below is live whatever the (hidden,
+        # remembered) dark tick says -- the shrink-wrap is all it sets there
+        self.add_dark_factor_sb.setEnabled(dark_on or by_outline
+                                           or nuc_shrink)
+        self.add_dark_factor_sb.setToolTip(
+            AP.ADD_HELP_DARK_BELOW_NUCLEI if nuc_shrink
+            else ADD_HELP_LINES.get("add_dark_factor_sb", ""))
+        # Cells' Advanced holds Nuclei's two shrink-wrap rows: on Nuclei only
+        # Dark below and Bridge gaps show (the tick, Dark space reach and
+        # its help are Cells')
+        self._add_cells_adv.setVisible(cells or nuc_shrink)
+        self.add_dark_outside_cb.setVisible(cells)
+        self._add_dark_reach_row.setVisible(cells)
+        self._add_dark_below_row.setVisible(cells or nuc_shrink)
+        # the grey tick and reach carry the reason in their own tooltip too
+        # (the help slot sits at the bottom of Advanced)
+        for _name in ("add_dark_outside_cb", "add_dark_clearance_sb"):
+            getattr(self, _name).setToolTip(
+                AP.ADD_DARK_BY_OUTLINE if by_outline
+                else ADD_HELP_LINES.get(_name, ""))
+        # the Edge tick and Edge zone mean nothing on a whole patch (no face
+        # is a box edge): hidden, not grey (a grey control's reason would
+        # sit in a tooltip a disabled widget never shows)
+        self.add_clear_border_cb.setVisible(not whole)
+        self._add_edge_zone_row.setVisible(not whole)
         # ADD_HELP_DARK describes the two Dark rows; with the tick off they
         # are grey and the help slot carries the reason instead --
         # "ADD_HELP_DARK is not shown" (live-shot fix F3)
-        self._add_dark_help.setVisible(dark_on)
+        self._add_dark_help.setVisible(cells and dark_on and not by_outline)
         adv_msg = ""
-        if cells and not dark_on:
+        if by_outline:
+            adv_msg = AP.ADD_DARK_BY_OUTLINE
+        elif cells and not dark_on and not whole:
+            # (a whole patch has no box edges: the amber under S1 says what
+            # a cell does in open background there)
             adv_msg = AP.ADD_DARK_OFF
-            if spacing_moved:
-                adv_msg = adv_msg + "\n\n" + spacing_text
+        if spacing_moved:
+            adv_msg = "\n\n".join([m for m in (adv_msg, spacing_text) if m])
+        extra = []
+        if spread and not by_outline and not dark_on:
+            # nothing but the growth limit stops a cell in open background
+            # (Spread on a box only: a whole patch never spreads)
+            extra.append(AP.ADD_NOTE_SPREAD_OPEN)
+        if cells and not numba_ok and not whole:
+            # on a whole patch S1 says it, and Preview is grey
+            extra.append(AP.no_numba_sentence(ui.get("numba_why")))
+        if extra:
+            adv_msg = "\n\n".join([m for m in [adv_msg] + extra if m])
         self._add_advanced_help.setText(adv_msg)
         self._add_advanced_help.setVisible(bool(adv_msg))
-        self._add_advanced_toggle.setVisible(not review)
-        if review:
-            self._add_advanced_container.setVisible(False)
-        else:
-            self._add_advanced_container.setVisible(
-                self._add_advanced_toggle.isChecked())
+        # Advanced waits for a box (both presets), and is not in REVIEW
+        adv_shown = box and not review
+        self._add_advanced_toggle.setVisible(adv_shown)
+        self._add_advanced_container.setVisible(
+            adv_shown and self._add_advanced_toggle.isChecked())
         self.add_preview_btn.setText("Preview again" if cands else "Preview")
-        # A4: only while candidates are on screen, in the
-        # summary's fixed slot (the footer never moves)
-        show_ar = cands and not review
-        self.add_accept_refine_btn.setVisible(show_ar)
-        self._add_footer_summary.setVisible(not show_ar)
-        self.add_accept_btn.setToolTip(
-            AP.ADD_FOOT_CANDIDATES if show_ar else "")
+        self.add_clear_btn.setVisible(box and not cands and not review)
+        self._apply_add_idle_hint()
+        # the footer line is always on screen: it says what the two
+        # buttons do in every state (over a result too)
+        self._add_footer_summary.setVisible(True)
+        self.add_accept_btn.setToolTip(AP.ADD_DONE_TIP if review else "")
         if not cells:
             self.add_show_walls_cb.setEnabled(False)
 
@@ -8513,7 +10052,11 @@ class AdvancedFeaturesWidget(QWidget):
         from packages.epicycle_annotator import add_preview as AP
 
         cells = self.get_add_preset() == "cells"
+        markers = self.add_look_markers()
         kind = self.get_add_marker_source()[0]
+        if markers:
+            # the Nuclei markers are clicks: "Markers: clicks · 3 placed"
+            kind = AP.SOURCE_CLICKS
         ticks = [PREP_TICK_LABELS[k].lower() for k in
                  ("zcorrect", "bgsub", "lift", "denoise")
                  if getattr(self, "add_prep_{}_cb".format(k)).isChecked()]
@@ -8530,23 +10073,70 @@ class AdvancedFeaturesWidget(QWidget):
             channel=(AP.ADD_SUM_WALLS_ROLE if self.add_wall_channel_name()
                      else ""),
             wall_kind=self.add_wall_kind_combo.currentText(),
-            prep=ticks))
+            prep=ticks,
+            outline=(self.get_add_outline() if cells
+                     and hasattr(self, "add_outline_combo") else "")))
         self._set_chevron_title(
             self.add_wall_prep_btn,
             "Prepare the channel first: {}".format(
                 ", ".join(ticks) if ticks else "none"))
+        if hasattr(self, "add_nuc_outline_btn"):
+            self._set_chevron_title(
+                self.add_nuc_outline_btn,
+                AP.nuclei_outline_summary(self.get_add_nuc_outline()))
         if cells:
-            parts = ["ball {:.1f} µm".format(self.add_click_radius_sb.value()),
-                     "shrink {:.1f} µm".format(self.add_core_erode_sb.value())]
-            if self.add_dark_outside_cb.isChecked():
+            parts = []
+            ui = getattr(self, "_add_ui", {})
+            if ui.get("whole_patch") and ui.get("box"):
+                # a whole patch is filled to the walls (Grow by hidden);
+                # filled as you click, the membrane tick does not apply
+                parts.append(AP.advanced_fill_summary(
+                    self.add_include_membrane_cb.isChecked(),
+                    live=bool(ui.get("live_whole_rule"))))
+            elif self.get_add_grow() == AP.GROW_SPREAD:
+                parts.append(AP.advanced_grow_summary(
+                    self.add_wall_cost_sb.value(),
+                    self.add_growth_limit_sb.value(),
+                    self.add_include_membrane_cb.isChecked()))
+            # only the rows on screen: the shrink with another run's
+            # objects (the ball is on the Markers card, not in Advanced)
+            if kind == "labels":
+                parts.append("shrink {:.1f} µm".format(
+                    self.add_core_erode_sb.value()))
+            outline = self.get_add_outline()
+            if outline == AP.OUTLINE_SHRINK:
+                # the tissue outline decides what is outside
+                parts.append("bridge {:g} µm".format(
+                    self.add_bridge_sb.value()))
+            elif outline == AP.OUTLINE_CLEARED:
+                pass
+            elif self.add_dark_outside_cb.isChecked():
                 parts.append("dark {:.1f} µm".format(
                     self.add_dark_clearance_sb.value()))
             else:
                 parts.append("dark off")
+        elif self.add_look_inside():
+            # the two shares with two decimals, as their boxes show them
+            # ("gap 0.70", not "gap 0.7")
+            parts = [AP.ADD_SUM_ADVANCED_INSIDE.format(
+                r="{:g}".format(self.add_nuc_radius_sb.value()),
+                e="{:.2f}".format(self.add_nuc_edge_sb.value()),
+                g="{:.2f}".format(self.add_two_gap_sb.value()))]
+        elif markers and not self.add_separate_cb.isChecked():
+            # the markers unticked: their Spacing is hidden and unused
+            parts = ["one per blob"]
         else:
+            # Anywhere and the markers: the shared tick, and the Spacing on
+            # screen (the markers' own box on the markers)
+            spacing_sb = (self.add_marker_spacing_sb if markers
+                          else self.add_min_distance_sb)
             parts = ["separate touching" if self.add_separate_cb.isChecked()
                      else "one per blob",
-                     "spacing {}".format(self.add_min_distance_sb.value())]
+                     "spacing {}".format(spacing_sb.value())]
+        if (not cells and hasattr(self, "add_nuc_outline_combo")
+                and self._add_nuc_outline_on() == AP.OUTLINE_SHRINK):
+            # Nuclei's shrink-wrap: Bridge gaps is on screen under Advanced
+            parts.append("bridge {:g} µm".format(self.add_bridge_sb.value()))
         if self.add_auto_smooth_cb.isChecked():
             parts.append("smooth {:.1f}".format(
                 self.add_smooth_sigma_sb.value()))
@@ -8592,8 +10182,14 @@ class AdvancedFeaturesWidget(QWidget):
         on_channels_changed=None,
         on_dark_outside_toggled=None,
         on_contour_toggled=None,
-        on_accept_refine=None,
         on_click_tick=None,
+        on_clear=None,
+        on_look_for_changed=None,
+        on_whole_patch=None,
+        on_outline_changed=None,
+        on_show_outline=None,
+        on_live_toggled=None,
+        on_click_pick=None,
     ):
         """Wire the Add page's controls to external orchestration callbacks.
 
@@ -8628,7 +10224,9 @@ class AdvancedFeaturesWidget(QWidget):
         _wire("add_batch_refine_btn", on_batch_refine)
         _wire("add_merge_pieces_btn", on_merge_pieces)
         _wire("add_again_btn", on_add_another)
-        _wire("add_undo_all_btn", on_undo_all)
+        # on_undo_all is kept (the setters are additive only) and wires
+        # nothing: REVIEW's Undo all is the footer's secondary now, which
+        # on_reject routes by state
         _wire("add_clahe_cb", on_clahe_toggled, signal="toggled")
         _wire("add_stop_btn", on_stop)
         _wire("add_click_undo_btn", on_click_undo)
@@ -8643,6 +10241,27 @@ class AdvancedFeaturesWidget(QWidget):
         if on_click_tick is not None:
             # cb(marker_id, ticked), the id from the row's UserRole
             self._on_add_click_tick_cb = on_click_tick
+        if on_click_pick is not None:
+            # cb(object_id): a click on a marker or result row (not on its
+            # tick) makes that object current
+            self._on_add_click_pick_cb = on_click_pick
+        if on_clear is not None:
+            # cb("box" | "patch"); the two menu actions are connected once,
+            # at build, to bound methods that read this attribute
+            self._on_add_clear_cb = on_clear
+        if on_look_for_changed is not None:
+            # cb(("anywhere", None) | ("inside", run_id)); the combo is
+            # connected once, at build
+            self._on_add_look_for_cb = on_look_for_changed
+        if on_whole_patch is not None:
+            # cb(); both Whole patch buttons are connected once, at build
+            self._on_add_whole_cb = on_whole_patch
+        if on_outline_changed is not None:
+            # cb("cleared" | "shrink" | "none"); both presets' combos are
+            # connected once, at build, and call it with their own pick
+            self._on_add_outline_cb = on_outline_changed
+        _wire("add_show_outline_cb", on_show_outline, signal="toggled")
+        _wire("add_nuc_show_outline_cb", on_show_outline, signal="toggled")
         if on_size_preset is not None:
             self._on_add_size_preset_cb = on_size_preset
         if on_candidate_changed is not None:
@@ -8669,7 +10288,7 @@ class AdvancedFeaturesWidget(QWidget):
         _wire("add_dark_outside_cb", on_dark_outside_toggled,
               signal="toggled")
         _wire("add_contour_cb", on_contour_toggled, signal="toggled")
-        _wire("add_accept_refine_btn", on_accept_refine)
+        _wire("add_live_cb", on_live_toggled, signal="toggled")
         if on_advanced_changed is not None:
             self._on_add_advanced_cb = on_advanced_changed
             # connected ONCE: the slot reads the callback attribute, so a
@@ -8693,8 +10312,13 @@ class AdvancedFeaturesWidget(QWidget):
             )
 
     def get_add_params(self) -> dict:
-        """Snapshot the current Add controls for the orchestrator."""
-        return {
+        """Snapshot the current Add controls for the orchestrator.  Inside
+        each cell adds its own keys (``look_for``, ``nuc_radius_um``,
+        ``nuc_edge``, ``two_gap``); At the markers I place adds ``look_for``
+        and the markers' own Spacing (``marker_spacing``, in voxels of the
+        full-size image); Anywhere's snapshot is exactly what it always
+        was."""
+        params = {
             "channel": self.add_channel_combo.currentText()
             if hasattr(self, "add_channel_combo") else "",
             "clahe": bool(self.add_clahe_cb.isChecked())
@@ -8718,7 +10342,7 @@ class AdvancedFeaturesWidget(QWidget):
             "preset": self.get_add_preset()
             if hasattr(self, "add_preset_combo") else "nuclei",
             "click_radius_um": float(self.add_click_radius_sb.value())
-            if hasattr(self, "add_click_radius_sb") else 2.0,
+            if hasattr(self, "add_click_radius_sb") else 1.0,
             "core_erode_um": float(self.add_core_erode_sb.value())
             if hasattr(self, "add_core_erode_sb") else 1.0,
             "dark_clearance_um": float(self.add_dark_clearance_sb.value())
@@ -8730,6 +10354,46 @@ class AdvancedFeaturesWidget(QWidget):
             "dark_outside": bool(self.add_dark_outside_cb.isChecked())
             if hasattr(self, "add_dark_outside_cb") else True,
         }
+        if (getattr(self, "add_grow_combo", None) is not None
+                and self.get_add_preset() == "cells"):
+            # how cells grow and the tissue outline (Cells only: the Nuclei
+            # snapshot is exactly what it always was)
+            params.update(
+                growth=self.get_add_grow(),
+                wall_cost=float(self.add_wall_cost_sb.value()),
+                growth_limit=float(self.add_growth_limit_sb.value()),
+                include_membrane=bool(self.add_include_membrane_cb.isChecked()),
+                outline=self.get_add_outline(),
+                bridge_um=float(self.add_bridge_sb.value()))
+        if getattr(self, "add_look_for_combo", None) is not None \
+                and self.add_look_inside():
+            from packages.epicycle_annotator.add_preview import LOOK_INSIDE
+
+            params.update(
+                look_for=LOOK_INSIDE,
+                nuc_radius_um=float(self.add_nuc_radius_sb.value()),
+                nuc_edge=float(self.add_nuc_edge_sb.value()),
+                two_gap=float(self.add_two_gap_sb.value()))
+        elif getattr(self, "add_look_for_combo", None) is not None \
+                and self.add_look_markers():
+            # At the markers I place: two keys more, Look for and the
+            # markers' own Spacing (the Ball and the shared tick are
+            # already in the snapshot)
+            from packages.epicycle_annotator.add_preview import LOOK_MARKERS
+
+            params.update(look_for=LOOK_MARKERS)
+            if hasattr(self, "add_marker_spacing_sb"):
+                params.update(marker_spacing=int(
+                    self.add_marker_spacing_sb.value()))
+        if (getattr(self, "add_nuc_outline_combo", None) is not None
+                and self.get_add_preset() != "cells"):
+            # Nuclei's Tissue outline, only when one is chosen (Anywhere and
+            # the markers; never on Inside each cell): exactly two keys more
+            nuc_outline = self._add_nuc_outline_on()
+            if nuc_outline != "none":
+                params.update(outline=nuc_outline,
+                              bridge_um=float(self.add_bridge_sb.value()))
+        return params
 
     def _on_add_box_slider_changed(self, *_args) -> None:
         """Fire on_box_changed with the 6 slider values (cz,cy,cx,sz,sy,sx)."""
@@ -8783,13 +10447,29 @@ class AdvancedFeaturesWidget(QWidget):
                     out.append(int(pid))
         return out
 
-    def refresh_add_image_combo(self, image_names: list[str]) -> None:
+    def refresh_add_image_combo(self, image_names: list[str],
+                                colours: dict | None = None) -> None:
         """Fill the three Add channel combos from the viewer's image layers.
 
         All three remember the name last chosen in ``_epicycle_channel_choice``
         (not ``currentText()``), so a deliberately blank combo stays blank
         across refreshes; the nuclei and wall combos START blank -- no
-        silent pick of layer 0 -- and S1 asks for them by name."""
+        silent pick of layer 0 -- and S1 asks for them by name.
+
+        ``colours`` -- ``{name: (r, g, b)}`` in 0..1, each layer's own
+        colour in the views: its item carries a small swatch of it.  The
+        item's text stays the layer name."""
+        from qtpy.QtCore import QSize
+        from qtpy.QtGui import QColor
+
+        icons = {}
+        for name, rgb in (colours or {}).items():
+            try:
+                r, g, b = (min(1.0, max(0.0, float(v))) for v in rgb[:3])
+                icons[name] = self._colour_swatch_icon(
+                    QColor.fromRgbF(r, g, b))
+            except Exception:  # noqa: BLE001 - a swatch is optional
+                continue
         for attr, first_fill_blank in (("add_channel_combo", False),
                                        ("add_nuclei_channel_combo", True),
                                        ("add_wall_channel_combo", True)):
@@ -8801,6 +10481,11 @@ class AdvancedFeaturesWidget(QWidget):
             try:
                 combo.clear()
                 combo.addItems(list(image_names))
+                if icons:
+                    combo.setIconSize(QSize(12, 12))
+                    for i, name in enumerate(image_names):
+                        if name in icons:
+                            combo.setItemIcon(i, icons[name])
                 self._restore_channel_choice(combo, prev)
                 if not prev and first_fill_blank:
                     combo.setCurrentIndex(-1)
@@ -8841,6 +10526,7 @@ class AdvancedFeaturesWidget(QWidget):
         busy: bool | None = None,
         stop_enabled: bool | None = None,
         stage_text: str | None = None,
+        measuring: str | None = None,
         candidate_small_ids: set | None = None,
         candidate_flags: dict | None = None,
         notes: list | None = None,
@@ -8858,10 +10544,42 @@ class AdvancedFeaturesWidget(QWidget):
         brightness_auto: float | None = None,
         threshold_pending: bool | None = None,
         brightness_flat: bool | None = None,
+        nuclei_flat: bool | None = None,
         default_spacing: bool | None = None,
         contour_on: bool | None = None,
         click_markers: list | None = None,
         click_absorbed_ids: list | None = None,
+        # --- Inside each cell / Whole patch (keyword-only, None) ---
+        look_for_items: list | None = None,
+        inside_count: object | None = None,
+        derive_note: str | None = None,
+        whole_patch: bool | None = None,
+        candidate_tips: dict | None = None,
+        piece_chips: dict | None = None,
+        piece_tips: dict | None = None,
+        progress: tuple | None = None,
+        levels_note: str | None = None,
+        # --- Cells: the tissue outline, the growth engine (keyword-only) ---
+        cleared_in_force: bool | None = None,
+        outline_pending: bool | None = None,
+        numba_ok: bool | None = None,
+        numba_why: str | None = None,
+        live_whole_rule: bool | None = None,
+        outline_drawn: bool | None = None,
+        outline_refused: bool | None = None,
+        outline_drawing: bool | None = None,
+        outline_in_side_views: bool | None = None,
+        # --- Nuclei ▸ At the markers I place (keyword-only, None) ---
+        click_absorbed_tips: dict | None = None,
+        # --- Update as I click: the Accept ticks kept by id, and Accept
+        # waiting for the last click to be drawn ---
+        candidate_checked: set | None = None,
+        accept_waiting: bool | None = None,
+        # --- extending an object: rows per object, the current one ---
+        click_status: dict | None = None,
+        click_current: int | None = None,
+        candidate_seeds: dict | None = None,
+        candidate_status: dict | None = None,
     ) -> None:
         """Update the Add page from the orchestrator.
 
@@ -8874,12 +10592,92 @@ class AdvancedFeaturesWidget(QWidget):
         means "not passed".  ``histogram_data`` is either precomputed bins
         from the box-info worker (``{"counts", "edges"}``; empty lists =
         pending, the plot cleared) or raw ``{"values", "n_bins"}``.
+        ``brightness_flat`` / ``nuclei_flat`` say the measurement of that
+        Auto ENDED: ``True`` -- the crop is flat, nothing to split;
+        ``False`` -- no answer came (a failed or cancelled measurement), so
+        nothing is pending any more.  ``measuring`` is the strip's line
+        while a reader runs and nothing else does (``""`` none): the bar
+        moves, the controls stay live and Stop grey.
         """
         ui = self._add_ui
+        if click_current is not None:
+            # the current object's id (0: none) -- its rows are bold
+            self._add_click_current = int(click_current)
+        if candidate_seeds is not None:
+            # {id: n}: the result rows of objects grown from several markers
+            self._add_candidate_seeds = {int(k): int(v) for k, v in
+                                         dict(candidate_seeds).items()}
+        if candidate_status is not None:
+            # {id: [words]}: what those objects' seeds made (chips)
+            self._add_candidate_status = {int(k): list(v) for k, v in
+                                          dict(candidate_status).items()}
+        if click_status is not None:
+            # {id: [words]}: the marker rows' status chips
+            self._add_click_status = {int(k): list(v) for k, v in
+                                      dict(click_status).items()}
         if candidate_small_ids is not None:
             self._add_candidate_small_ids = {int(i) for i in candidate_small_ids}
         if candidate_flags is not None:
-            self._add_candidate_flags = dict(candidate_flags)
+            # {id: ("two", "cut")} -- the check-this chips (never unticked)
+            self._add_candidate_flags = {int(k): tuple(v) for k, v in
+                                         dict(candidate_flags).items()}
+        if candidate_tips is not None:
+            self._add_candidate_tips = {int(k): str(v) for k, v in
+                                        dict(candidate_tips).items()}
+        if look_for_items is not None:
+            self.set_add_look_for_items(look_for_items)
+        if whole_patch is not None:
+            # before the count: its words say "patch" on the whole patch
+            ui["whole_patch"] = bool(whole_patch)
+        if inside_count is not None:
+            from packages.epicycle_annotator.add_preview import (
+                inside_count_line,
+            )
+
+            # ``()`` = pending (None means "not passed")
+            self._add_inside_count.setText(inside_count_line(
+                None if inside_count == () else int(inside_count),
+                whole_patch=bool(ui.get("whole_patch"))))
+        if derive_note is not None:
+            ui["derive_note"] = str(derive_note)
+        if levels_note is not None:
+            # why the patch's levels refused the Brightness channel ("" =
+            # none): shown under Look for nuclei on Inside, after a refused
+            # run's own reason
+            ui["levels_note"] = str(levels_note)
+        if cleared_in_force is not None:
+            # a Clear still in force on this patch: the cleared-objects
+            # outline is offered
+            ui["cleared_in_force"] = bool(cleared_in_force)
+        if outline_pending is not None:
+            ui["outline_pending"] = bool(outline_pending)
+        if numba_ok is not None:
+            # False: Spread from each marker cannot run in this install
+            ui["numba_ok"] = bool(numba_ok)
+        if numba_why is not None:
+            # why not: "missing" (numba is not installed) or "cache" (its
+            # cache folder cannot be written); "" = it can run
+            ui["numba_why"] = str(numba_why)
+        if live_whole_rule is not None:
+            # a Cells whole patch filled as you click, the way a box is:
+            # the help line in the Advanced slot says so, the membrane tick
+            # (which that fill never reads) is hidden, the summary has no
+            # membrane part
+            ui["live_whole_rule"] = bool(live_whole_rule)
+        if outline_drawn is not None:
+            # the outline's skin is drawn now (main and side views)
+            ui["outline_drawn"] = bool(outline_drawn)
+        if outline_refused is not None:
+            # the outline could not be measured (S1 says why)
+            ui["outline_refused"] = bool(outline_refused)
+        if outline_drawing is not None:
+            # the outline's layers are being added right now
+            ui["outline_drawing"] = bool(outline_drawing)
+        if outline_in_side_views is not None:
+            # False: the side views could not take it (the legend says so)
+            ui["outline_in_side_views"] = bool(outline_in_side_views)
+        if progress is not None:
+            self._set_add_progress(progress)
         if box_active is not None:
             ui["box"] = bool(box_active)
             self._set_add_s1_kind("ready" if box_active else "idle")
@@ -8896,6 +10694,7 @@ class AdvancedFeaturesWidget(QWidget):
             self.add_contour_cb.blockSignals(False)
         if single_channel is not None:
             ui["single_channel"] = bool(single_channel)
+            self._apply_add_bridge_default()
         if preset is not None:
             self.set_add_preset(preset, silent=True)
         if marker_sources is not None:
@@ -8938,21 +10737,31 @@ class AdvancedFeaturesWidget(QWidget):
             self.add_preview_btn.setEnabled(bool(preview_enabled))
         if accept_enabled is not None:
             self.add_accept_btn.setEnabled(bool(accept_enabled))
-            # A-L1 (the A1-A4 audit): "Accept and refine" is enabled exactly
-            # when Accept is -- a refusal that greys Accept greys it too
-            self.add_accept_refine_btn.setEnabled(bool(accept_enabled))
         if accept_count is not None:
             self._add_accept_text(int(accept_count))
         if reject_enabled is not None:
-            self.add_reject_btn.setEnabled(bool(reject_enabled))
+            # wanted, and live unless a preview runs (Stop is the one exit)
+            self._add_reject_wanted = bool(reject_enabled)
+            self.add_reject_btn.setEnabled(
+                bool(reject_enabled)
+                and not bool(getattr(self, "_add_busy_state", False)))
         if start_enabled is not None:
             self.add_start_btn.setEnabled(bool(start_enabled))
         if status_text is not None:
             self.add_status_label.setText(str(status_text))
-        if click_absorbed_ids is not None:
-            # the A5 data-flow audit (B-M1): the markers the last Preview
-            # found inside kept objects -- their rows dim, with a tooltip
-            self._add_click_absorbed = {int(i) for i in click_absorbed_ids}
+        if click_absorbed_tips is not None:
+            # {id: why}: the other markers the last Preview made nothing
+            # from (on stain below the threshold, too small) -- their rows
+            # dim, the reason in the tooltip
+            self._add_click_tips = {int(k): str(v) for k, v in
+                                    dict(click_absorbed_tips).items()}
+        if click_absorbed_ids is not None or click_absorbed_tips is not None:
+            if click_absorbed_ids is not None:
+                # the A5 data-flow audit (B-M1): the markers the last
+                # Preview found inside kept objects -- their rows dim, with
+                # a tooltip
+                self._add_click_absorbed = {int(i)
+                                            for i in click_absorbed_ids}
             if click_markers is None:
                 lst = self.add_click_list
                 lst.blockSignals(True)
@@ -8963,8 +10772,15 @@ class AdvancedFeaturesWidget(QWidget):
                     lst.blockSignals(False)
         if click_markers is not None:
             # the orchestrator's marker records, as a view
-            # -- ``[(id, (z, y, x), ticked), ...]``
+            # -- ``[(id, (z, y, x), ticked), ...]``, one row per object
             self._set_add_click_markers(click_markers)
+            # ... and the result list's rows take the current object and
+            # the statuses of the same push (the marker rows are rebuilt)
+            self._restyle_add_object_rows()
+        elif (click_status is not None or click_current is not None
+              or candidate_status is not None):
+            # a status or the current object alone: the rows restyled
+            self._restyle_add_object_rows()
         if click_count is not None:
             from packages.epicycle_annotator.add_preview import (
                 click_count_text,
@@ -8982,67 +10798,89 @@ class AdvancedFeaturesWidget(QWidget):
             self.add_place_markers_btn.blockSignals(False)
         if run_count is not None:
             from packages.epicycle_annotator.add_preview import (
-                ADD_RUN_COUNT_PENDING,
                 run_count_line,
+                run_count_pending_line,
             )
 
             if run_count:
-                self.add_run_count_label.setText(run_count_line(*run_count))
+                self.add_run_count_label.setText(run_count_line(
+                    *run_count, whole_patch=bool(ui.get("whole_patch"))))
                 self._add_run_markers = int(run_count[1])
             else:
-                self.add_run_count_label.setText(ADD_RUN_COUNT_PENDING)
+                self.add_run_count_label.setText(run_count_pending_line(
+                    whole_patch=bool(ui.get("whole_patch"))))
                 self._add_run_markers = None
+        # the two Auto lines keep flags here; _apply_add_visibility writes
+        # their words (a line with nothing being measured never says
+        # "Measuring...": no box, a whole patch that measures nothing, a
+        # flat crop, a measurement that ended without an answer)
         if nuclei_auto is not None:
             import math
 
             v = float(nuclei_auto)
             self._add_nuclei_auto_value = None if math.isnan(v) else v
             self.add_nuclei_auto_btn.setEnabled(not math.isnan(v))
+            self._add_nuclei_pending = math.isnan(v)
+            self._add_nuclei_flat = False
+        if nuclei_flat is not None:
+            self._add_nuclei_pending = False
+            self._add_nuclei_flat = bool(nuclei_flat)
+            if nuclei_flat:
+                self.add_nuclei_auto_btn.setEnabled(False)
         if brightness_auto is not None:
             # B4.2: the Brightness Auto is measured on the box-info worker;
             # grey, with the pending sentence in the card's help slot, until
             # it lands
             import math
 
-            from packages.epicycle_annotator import add_preview as _AP
-
             pending = math.isnan(float(brightness_auto))
             self.add_otsu_btn.setEnabled(not pending)
-            self._add_threshold_help.setText(
-                _AP.ADD_AUTO_PENDING if pending else _AP.ADD_HELP_THRESHOLD)
-        if brightness_flat:
+            self._add_brightness_pending = pending
+            self._add_brightness_flat = False
+        if brightness_flat is not None:
             # final fix pass B2: bars landed but no Auto -- a flat box has
             # nothing for Otsu to split; say so instead of pending for ever
-            from packages.epicycle_annotator import add_preview as _AP
-
-            self.add_otsu_btn.setEnabled(False)
-            self._add_threshold_help.setText(_AP.ADD_AUTO_NOTHING_TO_SPLIT)
+            self._add_brightness_pending = False
+            self._add_brightness_flat = bool(brightness_flat)
+            if brightness_flat:
+                self.add_otsu_btn.setEnabled(False)
         # TUNE <-> REVIEW swap.
         if review_active is not None:
             ui["review"] = bool(review_active)
             if review_active or candidate_ids is None:
                 self._fill_add_candidates([], {}, set())
-            self.add_reject_btn.setText("Done" if review_active else "Cancel")
-            # Done closes the session and KEEPS the objects -- not a
-            # destructive act, so the mockup's neutral button (live-shot
-            # fix V5); Cancel / Discard keep their colour
-            self.add_reject_btn.setStyleSheet(
-                PANEL_BTN_STYLE if review_active
-                else _REFINEMENT_REJECT_STYLE)
+            # REVIEW: the primary is Done (it closes the session and KEEPS
+            # the objects -- the accept colour), the secondary Undo all
+            # (destructive -- the reject colour).  Out of REVIEW: Accept
+            # and Close box / Discard
+            self.add_reject_btn.setText(
+                "Undo all" if review_active else "Close box")
+            self.add_reject_btn.setStyleSheet(_REFINEMENT_REJECT_STYLE)
             if review_active:
+                from packages.epicycle_annotator.add_preview import (
+                    ADD_DONE_TIP,
+                    ADD_UNDO_ALL_TIP,
+                )
+
+                self._add_reject_wanted = True
                 self.add_reject_btn.setEnabled(True)
-                self.add_reject_btn.setToolTip(
-                    "Close this Add session and keep the objects you added. "
-                    "Undo all is the one that takes them back.")
-                self.add_accept_btn.setText("Accept")
-                self.add_accept_btn.setEnabled(False)
+                self.add_reject_btn.setToolTip(ADD_UNDO_ALL_TIP)
+                self.add_accept_btn.setText("Done")
+                self.add_accept_btn.setEnabled(True)
+                self.add_accept_btn.setToolTip(ADD_DONE_TIP)
             else:
-                self.add_reject_btn.setToolTip(
-                    "Cancel removes the box and its markers; Discard throws "
-                    "the previewed objects away and keeps the box.")
+                # Close box / Discard: the tooltip follows the footer line
+                # (_refresh_add_footer_summary)
+                if self.add_accept_btn.text() == "Done":
+                    self.add_accept_btn.setText("Accept")
+                    self.add_accept_btn.setEnabled(False)
+                    self.add_accept_btn.setToolTip("")
             self._set_add_s1_kind("review" if review_active else "idle")
         if piece_ids is not None:
             sizes = {int(k): int(v) for k, v in (piece_sizes or {}).items()}
+            # the accepted objects keep their check-this chips in REVIEW
+            pchips = {int(k): list(v) for k, v in (piece_chips or {}).items()}
+            ptips = {int(k): str(v) for k, v in (piece_tips or {}).items()}
             lst = self.add_pieces_list
             lst.blockSignals(True)
             lst.clear()
@@ -9054,8 +10892,12 @@ class AdvancedFeaturesWidget(QWidget):
                     text += "  ·  {:,}".format(sz)
                 item = QListWidgetItem(text)
                 item.setData(Qt.UserRole, pid)
+                item.setData(ADD_CHIPS_ROLE, pchips.get(pid, []))
                 item.setIcon(self._seed_swatch_icon(pid))
-                item.setToolTip(text)
+                tip = text
+                if ptips.get(pid):
+                    tip += "\n" + ptips[pid]
+                item.setToolTip(tip)
                 lst.addItem(item)
             lst.blockSignals(False)
             self._cap_add_list(lst)
@@ -9072,9 +10914,20 @@ class AdvancedFeaturesWidget(QWidget):
             self.add_batch_refine_btn.setEnabled(bool(add_batch_refine_enabled))
         if review_has_selection is not None:
             self.add_refine_piece_btn.setEnabled(bool(review_has_selection))
+        if accept_waiting is not None:
+            # "Accepting…" on the button while Accept waits; its count back
+            # after
+            self._add_accept_waiting = bool(accept_waiting)
+            k = len(self.get_checked_add_pieces())
+            self._add_accept_text(k)
+            if not self._add_ui.get("review"):
+                # grey while it waits; live again after when rows are ticked
+                self.add_accept_btn.setEnabled(
+                    not self._add_accept_waiting and k > 0)
         if candidate_ids is not None:
             self._fill_add_candidates(candidate_ids, candidate_sizes or {},
-                                      candidate_edge_ids or set())
+                                      candidate_edge_ids or set(),
+                                      checked=candidate_checked)
         if walls_toggle_enabled is not None or walls_toggle_reason is not None:
             enabled = bool(walls_toggle_enabled)
             self.add_show_walls_cb.setEnabled(enabled)
@@ -9087,12 +10940,16 @@ class AdvancedFeaturesWidget(QWidget):
             self._refresh_add_walls_legend()
         self._apply_add_rebuild_state(
             busy=busy, stop_enabled=stop_enabled, stage_text=stage_text,
-            notes=notes, footer_text=footer_text)
+            notes=notes, footer_text=footer_text, measuring=measuring)
         if status_kind is not None:
             # what S1 MEANS (add_preview.s1_kind): a blocking reason is not
             # a green dot (live-shot fix V7); last, so it wins over the
             # dots the box / review / candidate pushes set above
             self._set_add_s1_kind(str(status_kind))
+        if whole_patch is not None or box_active is not None:
+            # the From list of a Cells whole patch: rebuilt here, once both
+            # flags of this push are applied, and silently
+            self._offer_add_sources()
         self._apply_add_visibility()
         self._refresh_add_summaries()
         self._refresh_add_footer_summary()
@@ -9104,19 +10961,29 @@ class AdvancedFeaturesWidget(QWidget):
         reports a tick back)."""
         from packages.epicycle_annotator.add_preview import (
             ADD_MARKER_LIST_ROWS,
-            marker_row_text,
+            object_row_text,
         )
 
-        rows = [(int(i), tuple(int(v) for v in zyx), bool(t))
-                for i, zyx, t in (markers or [])]
+        # one row per OBJECT: the seeds of one object (markers sharing an
+        # id) are one row -- its first seed's place, or its seed count --
+        # and its tick (every seed of an object carries the same one)
+        rows, at = [], {}
+        for i, zyx, t in (markers or []):
+            i = int(i)
+            if i in at:
+                k = at[i]
+                rows[k] = rows[k][:3] + (rows[k][3] + 1,)
+                continue
+            at[i] = len(rows)
+            rows.append((i, tuple(int(v) for v in zyx), bool(t), 1))
         self._add_click_rows_view = rows
-        self._add_click_ticked = sum(1 for _i, _p, t in rows if t)
+        self._add_click_ticked = sum(1 for r in rows if r[2])
         lst = self.add_click_list
         lst.blockSignals(True)
         try:
             lst.clear()
-            for mid, zyx, ticked in rows:
-                item = QListWidgetItem(marker_row_text(mid, zyx))
+            for mid, zyx, ticked, n in rows:
+                item = QListWidgetItem(object_row_text(mid, zyx, n))
                 item.setData(Qt.UserRole, mid)
                 item.setIcon(self._seed_swatch_icon(mid))
                 item.setToolTip(ADD_HELP_LINES["add_click_list"])
@@ -9128,10 +10995,83 @@ class AdvancedFeaturesWidget(QWidget):
             lst.blockSignals(False)
         self._cap_add_list(lst, rows=ADD_MARKER_LIST_ROWS)
 
+    def _style_add_object_row(self, item, status) -> None:
+        """A row's status chips (what its seeds made at the last result)
+        and its weight: the current object's row is bold.  The status
+        words come BEFORE the edge / small chips (chips drop right to left,
+        so the status draws first); their long form is a line of the row's
+        tooltip."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_ROW_STATUS_LONG,
+            ADD_ROW_STATUS_TIP,
+            status_tip,
+        )
+
+        mid = item.data(Qt.UserRole)
+        words = [] if mid is None else list(status.get(int(mid), []))
+        chips = list(item.data(ADD_CHIPS_ROLE) or [])
+        own = set(ADD_ROW_STATUS_LONG)
+        item.setData(ADD_CHIPS_ROLE,
+                     words + [c for c in chips if c not in own])
+        head = ADD_ROW_STATUS_TIP.split("{")[0]
+        lines = [ln for ln in str(item.toolTip() or "").split("\n")
+                 if ln and not ln.startswith(head)]
+        extra = status_tip(words)
+        if extra:
+            lines.append(extra)
+        item.setToolTip("\n".join(lines))
+        cur = int(getattr(self, "_add_click_current", 0) or 0)
+        font = item.font()
+        bold = bool(cur) and mid is not None and int(mid) == cur
+        if font.bold() != bold:
+            font.setBold(bold)
+            item.setFont(font)
+
+    def _restyle_add_object_rows(self) -> None:
+        """Both lists' rows take the status words and the bold row again
+        (quietly: no tick is reported)."""
+        for lst, status in (
+                (self.add_click_list,
+                 getattr(self, "_add_click_status", None) or {}),
+                (self.add_candidate_list,
+                 getattr(self, "_add_candidate_status", None) or {})):
+            lst.blockSignals(True)
+            try:
+                for i in range(lst.count()):
+                    self._style_add_object_row(lst.item(i), status)
+            finally:
+                lst.blockSignals(False)
+
+    def _on_add_row_pressed(self, item) -> None:
+        """A press on a row: its tick as it was, so the release can tell a
+        click on the tick box (the tick changed) from a click on the row."""
+        self._add_row_press = (item, None if item is None
+                               else item.checkState())
+
+    def _on_add_row_clicked(self, item) -> None:
+        """A click on a marker or result row makes its object current (the
+        orchestrator decides; an id no marker makes is ignored there).  A
+        click on the row's tick box ticks, and picks nothing."""
+        press = getattr(self, "_add_row_press", None)
+        self._add_row_press = None
+        if item is None:
+            return
+        if (press is not None and press[0] is item
+                and press[1] != item.checkState()):
+            return
+        mid = item.data(Qt.UserRole)
+        cb = getattr(self, "_on_add_click_pick_cb", None)
+        if cb is not None and mid is not None:
+            try:
+                cb(int(mid))
+            except Exception as exc:
+                print(f"[ADD] row pick callback raised: {exc!r}")
+
     def _style_add_click_row(self, item) -> None:
         """An unticked marker row is drawn dim (its ball is off the view);
         so is a marker the last Preview found inside a kept object, whose
-        tooltip then says so (B-M1)."""
+        tooltip then says so (B-M1) -- and a marker the last Preview made
+        nothing from for another reason, its tooltip the reason."""
         from qtpy.QtGui import QBrush, QColor
 
         from packages.epicycle_annotator.add_preview import (
@@ -9142,10 +11082,22 @@ class AdvancedFeaturesWidget(QWidget):
         mid = item.data(Qt.UserRole)
         absorbed = (mid is not None and int(mid) in
                     getattr(self, "_add_click_absorbed", set()))
+        why = (None if mid is None else
+               (getattr(self, "_add_click_tips", None) or {}).get(int(mid)))
+        marked = absorbed or bool(why)
         item.setForeground(QBrush(QColor(
-            "#eeeeee" if on and not absorbed else "#777777")))
-        item.setToolTip(ADD_MARKER_ABSORBED_TIP if absorbed
-                        else ADD_HELP_LINES["add_click_list"])
+            "#eeeeee" if on and not marked else "#777777")))
+        if absorbed:
+            tip = ADD_MARKER_ABSORBED_TIP
+        elif why:
+            tip = why
+        else:
+            tip = ADD_HELP_LINES["add_click_list"]
+        item.setToolTip(tip)
+        # the status chips, their tooltip line and the bold row, after the
+        # tooltip (it adds its line to it)
+        self._style_add_object_row(
+            item, getattr(self, "_add_click_status", None) or {})
 
     def _on_add_click_list_changed(self, item) -> None:
         """A USER tick in the marker list: restyle the row QUIETLY (a
@@ -9164,10 +11116,10 @@ class AdvancedFeaturesWidget(QWidget):
             lst.blockSignals(False)
         mid = item.data(Qt.UserRole)
         ticked = item.checkState() == Qt.Checked
-        rows = [(i, p, ticked if i == int(mid) else t)
-                for i, p, t in getattr(self, "_add_click_rows_view", [])]
+        rows = [(i, p, ticked if i == int(mid) else t, n)
+                for i, p, t, n in getattr(self, "_add_click_rows_view", [])]
         self._add_click_rows_view = rows
-        self._add_click_ticked = sum(1 for _i, _p, t in rows if t)
+        self._add_click_ticked = sum(1 for r in rows if r[2])
         self.add_click_count_label.setText(click_count_text(
             len(rows), n_ticked=self._add_click_ticked))
         self._refresh_add_summaries()
@@ -9179,42 +11131,60 @@ class AdvancedFeaturesWidget(QWidget):
                 print(f"[ADD] marker tick callback raised: {exc!r}")
 
     def _fill_add_candidates(self, candidate_ids, candidate_sizes,
-                             candidate_edge_ids) -> None:
-        """The candidate rows: "Object {id}", the edge / small chips, the size
-        right-aligned mono; flagged rows start unticked."""
+                             candidate_edge_ids, checked=None) -> None:
+        """The candidate rows: "Object {id}", the chips (two in a cell, cut
+        at cell edge, edge, small), the size right-aligned mono; a row with
+        an edge or small chip starts unticked -- the two check-this chips
+        never untick a row.  ``checked`` (a set of ids, live runs): every
+        row takes exactly that tick instead -- the orchestrator keeps the
+        user's ticks by id across results."""
+        from packages.epicycle_annotator.add_preview import (
+            candidate_chips,
+            candidate_row_text,
+        )
+
         lst = self.add_candidate_list
+        seeds = dict(getattr(self, "_add_candidate_seeds", None) or {})
+        status = dict(getattr(self, "_add_candidate_status", None) or {})
         csizes = {int(k): int(v) for k, v in dict(candidate_sizes).items()}
         cedge = {int(i) for i in candidate_edge_ids}
         small = set(getattr(self, "_add_candidate_small_ids", set()))
+        flags = dict(getattr(self, "_add_candidate_flags", {}) or {})
+        tips = dict(getattr(self, "_add_candidate_tips", {}) or {})
+        keep = None if checked is None else {int(i) for i in checked}
         lst.blockSignals(True)
         lst.clear()
         for pid in candidate_ids:
             pid = int(pid)
             sz = csizes.get(pid)
-            chips = []
-            if pid in cedge:
-                chips.append("edge")
-            if pid in small:
-                chips.append("small")
-            text = "Object {}".format(pid)
-            if sz is not None:
-                text += "  ·  {:,}".format(sz)
+            chips = candidate_chips(pid, edge_ids=cedge, small_ids=small,
+                                    flags=flags)
+            unticked = [c for c in chips if c in ("edge", "small")]
+            text = candidate_row_text(pid, sz, seeds.get(pid, 1))
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, pid)
             item.setData(ADD_CHIPS_ROLE, chips)
             item.setIcon(self._seed_swatch_icon(pid))
             tip = text
-            if chips:
-                tip += " (" + ", ".join(chips) + " -- starts unticked)"
+            if unticked:
+                tip += " (" + ", ".join(unticked) + " -- starts unticked)"
+            if tips.get(pid):
+                tip += "\n" + tips[pid]
             item.setToolTip(tip)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked if chips else Qt.Checked)
+            on = (pid in keep) if keep is not None else not unticked
+            item.setCheckState(Qt.Checked if on else Qt.Unchecked)
+            # the seeds' status words after the chips; the current object
+            # bold
+            self._style_add_object_row(item, status)
             lst.addItem(item)
         lst.blockSignals(False)
         self._cap_add_list(lst)
         n = len(candidate_ids)
         self._add_ui["candidates"] = n > 0
-        self.add_reject_btn.setText("Discard" if n > 0 else "Cancel")
+        if not self._add_ui.get("review"):
+            # REVIEW keeps its Undo all (an empty fill comes with it)
+            self.add_reject_btn.setText("Discard" if n > 0 else "Close box")
         self._set_add_s1_kind("review" if n else "ready")
         self._on_add_candidate_check_changed()
 
@@ -9246,19 +11216,30 @@ class AdvancedFeaturesWidget(QWidget):
     def _apply_add_rebuild_state(self, **kw) -> None:
         """The strip and the notes; None-guarded."""
         busy = kw.get("busy")
-        if busy is not None:
-            self._add_busy_state = bool(busy)
-            self._set_add_strip_busy(bool(busy))
-            self._set_add_busy_enabled(bool(busy))
-            if not busy:
-                self._add_stage_full_text = ""
-                self.add_stage_label.setText("")
+        if kw.get("measuring") is not None:
+            self._add_measuring_text = str(kw["measuring"])
+        if busy is not None or kw.get("measuring") is not None:
+            if busy is not None:
+                self._add_busy_state = bool(busy)
+            b = bool(getattr(self, "_add_busy_state", False))
+            # a reader's words while nothing else runs; busy wins
+            measuring = ("" if b else
+                         str(getattr(self, "_add_measuring_text", "") or ""))
+            self._set_add_strip_busy(b, measuring)
+            if busy is not None:
+                self._set_add_busy_enabled(b)
+            if not b:
+                # idle: the line is cleared or takes the reader's words (the
+                # visibility pass puts the Clear line back)
+                self._set_add_stage_line(measuring
+                                         or self._add_idle_stage_text())
+            elif self._add_stage_full_text == self._add_idle_hint():
+                # busy: the idle line never shows lit
+                self._set_add_stage_line("")
         if kw.get("stop_enabled") is not None:
             self.add_stop_btn.setEnabled(bool(kw["stop_enabled"]))
         if kw.get("stage_text") is not None:
-            self._add_stage_full_text = str(kw["stage_text"])
-            self.add_stage_label.setToolTip(self._add_stage_full_text)
-            self._apply_add_stage_elision()
+            self._set_add_stage_line(kw["stage_text"])
         if kw.get("footer_text") is not None:
             self._add_footer_override = kw["footer_text"] or None
         if kw.get("notes") is not None:
@@ -9269,29 +11250,145 @@ class AdvancedFeaturesWidget(QWidget):
             self.add_notes_label.setVisible(bool(texts))
             self._cap_add_notes()
 
+    @staticmethod
+    def _add_idle_hint() -> str:
+        from packages.epicycle_annotator.add_preview import (
+            ADD_STRIP_CLEAR_HINT,
+        )
+
+        return ADD_STRIP_CLEAR_HINT
+
+    def _apply_add_idle_hint(self) -> None:
+        """The idle strip's stage line says what Clear objects is for while
+        the button is on screen and nothing runs (dimmed, as the idle strip
+        is).  Other words on the line keep it; the hint comes back when
+        they end.  The strip's height is fixed, so this costs no space."""
+        lb = getattr(self, "add_stage_label", None)
+        btn = getattr(self, "add_clear_btn", None)
+        if lb is None or btn is None:
+            return
+        if getattr(self, "_add_busy_state", False):
+            return
+        hint = self._add_idle_hint()
+        full = str(getattr(self, "_add_stage_full_text", "") or "")
+        if full not in ("", hint):
+            return                      # other words own the line
+        want = "" if btn.isHidden() else hint
+        self._set_add_stage_line(want)
+
     def _add_accept_text(self, k: int) -> None:
         """ "Accept (k)" -- the ticked count -- whenever candidates are on
         screen, "(0)" included; plain "Accept" otherwise (mockup; live-shot
         fix V4)."""
+        if getattr(self, "_add_ui", {}).get("review"):
+            return                    # REVIEW's primary reads Done
+        if getattr(self, "_add_accept_waiting", False):
+            from packages.epicycle_annotator.add_preview import (
+                ADD_ACCEPT_WAITING_BTN,
+            )
+
+            self.add_accept_btn.setText(ADD_ACCEPT_WAITING_BTN)
+            return
         cands = bool(getattr(self, "_add_ui", {}).get("candidates"))             and self.add_candidate_list.count() > 0
         self.add_accept_btn.setText(
             "Accept ({})".format(int(k)) if cands else "Accept")
 
-    def _set_add_strip_busy(self, busy: bool) -> None:
+    def _set_add_strip_busy(self, busy: bool, measuring: str = "") -> None:
         """The pinned strip: Stop, the bar and the stage line are ALWAYS
         drawn (mockup); idle they are dimmed and the bar is still, busy the
-        bar runs its marquee and Stop is live (live-shot fix V2)."""
+        bar runs its marquee and Stop is live (live-shot fix V2).
+        ``measuring`` (a reader's words, not busy): the bar moves and the
+        line is lit, Stop stays grey."""
         self._add_busy_container.setVisible(True)
         self.add_stop_btn.setVisible(True)
         self.add_stage_label.setVisible(True)
-        if busy:
+        prog = getattr(self, "_add_progress", None)
+        moving = bool(busy) or bool(measuring)
+        if busy and prog:
+            # a whole patch: step i of n (a determinate bar)
+            self.add_busy_bar.setRange(0, int(prog[1]))
+            self.add_busy_bar.setValue(int(prog[0]))
+        elif busy:
             self.add_busy_bar.setRange(0, 0)
         else:
-            self.add_busy_bar.setRange(0, 1)
-            self.add_busy_bar.setValue(0)
+            # not busy: no step kept, Stop grey; still and empty unless a
+            # reader runs
+            self._add_progress = None
             self.add_stop_btn.setEnabled(False)
-        self.add_busy_bar.setEnabled(bool(busy))
-        self.add_stage_label.setEnabled(bool(busy))
+            if moving:
+                self.add_busy_bar.setRange(0, 0)
+            else:
+                self.add_busy_bar.setRange(0, 1)
+                self.add_busy_bar.setValue(0)
+        self.add_busy_bar.setEnabled(moving)
+        self.add_stage_label.setEnabled(moving)
+
+    def _set_add_stage_line(self, text) -> None:
+        """The strip's one grey line: its words, the full text as its
+        tooltip, elided to the width.  Every write goes through here."""
+        self._add_stage_full_text = str(text or "")
+        self.add_stage_label.setToolTip(self._add_stage_full_text)
+        self._apply_add_stage_elision()
+
+    def _add_idle_stage_text(self) -> str:
+        """The words of the strip's line while nothing runs or is measured
+        (empty: the line is blank).  A reader's words take the line while
+        they last, and these come back after."""
+        return ""
+
+    def paint_add_wait(self, *, status_text, status_kind="busy",
+                       stage_text="", step=None, of=None,
+                       stop_enabled=None) -> None:
+        """Before a wait on the main thread: S1 and its dot, the strip's
+        line and, with ``step`` of ``of``, the bar (step k of n, never full)
+        are set directly and painted NOW.  The app is frozen until the wait
+        ends, so no queued repaint, layout request or animation would show
+        them: S1's row and then the page that holds it are laid out by hand
+        (only the page's layout can give S1 another line) and the page
+        repainted, then the strip; the event loop is never run here.
+        Without a step the bar is left as it is.  ``stop_enabled`` (None:
+        left as it is) sets Stop before the paint, so the frozen frame shows
+        it as it is (Stop sits in the painted strip).  The next page update
+        puts the strip back."""
+        self.add_status_label.setText(str(status_text))
+        self._set_add_s1_kind(str(status_kind))
+        self._set_add_stage_line(stage_text)
+        self.add_stage_label.setEnabled(True)
+        if stop_enabled is not None:
+            self.add_stop_btn.setEnabled(bool(stop_enabled))
+        if step is not None and of:
+            n = max(1, int(of))
+            k = max(0, min(int(step), n - 1))
+            self._add_progress = (k, n)
+            self.add_busy_bar.setRange(0, n)
+            self.add_busy_bar.setValue(k)
+            self.add_busy_bar.setEnabled(True)
+        try:
+            s1 = getattr(self, "_add_s1_container", None)
+            if s1 is not None:
+                s1.layout().activate()
+                page = s1.parentWidget()
+                if page is not None and page.layout() is not None:
+                    page.layout().activate()
+                (page or s1).repaint()
+            s4 = getattr(self, "_add_s4_container", None)
+            if s4 is not None:
+                s4.layout().activate()
+                s4.repaint()
+        except RuntimeError:              # a torn-down page
+            pass
+
+    def _set_add_progress(self, progress) -> None:
+        """``(i, n)``: the bar shows step i of n while busy; ``()`` puts it
+        back to the moving marquee."""
+        prog = tuple(progress or ())
+        if len(prog) == 2 and int(prog[1]) > 0:
+            self._add_progress = (max(0, min(int(prog[0]), int(prog[1]))),
+                                  int(prog[1]))
+        else:
+            self._add_progress = None
+        if getattr(self, "_add_busy_state", False):
+            self._set_add_strip_busy(True)
 
     def _cap_add_notes(self) -> None:
         """The counts note wraps to at most ``ADD_NOTES_LINES`` lines;
@@ -9333,6 +11430,28 @@ class AdvancedFeaturesWidget(QWidget):
                 w.setEnabled(not busy)
         for sl in (getattr(self, "_add_box_sliders", None) or {}).values():
             sl.setEnabled(not busy)
+        clear_btn = getattr(self, "add_clear_btn", None)
+        if clear_btn is not None:
+            clear_btn.setEnabled(not busy)
+        reject_btn = getattr(self, "add_reject_btn", None)
+        if reject_btn is not None:
+            # Close box is grey while a preview runs: Stop is the one exit
+            reject_btn.setEnabled(
+                not busy and bool(getattr(self, "_add_reject_wanted", False)))
+
+    def _fire_add_clear(self, mode: str) -> None:
+        cb = getattr(self, "_on_add_clear_cb", None)
+        if cb is not None:
+            try:
+                cb(mode)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD-CLEAR] clear callback raised: {exc!r}")
+
+    def _fire_add_clear_box(self, *_a) -> None:
+        self._fire_add_clear("box")
+
+    def _fire_add_clear_patch(self, *_a) -> None:
+        self._fire_add_clear("patch")
 
     def _fire_add_size_preset(self, frac: float) -> None:
         """A box-size preset button (S/M/L) → tell the orchestrator to resize."""
@@ -9360,18 +11479,103 @@ class AdvancedFeaturesWidget(QWidget):
         the orchestrator (so it can re-mask the 3D candidate overlay — wired in
         the live-sync pass; a no-op until then)."""
         k = len(self.get_checked_add_pieces())
-        if hasattr(self, "add_accept_btn"):
+        if hasattr(self, "add_accept_btn") and not getattr(
+                self, "_add_ui", {}).get("review"):
+            # (REVIEW's primary is Done, always live)
             self._add_accept_text(k)
-            self.add_accept_btn.setEnabled(k > 0)
-        if hasattr(self, "add_accept_refine_btn"):
-            # enabled exactly when Accept is
-            self.add_accept_refine_btn.setEnabled(k > 0)
+            # grey while Accept waits for the last click to be drawn
+            self.add_accept_btn.setEnabled(
+                k > 0 and not getattr(self, "_add_accept_waiting", False))
         cb = getattr(self, "_on_add_candidate_changed_cb", None)
         if cb is not None:
             try:
                 cb()
             except Exception:
                 pass
+
+    def release_plots(self) -> None:
+        """Let the lazily built pyqtgraph plots (the Add in-box histogram,
+        the auto-detect one) go ON THEIR OWN, before this panel is destroyed
+        by the annotator's close or relaunch.
+
+        It does NOT cover napari's own close: a deletion posted from inside
+        napari's close is never delivered, so a plot still alive then stays
+        in the window tree (the session ends release the Add plot while the
+        event loop runs, which is what keeps that close clean).  Measured:
+        with the Add plot alive, hidden in the floating panel, at napari's
+        close, the close aborted ("QObject: shared QObject was deleted
+        directly"); other pyqtgraph plots that live until the close do not,
+        so the exact double delete is not pinned (a plot inside a FLOATING
+        dock that napari re-docks in its close, and pyqtgraph's parentless
+        menus, are the leads).  Each plot is unparented (it stays hidden)
+        and scheduled for deletion; the panel forgets it, its threshold line
+        and its bars, and builds none afterwards (no placeholder is put
+        back).  Idempotent; never raises.
+        """
+        self._release_plot("_add_plot_widget",
+                           ("_add_thresh_line", "_add_bar_item"))
+        self._release_plot("_detect_plot_widget",
+                           ("_detect_thresh_line", "_detect_bar_item"))
+        self._detect_last_edt_values = []
+
+    def release_detect_plot(self) -> None:
+        """Let the auto-detect histogram go at the end of a Reshape
+        session, as ``release_add_plot`` does for Add (measured: a Split
+        Detect, Cancel, then napari's close aborted while it was alive).  A
+        placeholder takes its place; the kept peak heights are dropped so a
+        Bins change on an idle page cannot build it again.  Idempotent;
+        never raises."""
+        self._release_plot("_detect_plot_widget",
+                           ("_detect_thresh_line", "_detect_bar_item"),
+                           placeholder_attr="_detect_plot_placeholder")
+        self._detect_last_edt_values = []
+
+    def release_add_plot(self) -> None:
+        """Let the Add in-box histogram go at the end of an Add session,
+        the same way as ``release_plots`` (an Add box that measures itself
+        builds a fresh one).  A placeholder takes its place in the layout,
+        as before the first box.  Idempotent; never raises."""
+        self._release_plot("_add_plot_widget",
+                           ("_add_thresh_line", "_add_bar_item"),
+                           placeholder_attr="_add_plot_placeholder")
+
+    def _release_plot(self, pw_attr, extra, placeholder_attr=None) -> None:
+        pw = getattr(self, pw_attr, None)
+        if pw is None:
+            return
+        setattr(self, pw_attr, None)
+        for a in extra:
+            setattr(self, a, None)
+        try:
+            from qtpy import sip as _sip
+
+            if _sip.isdeleted(pw):
+                return
+        except Exception:
+            pass
+        try:
+            if placeholder_attr is not None and getattr(
+                    self, placeholder_attr, None) is None:
+                parent = pw.parentWidget()
+                lay = parent.layout() if parent is not None else None
+                idx = lay.indexOf(pw) if lay is not None else -1
+                if idx >= 0:
+                    shown = pw.isVisibleTo(parent)
+                    # parented from the start, and shown only once it is
+                    # in the layout: never a top-level window, not even
+                    # for a moment
+                    ph = QWidget(parent)
+                    ph.setFixedHeight(100)
+                    ph.hide()
+                    lay.removeWidget(pw)
+                    lay.insertWidget(idx, ph)
+                    ph.setVisible(shown)
+                    setattr(self, placeholder_attr, ph)
+            pw.hide()
+            pw.setParent(None)
+            pw.deleteLater()
+        except Exception as exc:  # noqa: BLE001 - teardown never raises
+            print(f"[ADV-DOCK] plot release {pw_attr}: {exc!r}")
 
     # --- Add histogram (mirrors the detect-seeds plot, separate widget) ---
 
@@ -9381,6 +11585,10 @@ class AdvancedFeaturesWidget(QWidget):
             if self._add_plot_placeholder is None:
                 return
             self._add_plot_widget = None
+        if self._add_plot_placeholder is None:
+            # released for a panel being torn down: nowhere to put a plot
+            # (built anyway it would be parentless, a window of its own)
+            return
         try:
             import pyqtgraph as pg
         except ImportError:
@@ -9414,6 +11622,15 @@ class AdvancedFeaturesWidget(QWidget):
         self._add_plot_widget = pw
         self._add_bar_item = None
         self._add_thresh_line = line
+        # a threshold set while there was no plot lives in the box: the
+        # new line starts there (hidden while the threshold is pending)
+        sb = getattr(self, "add_threshold_sb", None)
+        if sb is None or getattr(self, "_add_threshold_is_pending", False):
+            line.setVisible(False)
+        else:
+            line.blockSignals(True)
+            line.setValue(float(sb.value()))
+            line.blockSignals(False)
 
     def _on_add_line_moved(self, line) -> None:
         v = float(line.value())
@@ -9550,7 +11767,9 @@ class AdvancedFeaturesWidget(QWidget):
 
     def _set_add_threshold(self, value: float) -> None:
         """Move the threshold line without firing the callback."""
-        self._ensure_add_plot()
+        # never BUILDS the plot (the box is typed into while Add is idle
+        # too): only a box's histogram does (``_update_add_histogram``), and
+        # the new line starts at the box's value
         if self._add_thresh_line is not None:
             self._add_thresh_line.blockSignals(True)
             self._add_thresh_line.setValue(value)
@@ -11056,6 +13275,11 @@ class AdvancedFeaturesWidget(QWidget):
         for name in names or ():
             combo.addItem(str(name))
         self._restore_channel_choice(combo, prev)
+        if not prev:
+            # First fill with nothing remembered: stay blank (as Add does)
+            # so the "pick a channel" refusal fires instead of a silent
+            # guess of the first image layer.
+            combo.setCurrentIndex(-1)
         combo.blockSignals(False)
 
     def set_refine_guided_grow_available(self, available: bool,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Dict
+import weakref
 
 import numpy as np
 from napari.layers import Labels
@@ -124,6 +125,53 @@ def lock_brush_size_to_1(layer) -> None:
         pass
 
 
+# Per-event prints in sync_label_properties fire dozens of times a second
+# during a slider drag; flip on only when tracing a sync cascade.
+SYNC_PROPS_DIAG = False
+
+
+def _ledger_host(layer):
+    """The object that carries a layer's guard flags and callback ledgers.
+
+    Some callers connect through a throwaway namespace that shares the real
+    layer's emitters; napari's ``layer.events.source`` is the real layer, so
+    ledgers written there stay visible to every later connect/disconnect.
+    """
+    src = getattr(getattr(layer, "events", None), "source", None)
+    return src if src is not None else layer
+
+
+def _purge_layer_callbacks(layer, attr: str, owner=None, self_id=None) -> int:
+    """Disconnect the (emitter, callback) pairs a sync manager stored on
+    ``layer`` under ``attr``; return how many were removed.
+
+    The list lives on the layer (not the manager) so a layer that outlives
+    its annotator can still be cleaned by whoever comes next.  With
+    ``owner`` given, only a list stored by that owner is removed.
+    """
+    stored = getattr(layer, attr, None)
+    if not stored:
+        return 0
+    stored_owner, pairs = stored
+    if owner is not None and stored_owner != owner:
+        return 0
+    removed = 0
+    for emitter, callback in pairs:
+        try:
+            emitter.disconnect(callback)
+            removed += 1
+        except Exception:
+            pass
+    try:
+        setattr(layer, attr, None)
+    except Exception:
+        pass
+    if owner is None and removed and stored_owner != self_id:
+        print(f"[SYNC-PURGE] layer={getattr(layer, 'name', None) or type(layer).__name__ + ' (viewer.layers)'!r} "
+              f"removed={removed} owner={stored_owner}")
+    return removed
+
+
 class LabelSyncManager:
     """Manage shared label arrays across main viewer and orthogonal subviewers."""
 
@@ -153,6 +201,7 @@ class LabelSyncManager:
         self._sync_handlers: Dict[int, list] = {}
         # Keyed by id(label_layer) → (drag_callback, n_edit_handler_or_None).
         self._main_drag_handlers: Dict[int, tuple] = {}
+        self._ledger_hosts = weakref.WeakValueDictionary()
         # Nesting counter for suppress_property_sync context manager.
         self._suppress_depth: int = 0
         # When True, sync_selected_label skips show_selected_label propagation.
@@ -243,9 +292,15 @@ class LabelSyncManager:
 
     def connect_label_sync(self, label_layer: Labels) -> None:
         # Guard: only connect once per layer to avoid handler accumulation.
-        if getattr(label_layer, "_epicycle_sync_connected", False):
+        host = _ledger_host(label_layer)
+        if (getattr(host, "_epicycle_sync_connected", False)
+                and id(label_layer) in self._sync_handlers):
             return
-        label_layer._epicycle_sync_connected = True
+        # A previous manager (closed annotator) may have left callbacks on
+        # this layer; remove them before connecting ours.
+        self._forget_own_handlers(host, "_epicycle_sync_cbs", self._sync_handlers)
+        _purge_layer_callbacks(host, "_epicycle_sync_cbs", self_id=id(self))
+        host._epicycle_sync_connected = True
 
         handlers = []  # (event_emitter, handler) for clean disconnect
 
@@ -312,6 +367,8 @@ class LabelSyncManager:
             handlers.append((label_layer.events.data, _data_reassigned_cb))
 
         self._sync_handlers[id(label_layer)] = handlers
+        host._epicycle_sync_cbs = (id(self), list(handlers))
+        self._track_host(host)
 
     def disconnect_label_sync(self, label_layer: Labels) -> None:
         """Disconnect all event handlers added by connect_label_sync.
@@ -326,7 +383,59 @@ class LabelSyncManager:
                 event_emitter.disconnect(handler)
             except (ValueError, AttributeError):
                 pass
-        label_layer._epicycle_sync_connected = False
+        host = _ledger_host(label_layer)
+        _purge_layer_callbacks(host, "_epicycle_sync_cbs", owner=id(self))
+        # Keep the guard flag while another (live) manager's callbacks
+        # remain on the layer.
+        if not getattr(host, "_epicycle_sync_cbs", None):
+            host._epicycle_sync_connected = False
+        self._release_host_if_idle(host)
+
+    def _track_host(self, host) -> None:
+        try:
+            self._ledger_hosts[id(host)] = host
+        except TypeError:
+            pass  # not weak-referenceable: nothing to track
+
+    def _release_host_if_idle(self, host) -> None:
+        if not (getattr(host, "_epicycle_sync_cbs", None)
+                or getattr(host, "_epicycle_main_sync_cbs", None)):
+            self._ledger_hosts.pop(id(host), None)
+
+    def _forget_own_handlers(self, host, attr: str, table: dict) -> None:
+        """Drop this manager's own bookkeeping for callbacks about to be
+        purged, so no stale early-return entry remains."""
+        stored = getattr(host, attr, None)
+        if stored and stored[0] == id(self):
+            for key in [k for k, v in table.items() if v == stored[1]]:
+                table.pop(key, None)
+
+    @staticmethod
+    def _apply_props(layer, brush_size, opacity, colormap, blending,
+                     n_edit_dim, contour) -> None:
+        """Write each property only when it differs, so an already-equal
+        target emits no event (every Labels event can trigger a
+        full-volume redraw)."""
+        if getattr(layer, "brush_size", None) != brush_size:
+            layer.brush_size = brush_size
+        if getattr(layer, "opacity", None) != opacity:
+            layer.opacity = opacity
+        # Colormaps must be replaced, never mutated in place, or this identity
+        # check hides the change from the subviewers.
+        if colormap is not None and getattr(layer, "colormap", None) is not colormap:
+            layer.colormap = colormap
+        if getattr(layer, "blending", None) != blending:
+            layer.blending = blending
+        try:
+            if getattr(layer, "n_edit_dimensions", None) != n_edit_dim:
+                layer.n_edit_dimensions = n_edit_dim
+        except Exception:
+            pass
+        try:
+            if getattr(layer, "contour", None) != contour:
+                layer.contour = contour
+        except Exception:
+            pass
 
     def sync_label_properties(self, active_layer: Labels) -> None:
         # Reentrant guard — setting properties on subviewers fires their
@@ -335,6 +444,8 @@ class LabelSyncManager:
         if getattr(self, "_syncing_properties", False):
             return
         self._syncing_properties = True
+        if SYNC_PROPS_DIAG:
+            print(f"[SYNC-PROPS] layer={getattr(active_layer, 'name', '?')!r} mgr={id(self)}")
         try:
             # brush_size is locked at 1 across all annotator layers — see
             # lock_brush_size_to_1 docstring.  Hardcoding here means even if the lock
@@ -349,35 +460,13 @@ class LabelSyncManager:
             # Also propagate to main layer (covers subviewer → main direction).
             main_layer = self._layer_by_name(self.main_viewer.layers, base)
             if isinstance(main_layer, Labels) and main_layer is not active_layer:
-                main_layer.brush_size = brush_size
-                main_layer.opacity = opacity
-                if colormap is not None:
-                    main_layer.colormap = colormap
-                main_layer.blending = blending
-                try:
-                    main_layer.n_edit_dimensions = n_edit_dim
-                except Exception:
-                    pass
-                try:
-                    main_layer.contour = contour
-                except Exception:
-                    pass
+                _apply_props(main_layer, brush_size, opacity, colormap,
+                                  blending, n_edit_dim, contour)
             for vm in [self.viewer_model_xy, self.viewer_model_xz, self.viewer_model_yz]:
                 for layer in vm.layers:
                     if isinstance(layer, Labels) and self._base_label_name(layer.name) == base:
-                        layer.brush_size = brush_size
-                        layer.opacity = opacity
-                        if colormap is not None:
-                            layer.colormap = colormap
-                        layer.blending = blending
-                        try:
-                            layer.n_edit_dimensions = n_edit_dim
-                        except Exception:
-                            pass
-                        try:
-                            layer.contour = contour
-                        except Exception:
-                            pass
+                        _apply_props(layer, brush_size, opacity, colormap,
+                                          blending, n_edit_dim, contour)
         finally:
             self._syncing_properties = False
 
@@ -472,13 +561,15 @@ class LabelSyncManager:
                 main_layer.selected_label = selected
                 # Sync show_selected_label atomically with selected_label
                 # to prevent desync between main viewer and subviewers.
-                if show_sel is not None and hasattr(main_layer, "show_selected_label"):
+                if (show_sel is not None and hasattr(main_layer, "show_selected_label")
+                        and main_layer.show_selected_label != show_sel):
                     main_layer.show_selected_label = show_sel
             for vm in [self.viewer_model_xy, self.viewer_model_xz, self.viewer_model_yz]:
                 for layer in vm.layers:
                     if isinstance(layer, Labels) and self._base_label_name(layer.name) == base:
                         layer.selected_label = selected
-                        if show_sel is not None and hasattr(layer, "show_selected_label"):
+                        if (show_sel is not None and hasattr(layer, "show_selected_label")
+                                and layer.show_selected_label != show_sel):
                             layer.show_selected_label = show_sel
         finally:
             self._syncing_selected_label = False
@@ -607,9 +698,20 @@ class LabelSyncManager:
              and are not user-changed often enough to justify the
              attack surface.
         """
-        if getattr(label_layer, "_epicycle_main_drag_connected", False):
+        host = _ledger_host(label_layer)
+        if (getattr(host, "_epicycle_main_drag_connected", False)
+                and id(label_layer) in self._main_drag_handlers):
             return
-        label_layer._epicycle_main_drag_connected = True
+        # Remove whatever a previous (closed) manager left on this layer.
+        stale = getattr(host, "_epicycle_main_drag_cb", None)
+        if stale is not None:
+            try:
+                label_layer.mouse_drag_callbacks.remove(stale[1])
+            except Exception:
+                pass
+            host._epicycle_main_drag_cb = None
+        _purge_layer_callbacks(host, "_epicycle_main_sync_cbs", self_id=id(self))
+        host._epicycle_main_drag_connected = True
         callback = self._create_main_drag_callback(label_layer)
         label_layer.mouse_drag_callbacks.append(callback)
         prop_cbs = []
@@ -626,6 +728,9 @@ class LabelSyncManager:
                 n_edit_emitter.connect(sync_props_cb)
                 prop_cbs.append((n_edit_emitter, sync_props_cb))
         self._main_drag_handlers[id(label_layer)] = (callback, prop_cbs)
+        host._epicycle_main_drag_cb = (id(self), callback)
+        host._epicycle_main_sync_cbs = (id(self), list(prop_cbs))
+        self._track_host(host)
 
     def disconnect_main_label_sync(self, label_layer: Labels) -> None:
         """Disconnect handlers added by connect_main_label_sync.
@@ -658,7 +763,18 @@ class LabelSyncManager:
                     label_layer.events.n_edit_dimensions.disconnect(prop_cbs)
                 except (ValueError, AttributeError):
                     pass
-        label_layer._epicycle_main_drag_connected = False
+        host = _ledger_host(label_layer)
+        _purge_layer_callbacks(host, "_epicycle_main_sync_cbs", owner=id(self))
+        own_drag = getattr(host, "_epicycle_main_drag_cb", None)
+        if own_drag is not None and own_drag[0] == id(self):
+            try:
+                label_layer.mouse_drag_callbacks.remove(own_drag[1])
+            except ValueError:
+                pass
+            host._epicycle_main_drag_cb = None
+        if not getattr(host, "_epicycle_main_sync_cbs", None):
+            host._epicycle_main_drag_connected = False
+        self._release_host_if_idle(host)
 
     def disconnect_all(self) -> None:
         """Flush ALL tracked handler dicts.
@@ -681,10 +797,26 @@ class LabelSyncManager:
                     pass
         self._sync_handlers.clear()
 
+        # Main-layer property callbacks (brush_size / n_edit_dimensions)
+        # were only bookkept in _main_drag_handlers; disconnect them too.
+        for _cb, prop_cbs in list(self._main_drag_handlers.values()):
+            if isinstance(prop_cbs, list):
+                for emitter, callback in prop_cbs:
+                    try:
+                        emitter.disconnect(callback)
+                    except Exception:
+                        pass
+
         # --- Main drag handlers ---
         # The per-layer disconnect loop already removed drag callbacks
         # from layer.mouse_drag_callbacks.  Clear any remaining entries.
         self._main_drag_handlers.clear()
+
+        # Layer-side ledgers hold lambdas that close over this manager.
+        for host in list(self._ledger_hosts.values()):
+            _purge_layer_callbacks(host, "_epicycle_sync_cbs", owner=id(self))
+            _purge_layer_callbacks(host, "_epicycle_main_sync_cbs", owner=id(self))
+        self._ledger_hosts.clear()
 
     def _create_main_drag_callback(self, label_layer: Labels):
         """Return a mouse_drag generator that syncs main viewer edits to subviewers."""
@@ -723,3 +855,8 @@ class LabelSyncManager:
             layer = self._layer_by_name(vm.layers, f"{base}_{o}")
             if layer is not None:
                 layer.refresh()
+
+
+# Module-level so a minimal test double that borrows
+# ``sync_label_properties`` still finds the helper.
+_apply_props = LabelSyncManager._apply_props

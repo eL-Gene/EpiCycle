@@ -159,11 +159,22 @@ _FEATURE_CATEGORIES = {
     "centroid-0": "Position",
     "centroid-1": "Position",
     "centroid-2": "Position",
+    # The pairing check against another run of the same patch (Step 3).
+    # Not a catalogue feature: it needs two runs; the manifest leaves this
+    # category out unless asked (``get_feature_manifest(include_match=)``).
+    "match_count": "Overlap with other run",
+    "match_id": "Overlap with other run",
+    "match_overlap": "Overlap with other run",
+    "match_shared": "Overlap with other run",
+    "match_minor_ratio": "Overlap with other run",
 }
+
+#: the category of the pairing check's columns
+_MATCH_CATEGORY = "Overlap with other run"
 
 _CATEGORY_ORDER = [
     "Morphology", "Shape", "Orientation", "Surface",
-    "Probability", "Neighbors", "Topology", "Skeleton",
+    "Probability", "Neighbors", "Topology", _MATCH_CATEGORY, "Skeleton",
     "Cross-Section", "Composites", "Position",
 ]
 
@@ -265,6 +276,14 @@ _FEATURE_DESCRIPTIONS = {
     "centroid-0": "Cell centroid Z coordinate (voxels). Spatial position along Z axis.",
     "centroid-1": "Cell centroid Y coordinate (voxels). Spatial position along Y axis.",
     "centroid-2": "Cell centroid X coordinate (voxels). Spatial position along X axis.",
+    # Overlap with other run (the pairing check against another run of the
+    # patch).
+    # The 0.20 is the check's link floor, written as its help states it.
+    "match_count": "How many objects of the other run overlap this one (shared voxels at least 0.20 of the smaller object).",
+    "match_id": "The label, in the other run, of the object it shares the most voxels with (0 = none, too small, or not measured).",
+    "match_overlap": "How much this object and its best match overlap: shared voxels over the smaller of the two [0,1]; 1 = one lies wholly inside the other.",
+    "match_shared": "The largest number of objects of this run that any one of its matches overlaps; 2 or more = a match is shared (e.g. one nucleus across two cells).",
+    "match_minor_ratio": "Voxels shared with its second match over those shared with its best match [0,1]: near 0 = one clear match, near 1 = split evenly between two; blank with fewer than two matches.",
 }
 
 # Dynamic channel feature descriptions
@@ -287,10 +306,12 @@ def _get_feature_description(feat_name: str) -> str:
     """Return tooltip description, including dynamic channel features."""
     if feat_name in _FEATURE_DESCRIPTIONS:
         return _FEATURE_DESCRIPTIONS[feat_name]
-    # Check channel feature suffixes
-    for suffix, desc in _CHANNEL_STAT_DESCRIPTIONS.items():
+    # Check channel feature suffixes, longest first: "_intensity_mean" is
+    # also the end of "_boundary_intensity_mean" and
+    # "_interior_intensity_mean", which have their own sentences.
+    for suffix in sorted(_CHANNEL_STAT_DESCRIPTIONS, key=len, reverse=True):
         if feat_name.endswith(suffix):
-            return desc
+            return _CHANNEL_STAT_DESCRIPTIONS[suffix]
     return ""
 
 
@@ -2671,6 +2692,8 @@ class AnalysisControlsWidget(QWidget):
             "label", "is_border_cell", "qc_tier",
             "label_status", "feature_state", "patch_name",
             "stack_name", "euler_category", "cluster_id",
+            # a label number of the other run, never a feature
+            "match_id",
         }
         numeric_cols = [
             c for c in df.select_dtypes(include="number").columns

@@ -105,7 +105,13 @@ def _bind_real_methods(harness):
         # helpers it delegates to.
         "_save_curation_prepare",
         "_on_save_curation_finished",
+        # 2026-10-31 (cross-run pairing): the tiers save records when the
+        # match values predate an edit.  Never raises on a fake.
+        "_record_match_predate",
         "_maybe_lift_for_save",  # D2 helper used by save sites
+        # a half-size save marks rows whose cell left the mask deleted
+        "_reconcile_rows_with_layer",
+        "_halfsize_gone_ids",
         # 2026-05-17 fix: save_curation / save_tiers now call this
         # to refresh the save button based on both dirty flags.
         "_refresh_save_button_state",

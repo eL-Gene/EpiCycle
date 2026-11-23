@@ -192,12 +192,20 @@ class FakeAnnotator:
         self.ui_calls = []
         self.synced = []
         self.removed = []
+        self._interp_snapshot = None
+        self._frag_undo_layers = []
         self.selected = []
         self.next_id = 100
         self.subviewer_refreshes = 0
         self.split_cb_calls = []
         self.reshape_cb_calls = []
         self.isolation_calls = []
+
+    def _restore_frag_layers(self, shared):
+        from napari_epicycle.annotator.curation_3d_widget import (
+            Curation3DAnnotator as _K2,
+        )
+        return _K2._restore_frag_layers(self, shared)
 
     # --- the seams the real methods call ------------------------------- #
     def _get_advanced_features_widget(self):
@@ -249,7 +257,7 @@ class FakeAnnotator:
     def _set_selected_label_all(self, label_id):
         self.selected.append(label_id)
 
-    def _on_isolation_changed(self, ids):
+    def _on_isolation_changed(self, ids, **k):
         self.isolation_calls.append(set(ids))
 
     def _is_auto_advance_enabled(self):

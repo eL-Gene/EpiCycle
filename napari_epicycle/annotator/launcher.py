@@ -29,6 +29,52 @@ def _qt_main_window(viewer):
     return getattr(window, "_qt_window", None)
 
 
+def _screen_of(widget):
+    """The screen ``widget`` is on (the primary screen when it has none)."""
+    from qtpy.QtWidgets import QApplication
+
+    screen = None
+    if widget is not None:
+        try:
+            screen = widget.screen()
+        except Exception:
+            screen = None
+    return screen if screen is not None else QApplication.primaryScreen()
+
+
+def _floating_dock_origin(win, avail, size) -> tuple:
+    """``(x, y)`` for a floating dock of ``size`` ``(w, h)``: the top-right
+    corner of the main window ``win`` ``(x, y, w, h)``, moved into
+    ``avail`` (the available area of that window's screen).  When the dock
+    is bigger than the screen its top-left corner -- the title bar -- is
+    the part kept on screen."""
+    wx, wy, ww, _wh = (int(v) for v in win)
+    ax, ay, aw, ah = (int(v) for v in avail)
+    w, h = (int(v) for v in size)
+    x = max(ax, min(wx + ww - w, ax + aw - w))
+    y = max(ay, min(wy, ay + ah - h))
+    return x, y
+
+
+def _place_floating_dock(dock, main, screen) -> None:
+    """Move the floating ``dock`` inside ``screen`` (see
+    ``_floating_dock_origin``).  Never raises."""
+    try:
+        if screen is None:
+            return
+        a = screen.availableGeometry()
+        avail = (a.x(), a.y(), a.width(), a.height())
+        if main is not None:
+            g = main.frameGeometry()
+            win = (g.x(), g.y(), g.width(), g.height())
+        else:
+            win = avail
+        dock.move(*_floating_dock_origin(win, avail,
+                                         (dock.width(), dock.height())))
+    except Exception:
+        pass
+
+
 def _qobj_deleted(obj) -> bool:
     """True when ``obj`` is a Qt object whose C++ side is gone.
 
@@ -190,6 +236,17 @@ def _find_all_docks_by_title(viewer, title: str):
     return results
 
 
+def _name_close_failure(widget, method: str, exc) -> None:
+    """Print which close step raised; printing itself can never raise."""
+    try:
+        import traceback as _tb
+        frames = _tb.extract_tb(getattr(exc, "__traceback__", None))
+        where = f" at {frames[-1].name}:{frames[-1].lineno}" if frames else ""
+        print(f"[CLOSE-CLEANUP] {type(widget).__name__}.{method} raised{where}: {exc!r}")
+    except Exception:
+        pass
+
+
 def _run_widget_cleanup(widget) -> None:
     """Run close cleanup methods on an annotator widget.
 
@@ -206,6 +263,10 @@ def _run_widget_cleanup(widget) -> None:
     taskbar using the QApplication name ("magicgui") because they have no
     windowTitle.  We must hide ALL child widgets before napari can orphan them,
     and then schedule them for deletion to prevent accumulation.
+
+    A close exception that used to be swallowed is now named on the console,
+    and the widget's own leftover layer-list hooks are dropped, so a
+    half-closed annotator cannot stay alive through its callbacks.
     """
     if widget is None:
         return
@@ -217,13 +278,23 @@ def _run_widget_cleanup(widget) -> None:
     if hasattr(widget, "_close_cleanup"):
         try:
             widget._close_cleanup()
-        except Exception:
-            pass
+        except Exception as exc:
+            _name_close_failure(widget, "_close_cleanup", exc)
     if hasattr(widget, "_close_subviewers"):
         try:
             widget._close_subviewers()
-        except Exception:
-            pass
+        except Exception as exc:
+            _name_close_failure(widget, "_close_subviewers", exc)
+    try:
+        from napari_epicycle.annotator.native_multiview_widget import (
+            drop_own_layer_hooks,
+        )
+
+        n = drop_own_layer_hooks(widget)
+        if n > 0:
+            print(f"[HOOK-DROP] {type(widget).__name__} teardown dropped {n} layer-list hook(s) left on the ledger")
+    except Exception:
+        pass
     # Child widget orphan prevention is handled by the setParent(None)
     # override on NativeMultiviewAnnotator — it hides + deleteLater() all
     # children at the exact moment napari unparents the widget.
@@ -327,6 +398,99 @@ def _install_dock_close_hook_if_alive(dock, inner_widget) -> None:
         print(f"[LAUNCH] deferred close-hook skipped: {exc}")
 
 
+def _gl_contexts_shared() -> bool:
+    """True when Qt shares one OpenGL context across every top-level window."""
+    try:
+        from qtpy.QtCore import QCoreApplication, Qt
+        from qtpy.QtGui import QOpenGLContext
+
+        app = QCoreApplication.instance()
+        if app is None:
+            return False
+        try:
+            attr = Qt.ApplicationAttribute.AA_ShareOpenGLContexts
+        except AttributeError:
+            attr = Qt.AA_ShareOpenGLContexts
+        if not bool(app.testAttribute(attr)):
+            return False
+        # The flag alone is not enough: an application that existed before
+        # the flag was set never creates the shared context.
+        return QOpenGLContext.globalShareContext() is not None
+    except Exception:
+        return False
+
+
+_FLOAT_HINT = (
+    "[DOCK-FLOAT] floating disabled: GL contexts are not shared. "
+    "Run: conda env config vars set -n <env> (or -p <prefix>) VISPY_PYQT5_SHARE_CONTEXT=true  "
+    "then re-activate the env and restart napari"
+)
+
+
+def _configure_dock_floating(dock, inner_widget) -> None:
+    """Allow floating the annotator dock only where it can draw.
+
+    A floated dock moves its three vispy canvases into a new top-level window.
+    Unless Qt shares one GL context between windows, every draw there fails
+    and the views go black.  So without shared contexts the dock is made
+    neither floatable nor movable (a title-bar drag also unplugs it), and its
+    ``setFloating`` is replaced on the instance, because napari's title-bar
+    float button calls it directly and any reparent, even for one event-loop
+    tick, logs draw errors and leaves the annotator behind other tabs.  With
+    shared contexts floating is allowed and a re-docked annotator is raised
+    above its sibling tabs.  Safe to call repeatedly: configured once per
+    (dock, widget) pair.
+    """
+    if dock is None or inner_widget is None:
+        return
+    key = id(dock)
+    if getattr(inner_widget, "_epicycle_dock_float_configured", None) == key:
+        return
+    try:
+        shared = _gl_contexts_shared()
+        print(f"[DOCK-FLOAT] AA_ShareOpenGLContexts={shared}")
+        hint_state = {"printed": False}
+
+        if not shared:
+            from qtpy.QtWidgets import QDockWidget
+
+            feats = QDockWidget.DockWidgetFeature
+            dock.setFeatures(
+                dock.features()
+                & ~feats.DockWidgetFloatable
+                & ~feats.DockWidgetMovable
+            )
+
+            def _blocked_set_floating(floating):
+                if floating:
+                    if not hint_state["printed"]:
+                        hint_state["printed"] = True
+                        print(_FLOAT_HINT)
+                    return
+                QDockWidget.setFloating(dock, floating)
+
+            dock.setFloating = _blocked_set_floating
+            inner_widget._epicycle_dock_blocked_set_floating = _blocked_set_floating
+
+        def _on_top_level_changed(floating):
+            # Safety net for any other path that floats the dock.
+            if floating:
+                if shared:
+                    print("[DOCK-FLOAT] floating (shared GL contexts)")
+                return
+            try:
+                dock.raise_()
+            except Exception:
+                pass
+
+        dock.topLevelChanged.connect(_on_top_level_changed)
+        # Keep a strong ref on the widget so the slot cannot be collected.
+        inner_widget._epicycle_dock_float_cb = _on_top_level_changed
+        inner_widget._epicycle_dock_float_configured = key
+    except Exception as exc:
+        print(f"[DOCK-FLOAT] not configured: {exc}")
+
+
 def _install_dock_close_hook(dock, inner_widget) -> None:
     """Install close-event hook so cleanup runs when dock is closed.
 
@@ -335,6 +499,7 @@ def _install_dock_close_hook(dock, inner_widget) -> None:
     """
     if dock is None or inner_widget is None:
         return
+    _configure_dock_floating(dock, inner_widget)
     if getattr(inner_widget, "_dock_close_hook_installed", False):
         return
 
@@ -660,6 +825,12 @@ def _destroy_satellite_docks(viewer) -> None:
         for dock in _find_all_docks_by_title(viewer, name):
             try:
                 inner = dock.widget() if hasattr(dock, "widget") else None
+                # the panel's pyqtgraph plots go on their own first, at the
+                # annotator's close or relaunch (NOT napari's own close: a
+                # deletion posted inside napari's close is never delivered;
+                # see release_plots)
+                if inner is not None and hasattr(inner, "release_plots"):
+                    inner.release_plots()
                 if inner is not None:
                     inner.close()
             except Exception:
@@ -1065,6 +1236,8 @@ def launch_hitl_2d_annotator(
         )
         _tabify_native_with_epicycle(viewer, dock, dock_name, retries=6)
         if dock is not None:
+            # Floating is configured at once; only the close hook is deferred.
+            _configure_dock_floating(dock, widget)
             # Defer close hook installation so the visibility debounce
             # doesn't fire during napari's initial tabification layout.
             # The 3D annotator survives this implicitly (its __init__ is
@@ -1098,6 +1271,7 @@ def launch_3d_curation_annotator(
     on_label_merged=None,
     on_recalculate=None,
     on_new_label_painted=None,
+    on_paint_stroke=None,
     on_batch_refined=None,
     on_batch_refine_lock=None,
     on_add_mode_lock=None,
@@ -1105,7 +1279,7 @@ def launch_3d_curation_annotator(
     on_add_undo_session=None,
     on_save_batch_recipe=None,
     get_saved_batch_recipes=None,
-    # Reshape R1.  This launcher enumerates every triage
+    # The guided-Split callbacks.  This launcher enumerates every triage
     # callback by name rather than forwarding **kwargs, so a new one
     # cannot reach the widget without three lines here.  De-novo Add
     # needed the same three lines for the same reason.
@@ -1124,6 +1298,10 @@ def launch_3d_curation_annotator(
     # the highest df id over ALL rows (ghosts
     # included), so new Add ids skip the ids of deleted objects.
     get_label_id_floor=None,
+    # Clear objects (Add): the confirm's "marked Good" count of a list of
+    # ids, and the numbers of the Clears still on the curation undo stack.
+    get_kept_tier_count=None,
+    get_live_add_clears=None,
     patch_ids=None,
     active_patch_id="",
     switch_patch_callback=None,
@@ -1206,6 +1384,7 @@ def launch_3d_curation_annotator(
                 on_label_smoothed=on_label_smoothed,
                 on_recalculate=on_recalculate,
                 on_new_label_painted=on_new_label_painted,
+                on_paint_stroke=on_paint_stroke,
                 on_batch_refined=on_batch_refined,
                 on_batch_refine_lock=on_batch_refine_lock,
                 on_add_mode_lock=on_add_mode_lock,
@@ -1222,6 +1401,8 @@ def launch_3d_curation_annotator(
                 on_delete_refine_recipe=on_delete_refine_recipe,
                 get_plot_selection=get_plot_selection,
                 get_label_id_floor=get_label_id_floor,
+                get_kept_tier_count=get_kept_tier_count,
+                get_live_add_clears=get_live_add_clears,
             )
         if prob_volume_path and hasattr(target_widget, "set_prob_volume_path"):
             target_widget.set_prob_volume_path(prob_volume_path)
@@ -1332,7 +1513,9 @@ def _setup_standalone_auto_load(viewer, widget) -> None:
         QTimer.singleShot(200, _try_auto_load)
 
     QTimer.singleShot(150, _try_auto_load)
-    viewer.layers.events.inserted.connect(_on_layer_inserted)
+    from napari_epicycle.annotator.native_multiview_widget import register_layer_hook
+
+    register_layer_hook(widget, viewer.layers.events.inserted, _on_layer_inserted)
     # Store reference on the widget so _disconnect_viewer_events can
     # disconnect it on close, preventing handler accumulation.
     widget._standalone_layer_inserted_cb = _on_layer_inserted
@@ -1698,6 +1881,39 @@ _ADVANCED_DOCK_NAMES = {
 }
 
 
+def _install_hide_on_close(dock) -> None:
+    """Make napari's title-bar X on ``dock`` only HIDE it.
+
+    napari's X calls ``dock.destroyOnClose()``, which removes the dock from
+    the window and unparents the panel; no EpiCycle code runs on that path,
+    so an open Add / Reshape / Refine edit was stranded with its lock held
+    and no Accept / Cancel left on screen.  The method is replaced on this
+    one dock (the X button looks it up on the dock each time it is clicked,
+    so a title bar napari rebuilds on float / re-dock finds it too).  The
+    hidden panel keeps its state; "Advanced Features..." shows it again
+    (the reuse path of ``launch_advanced_features_dock``), and the annotator's
+    close still removes it (``_destroy_satellite_docks``).  Idempotent.
+    """
+    if dock is None or getattr(dock, "_epicycle_hide_on_close", None) is not None:
+        return
+
+    def _hide_on_close():
+        # hide first: the diagnostic may not stop the hide (a print can raise
+        # on a console that cannot encode it)
+        try:
+            dock.hide()
+        except Exception:
+            return
+        print("[ADV-DOCK] X pressed - the dock is hidden, its panel and any "
+              "open edit stay")
+
+    try:
+        dock.destroyOnClose = _hide_on_close
+        dock._epicycle_hide_on_close = _hide_on_close
+    except Exception as exc:
+        print(f"[ADV-DOCK] hide-on-close not installed: {exc!r}")
+
+
 def launch_advanced_features_dock(
     viewer,
     *,
@@ -1752,6 +1968,8 @@ def launch_advanced_features_dock(
                 widget.set_split_callbacks(**split_callbacks)
             if smooth_callbacks and hasattr(widget, "set_smooth_callbacks"):
                 widget.set_smooth_callbacks(**smooth_callbacks)
+            if mode == "3d_curation":
+                _install_hide_on_close(dock)
             if hasattr(dock, "show"):
                 dock.show()
             if hasattr(dock, "raise_"):
@@ -1776,10 +1994,40 @@ def launch_advanced_features_dock(
             or _resolve_existing_dock(viewer, dock_name)
         )
         if dock is not None:
+            # Only the 3D curation dock: the annotator's close removes it
+            # (``_destroy_satellite_docks``).  The standalone 2D annotator
+            # never tears its Advanced dock down, so a hidden one would
+            # outlive it; that dock keeps napari's own X.
+            if mode == "3d_curation":
+                _install_hide_on_close(dock)
             # Launch as a floating window so it doesn't crowd the main layout.
             try:
                 dock.setFloating(True)
-                dock.resize(340, 350)
+                # Open tall enough to show the panel without dragging: size
+                # from the widget's own hint (plus the dock title bar), never
+                # below the old 340 x 350, and never taller than 85 % of the
+                # available area of the main window's screen.
+                hint = widget.sizeHint()
+                width = max(340, hint.width())
+                height = max(350, hint.height() + 40)
+                main = _qt_main_window(viewer)
+                screen = None
+                try:
+                    screen = _screen_of(main)
+                    if screen is not None:
+                        height = min(
+                            height,
+                            int(screen.availableGeometry().height() * 0.85),
+                        )
+                except Exception:
+                    pass
+                dock.resize(width, height)
+                # A floating dock Qt leaves where it likes can open above
+                # every screen (two monitors stacked, nothing above y = 0),
+                # its title bar out of the mouse's reach: put it at the main
+                # window's top-right corner, inside that screen.  Only here,
+                # on the first float; a dock shown again keeps its place.
+                _place_floating_dock(dock, main, screen)
             except Exception:
                 pass
             if hasattr(dock, "show"):
@@ -1918,7 +2166,12 @@ def launch_curation_label_navigator(
             # the previous session before pushing new items.
             if hasattr(widget, "reset_selection_ui"):
                 try:
-                    widget.reset_selection_ui()
+                    # A relaunch inside a patch switch keeps the user's
+                    # Isolate box as it was.
+                    if getattr(annotator_widget, "_keep_navigator_isolate", False):
+                        widget.reset_selection_ui(keep_isolate=True)
+                    else:
+                        widget.reset_selection_ui()
                 except Exception:
                     pass
 

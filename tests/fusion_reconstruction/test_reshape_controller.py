@@ -255,11 +255,11 @@ def test_reshape_lock_callback_never_raises_when_refresh_raises(capsys):
 
 _CONTEXT_KEYS = {
     "workspace", "patch_name", "run_id", "run_epoch",
-    "downsample_factor", "spacing",
+    "downsample_factor", "spacing", "spacing_source",
 }
 
 
-def test_reshape_context_returns_all_six_keys(tmp_path):
+def test_reshape_context_returns_all_seven_keys(tmp_path):
     c = _make_commit_controller(tmp_path, ds_factor=2)
     ctx = c._on_annotator_reshape_context()
     assert set(ctx) == _CONTEXT_KEYS
@@ -268,8 +268,10 @@ def test_reshape_context_returns_all_six_keys(tmp_path):
     assert ctx["run_id"] is None  # default (flat) run
     assert ctx["run_epoch"] == 3
     assert ctx["downsample_factor"] == 2
-    # spacing is None in _qc_settings -> falls back to spacing_values.
-    assert ctx["spacing"] == (2.0, 0.5, 0.5)
+    # spacing is None in _qc_settings -> falls back to spacing_values,
+    # (2.0, 0.5, 0.5); the arrays were loaded at factor 2, so the context
+    # reports the voxel the annotator actually holds.
+    assert ctx["spacing"] == (4.0, 1.0, 1.0)
 
 
 def test_reshape_context_prefers_explicit_spacing(tmp_path):
@@ -297,6 +299,91 @@ def test_reshape_context_survives_garbage_spacing(tmp_path):
     c._qc_settings["spacing"] = "not a tuple"
     c._qc_settings["spacing_values"] = None
     assert c._on_annotator_reshape_context()["spacing"] == (1.0, 1.0, 1.0)
+
+
+def test_a_one_micron_voxel_accepted_in_qc_settings_is_known(tmp_path):
+    """Only the never-set fallback is "unknown": a 1 / 1 / 1 the user
+    entered in QC Settings' spacing boxes is a real 1.0 um voxel (the dialog
+    stores it as spacing=None, like the factory default -- the controller's
+    mark is the only record)."""
+    c = _make_commit_controller(tmp_path)
+    c._qc_settings = {"spacing": None, "spacing_values": (1.0, 1.0, 1.0)}
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing_source"] == "unknown"          # never set
+    assert ctx["spacing"] == (1.0, 1.0, 1.0)
+    c._qc_spacing_entered = True                         # Settings... -> OK
+    ctx = c._on_annotator_reshape_context()
+    assert ctx["spacing_source"] == "qc_settings"
+    assert ctx["spacing"] == (1.0, 1.0, 1.0)
+    # at half size the entered voxel is doubled like any known spacing
+    half = _make_commit_controller(tmp_path, ds_factor=2)
+    half._qc_settings = {"spacing": None, "spacing_values": (1.0, 1.0, 1.0)}
+    half._qc_spacing_entered = True
+    ctx = half._on_annotator_reshape_context()
+    assert ctx["spacing_source"] == "qc_settings"
+    assert ctx["spacing"] == (2.0, 2.0, 2.0)
+    half._qc_spacing_entered = False
+    ctx = half._on_annotator_reshape_context()
+    assert ctx["spacing_source"] == "unknown"
+    assert ctx["spacing"] == (1.0, 1.0, 1.0)
+
+
+def test_the_qc_settings_accept_marks_the_spacing_entered(monkeypatch,
+                                                         tmp_path):
+    import types
+
+    from napari_epicycle.fusion_reconstruction import qc_extraction_dialog
+
+    class _Dlg:
+        Accepted = 1
+
+        def __init__(self, *a, **k):
+            self.spacing_auto_btn = types.SimpleNamespace(
+                clicked=types.SimpleNamespace(connect=lambda *_a: None))
+
+        def exec_(self):
+            return 1
+
+        def get_settings(self):
+            # what the dialog returns for 1 / 1 / 1
+            return {"spacing": None, "spacing_values": (1.0, 1.0, 1.0),
+                    "erosion_iters": 1, "max_radius": 2,
+                    "composite_method": "zscore", "pca_features": []}
+
+        def get_match_run(self):
+            return None
+
+    monkeypatch.setattr(qc_extraction_dialog, "QCExtractionDialog", _Dlg)
+    K = FusionReconstructionController
+    c = object.__new__(K)
+    c.ui = types.SimpleNamespace()
+    c.viewer = None
+    c._qc_features_df = None
+    c._qc_settings = {"spacing": None, "spacing_values": (1.0, 1.0, 1.0)}
+    c._qc_view_patch_name = "p01.tif"
+    c.working_dir = str(tmp_path)
+    c._current_downsample_factor = lambda *_a, **_k: 1
+    c._append_log = lambda *_a: None
+    c._detect_available_channels = lambda: []
+    c._qc_channel_roles = lambda *_a: {}
+    c._match_picker_state = lambda *_a: ([], None, False)
+    c._extract_spacing_lines = lambda: []
+    c._notify_spacing_changed = lambda: None
+    c._check_qc_extraction_staleness = lambda: None
+    c._maybe_show_qc_staleness_notification = lambda: None
+    assert not getattr(c, "_qc_spacing_entered", False)
+    # an OK that left the spacing boxes at 1 / 1 / 1 is not a voxel size
+    # (the dialog also picks features and the pairing run)
+    K._open_qc_settings(c)
+    assert c._qc_spacing_entered is False
+    assert c._on_annotator_reshape_context()["spacing_source"] == "unknown"
+    # the boxes typed from 0.5 / 0.2 / 0.2 to 1 / 1 / 1: an entered 1.0 um
+    c._qc_settings = {"spacing": (0.5, 0.2, 0.2),
+                      "spacing_values": (0.5, 0.2, 0.2)}
+    K._open_qc_settings(c)
+    assert c._qc_spacing_entered is True
+    assert c._on_annotator_reshape_context()["spacing_source"] == (
+        "qc_settings")
 
 
 # ---------------------------------------------------------------------------

@@ -402,41 +402,81 @@ from ..ui_shell._model_files import (  # noqa: E402,F401
 )
 
 
-def trained_channel_indices(codes: Optional[list]):
-    """Cellpose codes -> ``(membrane_index, nuclei_index_or_None)``.
-
-    Code 0 is "gray" / "none"; code k is array channel k - 1."""
+def trained_codes(codes: Optional[list]):
+    """A model's recorded Cellpose codes as ``(segment, helper)`` ints, or
+    ``None`` when they are unknown or unreadable.  The two channel boxes
+    hold these codes directly (an item's index is its code)."""
     if not codes:
         return None
-    c1, c2 = int(codes[0]), int(codes[1])
-    mem = c1 - 1 if c1 > 0 else 0
-    nuc = c2 - 1 if c2 > 0 else None
-    return mem, nuc
+    try:
+        return int(codes[0]), int(codes[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
 
 
-def trained_channels_text(codes: Optional[list]) -> str:
-    """``SEG_MODEL_TRAINED_ON`` filled, or ``SEG_MODEL_TRAINED_UNKNOWN``."""
+def channel_item(code: int, names: Optional[list] = None,
+                 helper: bool = False) -> str:
+    """The item a channel box shows for Cellpose *code*.
+
+    Code 0 is "0: gray" in the first box and "0: none" in the second.
+    Code k is the stack's channel k - 1: "{k}: {its layer name}" when the
+    shown stack names it (*names*, by array position), else Step 3's own
+    item for the code ("1: red", "2: green", "3: blue"), else
+    "{k}: ch{k - 1}" past the third channel.  So Steps 3 and 4 say one code
+    the same way when no stack is shown."""
     from . import _step4_text as T
-    idx = trained_channel_indices(codes)
-    if idx is None:
+    code = int(code)
+    if code <= 0:
+        return T.SEG_CHANNEL_NONE if helper else T.SEG_CHANNEL_GRAY
+    names = list(names or [])
+    name = names[code - 1] if code - 1 < len(names) else None
+    if name:
+        return T.SEG_CHANNEL_ITEM.format(code=code, name=name)
+    words = T.SEG_CODE_ITEMS_HELPER if helper else T.SEG_CODE_ITEMS_SEGMENT
+    if code < len(words):
+        return words[code]
+    return T.SEG_CHANNEL_ITEM.format(
+        code=code, name=T.SEG_CHANNEL_NAME.format(i=code - 1))
+
+
+def trained_channels_text(codes: Optional[list],
+                          names: Optional[list] = None) -> str:
+    """``SEG_MODEL_TRAINED_ON`` filled, or ``SEG_MODEL_TRAINED_UNKNOWN``.
+
+    Each channel is named by the item the channel box shows for its code
+    (``channel_item``: the shown stack's layer name from *names*, else
+    Step 3's word for the code), after its role: "segment 2: green, helper
+    1: red", Step 3's card's words.  So the card and the box name one
+    channel one way.  A first code 0 means Cellpose averaged every channel
+    and ignored the helper: ``SEG_MODEL_TRAINED_GRAY``, no channel named."""
+    from . import _step4_text as T
+    pair = trained_codes(codes)
+    if pair is None:
         return T.SEG_MODEL_TRAINED_UNKNOWN
-    mem, nuc = idx
-    parts = [T.SEG_MODEL_CHANNEL.format(name=T.SEG_MODEL_ROLE_MEMBRANE,
-                                        index=mem)]
-    if nuc is not None:
+    c1, c2 = pair
+    if c1 == 0:
+        return T.SEG_MODEL_TRAINED_GRAY
+    parts = [T.SEG_MODEL_CHANNEL.format(role=T.SEG_MODEL_ROLE_MEMBRANE,
+                                        item=channel_item(c1, names))]
+    if c2 > 0:
         parts.append(T.SEG_MODEL_CHANNEL.format(
-            name=T.SEG_MODEL_ROLE_NUCLEI, index=nuc))
-    return T.SEG_MODEL_TRAINED_ON.format(n=len(parts), names=", ".join(parts))
+            role=T.SEG_MODEL_ROLE_NUCLEI,
+            item=channel_item(c2, names, helper=True)))
+    return T.SEG_MODEL_TRAINED_ON.format(names=", ".join(parts))
 
 
 def channels_needed(codes: Optional[list]) -> Optional[int]:
-    """How many channels a stack needs for this model (the highest trained
-    index + 1), or ``None`` when the model's channels are unknown."""
-    idx = trained_channel_indices(codes)
-    if idx is None:
+    """How many channels a stack needs for these Cellpose codes: the
+    highest code (code k is the stack's channel k - 1), or 1 for gray,
+    which averages every channel and ignores the helper; ``None`` when the
+    codes are unknown.  One rule for a model's trained codes and for the
+    two boxes' picks."""
+    pair = trained_codes(codes)
+    if pair is None:
         return None
-    mem, nuc = idx
-    return max(mem, nuc if nuc is not None else 0) + 1
+    if pair[0] == 0:
+        return 1
+    return max(pair[0], pair[1], 1)
 
 
 def step4_model_rows(entries) -> list:

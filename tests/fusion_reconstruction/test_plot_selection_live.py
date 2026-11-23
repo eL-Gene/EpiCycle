@@ -164,7 +164,20 @@ class TestGetPlotSelection:
 
         pw = _Plot(_df())
         pw._selected_indices = {0}
-        assert _ctl(pw=pw, plot_patch="p2")._get_plot_selection() ==             PLOT_OTHER_PATCH
+        # the annotator shows p1 while the table the plot was drawn from
+        # belongs to p2
+        ctl = _ctl(pw=pw, plot_patch="p1")
+        ctl._qc_table_patch = "p2"
+        assert ctl._get_plot_selection() == PLOT_OTHER_PATCH
+
+    def test_the_session_highlight_does_not_make_it_another_patch(self):
+        """The annotator owns p1 and the plot is p1's; Session highlighting
+        p2 must not turn the plot's selection into 'another patch'."""
+        pw = _Plot(_df())
+        pw._selected_indices = {0}
+        ctl = _ctl(pw=pw, patch="", plot_patch="p1")
+        ctl._selected_patch_name = lambda: "p2"
+        assert ctl._get_plot_selection() == [11]
 
     def test_no_features_means_no_plot(self):
         assert _ctl(pw=_Plot(_df()), df=False)._get_plot_selection() is None
@@ -180,6 +193,22 @@ class TestGetPlotSelection:
 
         pw.selected_label_ids = boom
         assert _ctl(pw=pw)._get_plot_selection() == []
+
+
+class TestSelectionNamesTheTablesPatch:
+    def test_a_lasso_names_the_patch_the_table_shows(self):
+        pw = _Plot(_df())
+        pw._selected_indices = {0}
+        ctl = _ctl(pw=pw, patch="", plot_patch="p1")
+        ctl._selected_patch_name = lambda: "p2"       # Session highlight
+        ctl._on_qc_plot_label_selected([11])
+        assert ctl.dispatched[-1].patch_key == "p1"
+
+    def test_a_clear_names_the_patch_the_table_shows(self):
+        ctl = _ctl(pw=_Plot(_df()), patch="", plot_patch="p1")
+        ctl._selected_patch_name = lambda: "p2"
+        ctl._on_qc_plot_label_selected([])
+        assert ctl.dispatched[-1].patch_key == "p1"
 
 
 class TestNotify:

@@ -135,14 +135,22 @@ SPLIT_PARAMS_BRICK2B_EXCEPTIONS = {
     "refine_merge_small": True,
 }
 
+#: The one key the isolation bracket adds: how many new pieces stay isolated
+#: after Accept (read at Accept time, not saved between sessions).
+SPLIT_PARAMS_BRICK3_ADDITIONS = {
+    "pieces_cap": 10,
+}
+
 SPLIT_PARAMS_GOLDEN = dict(SPLIT_PARAMS_PRE_BRICK2A)
 SPLIT_PARAMS_GOLDEN.update(SPLIT_PARAMS_BRICK2A_ADDITIONS)
 SPLIT_PARAMS_GOLDEN.update(SPLIT_PARAMS_BRICK2B_ADDITIONS)
+SPLIT_PARAMS_GOLDEN.update(SPLIT_PARAMS_BRICK3_ADDITIONS)
 SPLIT_PARAMS_GOLDEN.update(SPLIT_PARAMS_BRICK2B_EXCEPTIONS)
 
 #: Every key added after the pre-2a freeze, in one set.
 SPLIT_PARAMS_ADDITIONS = dict(SPLIT_PARAMS_BRICK2A_ADDITIONS)
 SPLIT_PARAMS_ADDITIONS.update(SPLIT_PARAMS_BRICK2B_ADDITIONS)
+SPLIT_PARAMS_ADDITIONS.update(SPLIT_PARAMS_BRICK3_ADDITIONS)
 
 ADD_PARAMS_GOLDEN = {
     "channel": "",
@@ -159,7 +167,7 @@ ADD_PARAMS_GOLDEN = {
     # on) and "marker" (the Boundary stub) are GONE; the rebuild's keys,
     # at their defaults, joined.
     "preset": "nuclei",
-    "click_radius_um": 2.0,
+    "click_radius_um": 1.0,
     "core_erode_um": 1.0,
     "dark_clearance_um": 2.0,
     "dark_otsu_factor": 0.5,
@@ -286,6 +294,7 @@ class TestSplitParamsGolden:
             ("split_walls_from_combo", "index", 8, "walls_from", 8),
             ("split_seed_detector_combo", "index", 5, "seed_detector", 5),
             ("split_search_padding_sb", "value", 7, "search_padding", 7),
+            ("split_pieces_cap_sb", "value", 4, "pieces_cap", 4),
             ("split_seed_prep_clahe_cb", "check", False,
              "seed_preproc", "none"),
             ("split_wall_prep_denoise_cb", "check", True,

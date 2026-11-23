@@ -245,3 +245,52 @@ def test_search_enter_clearselection_blocks_signals():
     i_clear = src.index("clearSelection()")
     i_off = src.index("blockSignals(False)")
     assert i_on < i_clear < i_off
+
+
+# ---------------------------------------------------------------------------
+# the Isolate box survives a patch switch
+# ---------------------------------------------------------------------------
+
+
+class _Box:
+    def __init__(self, checked):
+        self.checked = checked
+
+    def blockSignals(self, b):
+        pass
+
+    def setChecked(self, v):
+        self.checked = bool(v)
+
+
+def test_reset_selection_ui_keep_isolate_leaves_box_ticked():
+    nav = _bare_nav()
+    _wire_reset_fakes(nav)
+    nav._isolate_cb = _Box(True)
+    nav.reset_selection_ui(keep_isolate=True)
+    assert nav._isolate_cb.checked is True
+
+
+def test_reset_selection_ui_default_unticks_box():
+    nav = _bare_nav()
+    _wire_reset_fakes(nav)
+    nav._isolate_cb = _Box(True)
+    nav.reset_selection_ui()
+    assert nav._isolate_cb.checked is False
+
+
+def test_only_the_patch_switch_keeps_the_isolate_box():
+    from napari_epicycle.fusion_reconstruction.controller import (
+        FusionReconstructionController as K,
+    )
+
+    switch = inspect.getsource(K._switch_to_curation_patch)
+    assert "_keep_navigator_isolate_on_clear = True" in switch
+    assert "_keep_navigator_isolate_on_clear = False" in switch
+    close = inspect.getsource(K._hard_clear_curation_surfaces)
+    assert "reset_selection_ui(keep_isolate=keep_isolate)" in close
+    assert "_keep_navigator_isolate_on_clear" in close
+    for name in ("_reset_active_patch", "_switch_active_run"):
+        fn = getattr(K, name, None)
+        if fn is not None:
+            assert "keep_isolate=True" not in inspect.getsource(fn)

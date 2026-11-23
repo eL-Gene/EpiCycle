@@ -150,7 +150,11 @@ class TestReviewPieceSizes:
     def test_accept_records_piece_sizes(self):
         src = inspect.getsource(_ann()._accept_add)
         assert "size_map" in src, "_accept_add must compute per-piece sizes"
-        assert "piece_sizes=all_sizes" in src, "_accept_add must forward piece_sizes"
+        # the REVIEW push (shared with Close box after "+ Add another")
+        assert "self._add_push_review()" in src
+        push = inspect.getsource(_ann()._add_push_review)
+        assert "piece_sizes=all_sizes" in push, (
+            "the REVIEW push must forward piece_sizes")
         # Sizes come from the ROI-sized committed mask (bounded, no full scan).
         assert "result[write_mask]" in src
 
@@ -324,8 +328,10 @@ class TestCandidateOverlaySync:
         assert wiring
         h = inspect.getsource(_ann()._sync_add_candidate_overlay)
         assert "get_checked_add_pieces" in h
-        assert "np.isin(result, checked)" in h
-        assert "_render_add_candidate" in h
+        # a tick recolours the candidate (unticked objects stay drawn,
+        # faintly); it never masks or redraws the data
+        assert "np.isin" not in h
+        assert "_add_set_candidate_colours" in h
         # Display-only: it must NOT mutate the _add_preview_result source of truth.
         assert "_add_preview_result =" not in h
 
@@ -489,7 +495,8 @@ class TestAuditFixes:
         src = inspect.getsource(_ann()._accept_add)
         assert "_add_session.append" in src
         # REVIEW shows every piece this session, not just this box.
-        assert 'for e in self._add_session for i in e["ids"]' in src
+        push = inspect.getsource(_ann()._add_push_review)
+        assert 'for e in self._add_session for i in e["ids"]' in push
 
     def test_undo_all_delegates_to_controller_undo(self):
         """Undo-all delegates to the global curation undo (reuses each

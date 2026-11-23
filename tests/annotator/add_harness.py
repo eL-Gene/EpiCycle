@@ -32,7 +32,13 @@ _EXTRA = ("_signal_sender", "_result_token", "_refine_channel_source",
           "_layer_by_name", "_on_add_box_changed", "_compute_add_histogram",
           "_on_add_otsu_reset", "_on_add_clahe_toggled",
           "_on_add_threshold_changed", "_on_add_advanced_changed",
-          "_ensure_shared_data_aligned")
+          "_ensure_shared_data_aligned",
+          # the real spacing gate, so the harness reads the context's word
+          # about where the spacing came from the same way the page does
+          "_refine_spacing_known",
+          # the open-edit set that Add Start and the other doors read
+          "staged_kinds", "staged_op_kind", "_sync_refine_state",
+          "_refuse_for_open_edit")
 
 
 class FakeSignal:
@@ -97,7 +103,11 @@ class FakeAdv:
     def __init__(self):
         self.pushes = []
         self.preset = "nuclei"
+        # the trap: the source reads clicks on the Nuclei preset too, so a
+        # gate on the source alone would fire on Nuclei; Look for nuclei is
+        # Anywhere unless a test picks another item
         self.source = ("paint", None)
+        self.look = ("anywhere", None)
         self.wall = {"channel": "mem", "chain": "none",
                      "wall_kind": "membrane"}
         self.nuclei_channel = "nuc"
@@ -126,6 +136,9 @@ class FakeAdv:
 
     def get_add_marker_source(self):
         return self.source
+
+    def get_add_look_for(self):
+        return tuple(self.look)
 
     def get_add_wall_params(self):
         return dict(self.wall)
@@ -165,6 +178,9 @@ class Harness:
     def __init__(self, vol, images=None, spacing=(1.0, 1.0, 1.0)):
         from napari.layers import Image
 
+        from napari_epicycle.annotator.refinement_state import RefinementOpState
+
+        self._refine_state = RefinementOpState()
         self.adv = FakeAdv()
         self.sync_manager = _SM(vol)
         self._active_labels_name = "L"
@@ -173,6 +189,8 @@ class Harness:
         self.ctx = {"patch_name": "P", "run_epoch": 1, "spacing": spacing,
                     "workspace": ""}
         self.rendered = []
+        #: every recolour of the candidate: the ticked ids it was given
+        self.coloured = []
         self.sender = None
         self.locks = []
         self._refine_parked_threads = []
@@ -201,6 +219,9 @@ class Harness:
         self._add_click_markers = []
         self._add_marker_layer = None
         self._add_place_markers_on = False
+        # "Update as I click" is OFF here: every test keeps the manual
+        # Preview flow unless it turns the tick on itself
+        self._add_live_enabled = False
 
     # --- stubs ---------------------------------------------------------- #
     def _get_advanced_features_widget(self):
@@ -212,14 +233,20 @@ class Harness:
     def _refine_spacing(self):
         return tuple(self.ctx["spacing"])
 
-    def _refine_spacing_known(self):
-        return tuple(self.ctx["spacing"]) != (1.0, 1.0, 1.0)
-
     def _signal_sender(self):
         return self.sender
 
-    def _render_add_candidate(self, result, roi=None):
-        self.rendered.append((result, roi))
+    def _render_add_candidate(self, result, roi=None, colours=None,
+                              patches=None):
+        self.rendered.append((result, roi, colours))
+        # the changed places only (the markers on a whole patch), or None:
+        # the whole result
+        if not hasattr(self, "rendered_patches"):
+            self.rendered_patches = []
+        self.rendered_patches.append(patches)
+
+    def _add_set_candidate_colours(self, ticked):
+        self.coloured.append(frozenset(int(i) for i in ticked))
 
     def _remove_add_candidate(self):
         self._add_candidate_layer = None
@@ -242,6 +269,9 @@ class Harness:
         pass
 
     def _restore_ready_to_draw_state(self):
+        pass
+
+    def _clear_draw_snapshot(self):
         pass
 
     def _lock_subviewers_for_preview(self):
@@ -306,6 +336,16 @@ def install_fakes(monkeypatch):
     FakeThread.stuck = False
     monkeypatch.setattr(qtpy.QtCore, "QThread", FakeThread)
     monkeypatch.setattr(RW, "RefineWorker", FakeWorker)
+    # Spread from each marker can run here: the once-per-process solver
+    # check is answered, so no test counts its thread
+    monkeypatch.setitem(CW._ADD_NUMBA, "ok", True)
+    # the colour warm-up never starts here: no test counts its thread
+    monkeypatch.setattr(CW, "_ADD_CMAP_WARM",
+                        {"thread": None, "dtypes": set(),
+                         "safe": (False, "the test harness")})
+    # "Update as I click" off for every harness (each also sets it off in
+    # its constructor; a test that wants it on turns it on)
+    monkeypatch.setattr(Harness, "_add_live_enabled", False, raising=False)
 
 
 def nuclei_volume():

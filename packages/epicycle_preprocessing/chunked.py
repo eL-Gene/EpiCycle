@@ -179,7 +179,7 @@ def block_parallel_apply(
     RAM is ``max_workers × (block+2·halo)ᴺ × op_scratch`` (bounded, file-size
     independent).  Pure — no Qt / napari / I/O.
 
-    * *boundary* — only ``"none"`` is supported (R3): the true-edge read is the
+    * *boundary* — only ``"none"`` is supported: the true-edge read is the
       truncated real array, matching the whole-array call's own border.
     * *max_workers* — block-pool width (``None`` → ``min(cpu, 32)``).  This is
       SEPARATE from ``execute``'s channel ``max_workers`` (channels stay serial;

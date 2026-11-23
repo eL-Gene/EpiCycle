@@ -887,7 +887,6 @@ class _StackQCFeatureWorker(QObject):
         *,
         spacing=None,
         source_stack_path: str = "",
-        seg_channel: int = 0,
         prob_path: str = "",
         channel_configs: Optional[list] = None,
         skip_probability: bool = False,
@@ -913,7 +912,6 @@ class _StackQCFeatureWorker(QObject):
         self._csv_path = csv_path
         self._spacing = spacing
         self._source_stack_path = source_stack_path
-        self._seg_channel = seg_channel
         self._prob_path = prob_path
         self._channel_configs = channel_configs or []
         self._skip_probability = skip_probability
@@ -1000,7 +998,6 @@ class _StackQCFeatureWorker(QObject):
                 # raw_stack is provided for per-channel extraction.
                 if self._channel_configs:
                     inputs["raw_stack"] = raw_stack
-                    inputs["seg_channel"] = self._seg_channel
                     self.log.emit(
                         f"[debug] raw_stack added to inputs for "
                         f"{len(self._channel_configs)} channel(s)"
@@ -1483,7 +1480,7 @@ class SegmentStackController:
     def _sync_step4_nav_lock(self) -> None:
         """Hold the shell's step-nav lock under the ``"step4"`` owner while
         a block flag is set AND Step 4 is the active step; release only the
-        owner Step 4 took (I-8, grill G1-4).  A Workbench map
+        owner Step 4 took.  A Workbench map
         (``_eda_running``) is not a block flag, so it never locks the nav."""
         want = bool(_step4_is_locked(self)
                     and getattr(self, "_step4_active", False))
@@ -1509,7 +1506,7 @@ class SegmentStackController:
         Every signal in *quit_on* quits the thread; the flag is cleared by
         the thread's ``finished`` (the backstop), never only by a result
         handler, so a stale early return or a silent worker can never hold
-        the lock (grill G1-5).  ``attr`` names the controller slot
+        the lock.  ``attr`` names the controller slot
         holding the thread (``_seg`` / ``_qc`` / ``_smooth``).
         """
         from functools import partial
@@ -2707,11 +2704,12 @@ class SegmentStackController:
             ui.axial_model_path.setText(str(snapshot.get("axial") or ""))
         self._trained_codes = self._read_trained(snapshot)
         self._refresh_model_card()
-        idx = S4M.trained_channel_indices(self._trained_codes)
-        if idx is not None and hasattr(ui, "set_channel_choice"):
+        # the boxes hold Cellpose codes: the model's own codes pre-pick them
+        pair = S4M.trained_codes(self._trained_codes)
+        if pair is not None and hasattr(ui, "set_channel_choice"):
             self._refresh_channel_combos()
-            ui.set_channel_choice(ui.chan1_combo, idx[0])
-            ui.set_channel_choice(ui.chan2_combo, idx[1])
+            ui.set_channel_choice(ui.chan1_combo, pair[0])
+            ui.set_channel_choice(ui.chan2_combo, pair[1])
         if save:
             self.state_manager.set_active_model(snapshot)
             self._persist_state()
@@ -2727,9 +2725,13 @@ class SegmentStackController:
         snap = self._active_model
         text, colour = S4M.model_indicator(snap)
         missing = S4M.model_files_missing(snap)
+        codes = getattr(self, "_trained_codes", None)
+        # the shown stack's layer names, so the card names each channel
+        # the way the channel box beside it does
+        need = S4M.channels_needed(codes) or 0
         trained = (S4T.MODEL_MISSING if missing
                    else S4M.trained_channels_text(
-                       getattr(self, "_trained_codes", None)))
+                       codes, self._channel_display_names(need)))
         if hasattr(self.ui, "show_model_card"):
             self.ui.show_model_card(text, colour, trained, missing=missing)
 
@@ -2790,17 +2792,18 @@ class SegmentStackController:
     def _collect_seg_config(self, record=None, px=None) -> SegmentationConfig:
         """SegmentationConfig for one stack.
 
-        Channel dropdowns use 0-based array indices.  Cellpose expects
-        its own convention: 0=gray, 1=first channel, 2=second, 3=third.
-        Convert: array_index → cellpose_code = array_index + 1.
-        Nuclear "none" at combo index 0 maps to Cellpose 0.  The diameter
-        is the stack's cell width in pixels (``px``), or Auto.
+        The two channel boxes count as Cellpose does (0 = gray / none,
+        1 = the first channel, 2 = the second, ...): an item's index IS the
+        code passed, with no conversion.  A blank first box is refused by
+        the Predict gate before this; a direct call reads it as code 1, the
+        first channel, as it always did.  The diameter is the stack's cell
+        width in pixels (``px``), or Auto.
         """
         ui = self.ui
-        chan1_arr = max(ui.chan1_combo.currentIndex(), 0)
-        chan1_cp = chan1_arr + 1  # 0→1, 1→2, 2→3
-        chan2_idx = max(ui.chan2_combo.currentIndex(), 0)
-        chan2_cp = chan2_idx  # 0→0(none), 1→1(ch0), 2→2(ch1), 3→3(ch2)
+        chan1_cp = ui.chan1_combo.currentIndex()
+        if chan1_cp < 0:
+            chan1_cp = 1
+        chan2_cp = max(ui.chan2_combo.currentIndex(), 0)
         return SegmentationConfig(
             channels=[chan1_cp, chan2_cp],
             normalize=ui.normalize_cb.isChecked(),
@@ -2924,7 +2927,8 @@ class SegmentStackController:
         lateral_path, axial_path = self._get_model_paths()
         ticked = set(self._stored_ticked())
         rows = [r for r in self._rows if r["name"] in ticked]
-        need = max(c1, c2 if c2 is not None else 0) + 1
+        # the picks are Cellpose codes: code k needs k channels, gray one
+        need = S4M.channels_needed([c1, c2 or 0])
         run_rows = []
         for r in rows:
             if not r["can_run"]:
@@ -3868,14 +3872,16 @@ class SegmentStackController:
             self._persist_state()
 
     def _apply_step3_channels(self, codes):
-        """The Step 3 preset also fills the channels (its
-        manifest's Cellpose codes); it never touches the model card."""
-        idx = S4M.trained_channel_indices(codes) if codes else None
-        if idx is None or not hasattr(self.ui, "set_channel_choice"):
+        """The Step 3 preset also fills the channels: its manifest's
+        Cellpose codes, which the boxes hold as they are, so Step 4 passes
+        Cellpose the same two codes the Step 3 run did.  It never touches
+        the model card."""
+        pair = S4M.trained_codes(codes)
+        if pair is None or not hasattr(self.ui, "set_channel_choice"):
             return
         self._refresh_channel_combos()
-        self.ui.set_channel_choice(self.ui.chan1_combo, idx[0])
-        self.ui.set_channel_choice(self.ui.chan2_combo, idx[1])
+        self.ui.set_channel_choice(self.ui.chan1_combo, pair[0])
+        self.ui.set_channel_choice(self.ui.chan2_combo, pair[1])
 
     def _connect_setting_edits(self):
         """A hand edit after a preset flips Start from to "Custom"."""
@@ -3917,13 +3923,13 @@ class SegmentStackController:
         c1, c2 = self.ui.chosen_channels()
         if c1 < 0:
             return None
-        return max(c1, c2 if c2 is not None else 0) + 1
+        return S4M.channels_needed([c1, c2 or 0])
 
     def _refresh_channel_combos(self):
-        """Items for 0 .. the largest channel count among the ticked stacks
-        (all listed stacks when none is ticked); names from the loaded or
-        previewed stack's channel layers, roles from the model's trained
-        channels."""
+        """Items for Cellpose codes 0 .. the largest channel count among
+        the ticked stacks (all listed stacks when none is ticked); names
+        from the loaded or previewed stack's channel layers, roles from the
+        model's trained channels."""
         if not hasattr(self.ui, "update_channel_combos"):
             return
         rows = getattr(self, "_rows", []) or []
@@ -3933,16 +3939,23 @@ class SegmentStackController:
         counts = [r["n_channels"] for r in pool if r.get("n_channels")]
         n = max(counts) if counts else 1
         names = self._channel_display_names(n)
+        # roles by Cellpose code, the item's index in both boxes
         roles = {}
-        idx = S4M.trained_channel_indices(getattr(self, "_trained_codes",
-                                                  None))
-        if idx is not None:
-            mem, nuc = idx
-            if mem < n:
-                roles[mem] = S4T.SEG_MODEL_ROLE_MEMBRANE
-            if nuc is not None and nuc < n:
-                roles[nuc] = S4T.SEG_MODEL_ROLE_NUCLEI
+        pair = S4M.trained_codes(getattr(self, "_trained_codes", None))
+        # a gray model (first code 0) was trained on no one channel: no
+        # item says it was
+        if pair is not None and pair[0] != 0:
+            c1, c2 = pair
+            if c1 <= n:
+                roles[c1] = S4T.SEG_MODEL_ROLE_MEMBRANE
+            if 0 < c2 <= n:
+                roles[c2] = S4T.SEG_MODEL_ROLE_NUCLEI
         self.ui.update_channel_combos(n, channel_names=names, roles=roles)
+        # the card names the channels by these items: follow a stack load,
+        # a preview or a layer rename (only a model that records its
+        # channels names any)
+        if getattr(self, "_trained_codes", None) is not None:
+            self._refresh_model_card()
 
     def _tag_channel_layers(self, added) -> None:
         """Mark each channel layer of the loaded stack with its channel
@@ -3969,7 +3982,10 @@ class SegmentStackController:
         channel layers' names of ONE stack -- the one loaded in ③ if its
         channel layers are in the viewer, else the one previewed with View
         or the eye -- or ``None`` per channel when no stack's layers name
-        it (the item then reads the model's role, or "ch{i}").  The model's
+        it (the item then reads Step 3's word for its code, "1: red").  A
+        layer still under the name Step 4 gave it ("ch{i}", or a preview's
+        "{stack} ch{i}") names nothing: "1: ch0" beside Step 3's "1: red"
+        would say the channel's position, not its code.  The model's
         training-time names are never used: they belong to another
         dataset."""
         names = [None] * n
@@ -3988,7 +4004,8 @@ class SegmentStackController:
             return out
 
         found = channel_layers(getattr(self, "_stack_layers", None))
-        if not found:
+        preview = not found
+        if preview:
             found = channel_layers(getattr(self, "_preview_layers", None))
         for i, lyr in found.items():
             name = str(lyr.name)
@@ -3997,7 +4014,11 @@ class SegmentStackController:
             tag = " " + self._PREVIEW_TAG
             if name.endswith(tag):
                 name = name[:-len(tag)]
-            names[i] = name.strip() or None
+            name = name.strip()
+            default = S4T.SEG_CHANNEL_NAME.format(i=i)
+            if name == default or (preview and name.endswith(" " + default)):
+                name = ""
+            names[i] = name or None
         return names
 
     def _on_channels_changed(self, *_):
@@ -4984,9 +5005,6 @@ class SegmentStackController:
                 except Exception:      # noqa: BLE001
                     pass
 
-    def _get_seg_channel(self) -> int:
-        return self.ui.chan1_combo.currentIndex()
-
     def _get_channel_configs(self) -> list:
         return self.ui.get_checked_channels()
 
@@ -5092,10 +5110,14 @@ class SegmentStackController:
             cancel_text=S4T.LOAD_UNSAVED_STAY, accent="green")
         return {"primary": "save", "secondary": "discard"}.get(choice, "stay")
 
-    def _settle_unsaved(self, what: str) -> bool:
+    def _settle_unsaved(self, what: str, *, closing: bool = False) -> bool:
         """Before a load or a workspace change: ask Save / Discard / Stay
         when the loaded stack has unsaved work.  True = go on (saved, or
-        discarded and unloaded); False = stay (or a failed Save, F23)."""
+        discarded and unloaded); False = stay (or a failed Save, F23).
+
+        ``closing=True`` is the window-close question: napari may still
+        keep the window open after it, so Discard goes on without unloading
+        and leaves the unsaved marks as they are."""
         stack = self._current_stack_name
         if not (self._has_unsaved_changes and stack):
             return True
@@ -5105,6 +5127,8 @@ class SegmentStackController:
             return False
         if choice == "save":
             return bool(self._save_tier_assignments(confirm=False))
+        if closing:
+            return True
         self._unload_stack(f"discarded before {what}")
         return True
 
@@ -6671,7 +6695,6 @@ class SegmentStackController:
             csv_path=csv_path,
             spacing=self._get_spacing(),
             source_stack_path=source_stack_path,
-            seg_channel=self._get_seg_channel(),
             prob_path=prob_path,
             channel_configs=channel_configs,
             skip_probability=skip_probability,
@@ -7762,6 +7785,15 @@ class SegmentStackController:
                 saved.append(f"EDA ({', '.join(eda_parts)})")
 
             held = self._held_edit_fields(stack)
+            # the measured file may now hold fewer cells (Remove bad cells);
+            # the row's cell count follows what was just written
+            if (self._qc_features_df is not None
+                    and (getattr(self, "_last_write", None) or {}).get("csv")):
+                held = dict(held or {})
+                _df = self._qc_features_df
+                held["measured_cells"] = (
+                    int((_df["label_status"] == "active").sum())
+                    if "label_status" in _df.columns else int(len(_df)))
             if held:
                 self.state_manager.update_record(stack, **held)
             if not self._persist_state():
@@ -7777,10 +7809,10 @@ class SegmentStackController:
             f"[save] {stack}: {' + '.join(saved) or 'nothing written'}")
         self.ui.show_mt_status(S4T.MT_SAVED.format(stack=stack))
         self._refresh_mt_panel()
-        # a saved CSV / labels file: the bucket counts and the overlay on
-        # the pictures follow the disk (audit M1)
-        self._restart_tier_counts_if_csv_changed()
-        self._restart_thumbs_if_labels_changed()
+        # a saved CSV / labels file: the row's cell count, the bucket counts
+        # and the overlay on the pictures follow the disk (the refresh
+        # restarts the counts and the thumbnails)
+        self._refresh_stacks()
         return True
 
     # ------------------------------------------------------------------
@@ -8502,6 +8534,29 @@ print("SKIPPED_IDS:" + ",".join(str(i) for i in _skipped))
     # ------------------------------------------------------------------
     # Step lifecycle hooks
     # ------------------------------------------------------------------
+
+    def on_app_close(self) -> bool:
+        """Called when napari's window is about to close.  Asks the same
+        Save / Discard / Stay question as a load when the loaded stack has
+        unsaved work, in its closing mode (Discard changes nothing, since
+        napari may still keep the window open).  True lets the window
+        close; False keeps it open (the user chose Stay, or the save
+        failed).  If the question itself fails, the user is asked whether
+        to close anyway, so the window is never trapped."""
+        try:
+            return bool(self._settle_unsaved("closing EpiCycle",
+                                             closing=True))
+        except Exception as exc:      # noqa: BLE001
+            print(f"[APP-CLOSE] step 4 unsaved-work check failed: {exc!r}")
+            reply = QMessageBox.question(
+                self.ui,
+                "Closing EpiCycle",
+                "EpiCycle could not check for unsaved work.\n\n"
+                "Close anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return reply == QMessageBox.Yes
 
     def on_step_exit(self):
         """Called when user navigates away from Step 4.  Returns False to

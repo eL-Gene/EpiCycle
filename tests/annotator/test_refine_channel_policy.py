@@ -138,11 +138,13 @@ class TestARestoreMissStaysBlank:
         assert widget.refine_channel_combo.property(
             AdvancedFeaturesWidget._CHANNEL_CHOICE_PROP) == "dapi"
 
-    def test_a_first_fill_leaves_index_zero_selected(self, widget):
+    def test_a_first_fill_is_blank(self, widget):
         """Nothing ever chosen, nothing remembered -- there is nothing to
         restore, so Qt's own selection stands."""
+        # Changed: a first fill now starts BLANK (index -1) so a run with
+        # nothing chosen is refused instead of silently using stack channel 0.
         widget.set_refine_channels(["membrane", "dapi"])
-        assert widget.refine_channel_combo.currentIndex() == 0
+        assert widget.refine_channel_combo.currentIndex() == -1
 
 
 class TestPreviewIsDisabledBeforeTheClick:

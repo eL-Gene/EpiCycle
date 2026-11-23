@@ -1300,3 +1300,140 @@ class TestSatelliteDockCleanup:
             "launch_3d_curation_annotator must call _destroy_satellite_docks "
             "on fresh relaunch to prevent dock accumulation"
         )
+
+
+# -----------------------------------------------------------------------
+# The active layer after a proxy goes (real ViewerModels)
+# -----------------------------------------------------------------------
+
+
+def _real_env(label_id=5):
+    """An annotator stand-in on real ViewerModels with the real sync hook."""
+    from napari.components import ViewerModel
+    from napari.layers import Labels
+    from napari_epicycle.annotator.curation_3d_widget import (
+        Curation3DAnnotator as K,
+    )
+    from packages.epicycle_annotator.sync import LabelSyncManager
+
+    data = np.zeros((20, 20, 20), np.int32)
+    data[5:10, 5:10, 5:10] = label_id
+    data[12:15, 12:15, 12:15] = 99
+    viewer = ViewerModel()
+    main = viewer.add_labels(data, name="labels")
+    main.selected_label = label_id
+    side = {}
+    for o in ("XY", "XZ", "YZ"):
+        vm = ViewerModel()
+        vm.add_labels(data, name=f"labels_{o}")
+        side[o] = vm
+    qt = {o: types.SimpleNamespace(viewer=side[o]) for o in side}
+    sync = LabelSyncManager(
+        main_viewer=viewer,
+        viewer_model_xy=side["XY"], viewer_model_xz=side["XZ"],
+        viewer_model_yz=side["YZ"],
+        qt_viewer_xy=qt["XY"], qt_viewer_xz=qt["XZ"], qt_viewer_yz=qt["YZ"],
+    )
+    viewer.layers.selection.events.active.connect(sync.sync_active_layer)
+    ann = types.SimpleNamespace(
+        viewer=viewer, sync_manager=sync, _active_labels_name="labels",
+        _isolation_proxy_layer=None, _isolation_proxy_active=False,
+        _isolation_proxy_label_id=None, _multi_label_proxy_layers={},
+        _multi_label_proxy_set=None,
+    )
+    for name in ("_layer_by_name", "_update_isolation_proxy",
+                 "_remove_isolation_proxy"):
+        setattr(ann, name, types.MethodType(getattr(K, name), ann))
+    return ann, main, viewer, side
+
+
+class TestActiveLayerAfterProxyRemoval:
+    def test_single_proxy_removed_main_is_active(self):
+        ann, main, viewer, _ = _real_env()
+        ann._update_isolation_proxy(5, main)
+        assert viewer.layers.selection.active is ann._isolation_proxy_layer
+        ann._remove_isolation_proxy()
+        assert viewer.layers.selection.active is not None
+        assert viewer.layers.selection.active.name == "labels"
+
+    def test_per_cell_proxies_torn_down_main_is_active(self):
+        from napari.layers import Labels
+
+        ann, main, viewer, _ = _real_env()
+        for lid in (5, 99):
+            lyr = Labels(np.zeros((4, 4, 4), np.int32), name=f"_p{lid}")
+            viewer.layers.append(lyr)
+            ann._multi_label_proxy_layers[lid] = lyr
+        assert viewer.layers.selection.active.name == "_p99"
+        ann._remove_isolation_proxy()
+        assert viewer.layers.selection.active.name == "labels"
+
+    def test_side_view_stays_in_paint_mode(self):
+        ann, main, viewer, side = _real_env()
+        ann._update_isolation_proxy(5, main)
+        for o, vm in side.items():
+            vm.layers[f"labels_{o}"].mode = "paint"
+        ann._remove_isolation_proxy()
+        assert viewer.layers.selection.active.name == "labels"
+        for o, vm in side.items():
+            assert vm.layers[f"labels_{o}"].mode == "paint"
+
+    def test_helper_tolerates_a_fake_without_selection(self):
+        from napari_epicycle.annotator.curation_3d_widget import (
+            _refocus_main_layer,
+        )
+
+        ann, _, _ = _make_proxy_test_env()
+        assert _refocus_main_layer(ann) is False
+
+
+class TestOrphanProxyWhenInsertedHookRaises:
+    def _raiser(self, viewer):
+        def _boom(event):
+            raise RuntimeError("stale inserted hook")
+
+        viewer.layers.events.inserted.connect(_boom)
+
+    def _names(self, viewer):
+        return [l.name for l in viewer.layers
+                if l.name.startswith("_epicycle_isolation_proxy")]
+
+    def test_proxy_is_recorded_even_if_the_hook_raises(self):
+        ann, main, viewer, _ = _real_env()
+        self._raiser(viewer)
+        try:
+            ann._update_isolation_proxy(5, main)
+        except Exception:
+            pass
+        assert ann._isolation_proxy_layer is not None
+        assert ann._isolation_proxy_active is True
+
+    def test_remove_clears_it(self):
+        ann, main, viewer, _ = _real_env()
+        self._raiser(viewer)
+        try:
+            ann._update_isolation_proxy(5, main)
+        except Exception:
+            pass
+        ann._remove_isolation_proxy()
+        assert self._names(viewer) == []
+
+    def test_remove_sweeps_a_proxy_whose_reference_was_lost(self):
+        ann, main, viewer, _ = _real_env()
+        ann._update_isolation_proxy(5, main)
+        assert self._names(viewer)
+        ann._isolation_proxy_layer = None
+        ann._remove_isolation_proxy()
+        assert self._names(viewer) == []
+
+
+def test_a_lost_proxy_reference_is_dropped_before_the_next_update():
+    ann, main, viewer, _ = _real_env()
+    ann._update_isolation_proxy(5, main)
+    stale = ann._isolation_proxy_layer
+    viewer.layers.remove(stale)
+    ann._update_isolation_proxy(5, main, force=True)
+    fresh = ann._isolation_proxy_layer
+    assert fresh is not stale
+    assert fresh in viewer.layers
+    assert main.visible is False

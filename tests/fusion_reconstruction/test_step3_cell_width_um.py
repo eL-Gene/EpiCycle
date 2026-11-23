@@ -387,7 +387,7 @@ def test_the_lines_sit_under_the_width_in_its_grid(w, tmp_path):
     r_box = grid.getItemPosition(grid.indexOf(w.diameter_sb))[0]
     r_lines, col, _rs, span = grid.getItemPosition(grid.indexOf(lines))
     assert r_lines > r_box and (col, span) == (0, 2)
-    # the panel's own (R3) is used when it has one: never a second
+    # the panel's own lines widget is used when it has one: never a second
     assert CW.ensure_cell_width_lines(w) is lines
 
 

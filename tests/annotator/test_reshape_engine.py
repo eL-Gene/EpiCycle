@@ -771,6 +771,33 @@ def test_no_cancel_event_runs_to_completion():
     assert out.status == "ok"
 
 
+def test_a_cancel_during_the_wall_build_stops_before_the_wall_picture(
+        monkeypatch):
+    """The wall build checks the Stop between its steps (channel, clean-up,
+    picture), not only after the whole build."""
+    import packages.epicycle_annotator.reshape.engine as engine_mod
+
+    event = threading.Event()
+    calls = []
+    real_elev = engine_mod.build_elevation
+
+    def preproc_then_cancel(img, chain, **k):
+        calls.append("preproc")
+        event.set()
+        return img
+
+    def elevation(*a, **k):
+        calls.append("elevation")
+        return real_elev(*a, **k)
+
+    monkeypatch.setattr(engine_mod, "apply_preproc", preproc_then_cancel)
+    monkeypatch.setattr(engine_mod, "build_elevation", elevation)
+    out, _, _ = _run(_spec(params={"wall_preproc": "zcorrect"}),
+                     cancel_event=event)
+    assert out.status == "cancelled"
+    assert calls == ["preproc"]
+
+
 # --------------------------------------------------------------------------- #
 # 13. messages / the log callback (the carved-out prints)
 # --------------------------------------------------------------------------- #
@@ -923,13 +950,17 @@ class TestTheWallContrastRangeIsReported:
         assert len(line) == 1
 
     def test_the_numbers_are_the_elevation_inside_the_cell(self):
+        """The 5th and the 95th percentile of the elevation inside the
+        cell: the elevation is normalised, so its extremes are 0 and 1 on
+        almost every object; the middle 90 % of it is what varies."""
         out, _labels, _region = _run()
         line = [m for m in out.messages if m.startswith("Wall contrast ")][0]
         lo_hi = line.split("Wall contrast ", 1)[1].rstrip(".")
         lo, hi = (float(v) for v in lo_hi.split("-"))
         elev = np.asarray(out.elevation)[out.region]
-        assert lo == pytest.approx(round(float(elev.min()), 2), abs=0.01)
-        assert hi == pytest.approx(round(float(elev.max()), 2), abs=0.01)
+        p5, p95 = np.percentile(elev, [5, 95])
+        assert lo == pytest.approx(round(float(p5), 2), abs=0.01)
+        assert hi == pytest.approx(round(float(p95), 2), abs=0.01)
         assert lo <= hi
 
     def test_a_SHAPE_wall_says_nothing_at_all(self):
@@ -1235,3 +1266,18 @@ class TestTheShapeFinderRefusesAHollowObject:
 
         out = self._run(hollow_shell())
         assert out.refusal_reason, out.refusal_reason
+
+
+def test_a_voxel_joined_only_diagonally_is_not_left_as_background():
+    labels = np.zeros((8, 8, 12), dtype=np.int32)
+    labels[1:4, 1:4, 1:9] = 7
+    labels[4, 4, 9] = 7                         # face-disconnected from the block
+    guide = np.zeros_like(labels)
+    guide[2, 2, 2] = 1
+    guide[2, 2, 7] = 2
+    mem = np.zeros(labels.shape, dtype=np.float32)
+    out = reshape_region(labels, {"mem": mem}, _spec(), target_id=7,
+                         seed_layer=guide, spacing=ISO)
+    assert out.status == "ok"
+    region = labels[out.roi] == 7
+    assert region.any() and (out.result[region] > 0).all()

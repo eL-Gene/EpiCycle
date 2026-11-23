@@ -254,7 +254,7 @@ def test_clicks_are_made_box_local():
 def test_smooth_emptied_objects_are_counted(monkeypatch):
     from packages.epicycle_annotator import add_segment
 
-    def drop_first(result, sigma):
+    def drop_first(result, sigma, cancel_event=None):
         ids = [int(v) for v in np.unique(result) if v]
         return np.where(result == ids[0], 0, result)
 
@@ -281,6 +281,90 @@ def test_a_stop_mid_engine_is_cancelled(monkeypatch):
 
     out, _ = _cells("labels", cancel_event=ev, progress=progress)
     assert out.status == "cancelled"
+
+
+def test_a_stop_mid_smoothing_is_cancelled_and_smooths_no_more(monkeypatch):
+    from packages.epicycle_annotator import batch_refine as BR
+
+    ev = threading.Event()
+    done = []
+    real = BR._compute_one
+
+    def one_then_stop(*a, **k):
+        out = real(*a, **k)
+        done.append(a[1])
+        ev.set()
+        return out
+
+    monkeypatch.setattr(BR, "_compute_one", one_then_stop)
+    # One thread: the exact count below holds there.  On the pool the
+    # pieces already running finish and are dropped (the pool's own test
+    # holds that: test_add_speed_smooth).
+    import packages.epicycle_annotator.add_segment as AS
+    monkeypatch.setattr(AS, "ADD_SMOOTH_MAX_WORKERS", 1)
+    out, _ = _cells("labels", params=_cells_params("labels", auto_smooth=True),
+                    cancel_event=ev)
+    assert out.status == "cancelled"
+    assert out.result is None
+    assert len(done) == 1, "the pieces after the Stop are not smoothed"
+
+
+def test_a_stop_mid_smoothing_on_the_pool_is_cancelled(monkeypatch):
+    """The same Stop at the pooled worker count (20 cores reported, 8
+    workers): the Preview is cancelled and hands back no result."""
+    from packages.epicycle_annotator import batch_refine as BR
+    from packages.epicycle_annotator import pool_workers as PW
+
+    ev = threading.Event()
+    seen = {}
+    real_one = BR._compute_one
+    real_run = BR.run_batch_recipe
+
+    def one_then_stop(*a, **k):
+        out = real_one(*a, **k)
+        ev.set()
+        return out
+
+    def spy(*a, **k):
+        seen["n_workers"] = k.get("n_workers")
+        return real_run(*a, **k)
+
+    monkeypatch.setattr(PW.os, "cpu_count", lambda: 20)
+    monkeypatch.delattr(PW.os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(BR, "_compute_one", one_then_stop)
+    monkeypatch.setattr(BR, "run_batch_recipe", spy)
+    out, _ = _cells("labels", params=_cells_params("labels", auto_smooth=True),
+                    cancel_event=ev)
+    assert seen["n_workers"] == 8
+    assert out.status == "cancelled"
+    assert out.result is None
+
+
+def test_a_stop_mid_wall_build_skips_the_wall_picture(monkeypatch):
+    """The Cells wall build stops between its steps: a Stop during the
+    wall clean-up never starts the wall picture."""
+    import packages.epicycle_annotator.reshape.engine as E
+
+    ev = threading.Event()
+    calls = []
+    real_elev = E.build_elevation
+
+    def preproc_then_stop(img, chain, **k):
+        calls.append("preproc")
+        ev.set()
+        return img
+
+    def elevation(*a, **k):
+        calls.append("elevation")
+        return real_elev(*a, **k)
+
+    monkeypatch.setattr(E, "apply_preproc", preproc_then_stop)
+    monkeypatch.setattr(E, "build_elevation", elevation)
+    out, _ = _cells("labels",
+                    params=_cells_params("labels", wall_chain="zcorrect"),
+                    cancel_event=ev)
+    assert out.status == "cancelled"
+    assert calls == ["preproc"]
 
 
 def test_progress_names_arrive_at_stage_start():

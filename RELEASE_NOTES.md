@@ -1,5 +1,29 @@
 # EpiCycle release notes
 
+## 0.1.3 (2026-11-24)
+
+New ways to build objects on Step 3's Add page, and fixes found while curating with 0.1.2.
+
+**Step 3, the Add page (3D annotator ▸ Advanced Features ▸ Add)**
+
+- **Clear objects.** One button removes the objects mostly inside the box, or every object in the patch. A red confirm first says how many will go and how many are marked Curated or Good, and one Undo brings them all back. New objects are numbered above every number the patch has used, so a cleared number is never given to a new object.
+- **Nuclei inside each cell of another run.** When one run holds good cells, Look for nuclei ▸ Inside each cell of run finds the nucleus of each. A nucleus that crosses a cell border is cut there and marked "cut at edge"; two nuclei kept in one cell are marked "two in a cell". This and the other new Add paths need the patch's voxel size: at the unset 1.0 µm default they send you to Set spacing… in the Session list.
+- **The whole patch.** Whole patch is now a box size. Cells on a whole patch fill to the walls from every marker at once. A Tissue outline row (the outline of the objects you cleared, a shrink-wrap around the stain, or none) keeps new cells inside the tissue, and Show the tissue outline draws its edge in the main view and the three side views. The outline now stays on screen over a result.
+- **One click, one nucleus.** With Look for nuclei ▸ At the markers I place and Separate touching objects ticked (the default), a click gives the nucleus under it, not the whole clump of touching nuclei. This works for most clicks into a clump, not all; its Spacing setting is under Advanced, and unticking brings back the earlier behaviour.
+- **Markers on a whole patch**, for nuclei at the markers and for Cells ▸ Click markers. Going back from a whole patch to a box with markers placed asks first.
+- **Update as I click** (under Advanced, on by default): each marker you place or remove, and each setting you change, is drawn a moment later without pressing Preview. It covers nuclei in a box and on a whole patch, cells in a box of up to a million voxels, and cells on a whole patch of up to 20 million voxels. Over those limits the page says to press Preview. Accept waits until the last click is drawn.
+- **Extending an object.** A click starts a new object, shown bold in the list; Shift+click adds a seed to it; Alt+click on an object, or a click on its row, makes it the bold one; Ctrl+click removes a marker; Ctrl+Z in a side view takes back the last seed. The page lists these keys while you place click markers. A seed on a separate piece of stain makes nothing, and the page says why.
+- **A faster Preview.** After the first Preview of a box, each later one draws about ten times faster.
+
+**Elsewhere**
+
+- **Closing napari asks about unsaved work.** Before, closing the window with unsaved Step 3 curation (tier marks, mask edits, a Clear) or unsaved Step 4 edits lost them without a word. Closing now asks the same Save / Discard / Cancel questions as switching patches, and Cancel keeps the window open. An edit still open in the annotator has to be accepted or rejected first.
+- **Step 3, Delete Label with several cells isolated** now removes the cell your brush is on, when it is one of the isolated cells, instead of the highlighted row's cell. The highlighted row moves to it; Undo puts it back.
+- **Help:** the guides behind the `?` buttons were checked against the panels and corrected where they had fallen behind.
+- **Install:** numba is now a declared requirement (the Add page's cell growth compiles with it); `requirements-lock.txt` pins the version we test (0.66.0). An environment built from `environment.yml` also sets `VISPY_PYQT5_SHARE_CONTEXT=true`, so the annotator's docks can be floated.
+
+**Known limits.** Cells on a whole patch update as you click only with the shrink-wrap tissue outline and Membrane sheets or Intensity edges walls; otherwise that patch is drawn when you press Preview. With two or more markers in one nucleus, the live result and a single Preview of the same markers can differ by a few voxels where the markers' regions meet.
+
 ## 0.1.2 (2026-10-17)
 
 Patch release, from the first week of people installing EpiCycle.

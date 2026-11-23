@@ -289,15 +289,20 @@ def test_the_run_switch_and_browse_empty_the_area(method):
     # workspace both adopt through _adopt_workspace_quiet); the reset sits right after
     # the workspace-cache reset (the driver checks the result live: "RUN
     # switch empties the plot", "BROWSE empties the plot").
+    # Both go through the one per-patch reset, called right after the
+    # workspace-cache reset; the reset itself empties the area AFTER the
+    # table is gone.
+    from napari_epicycle.fusion_reconstruction import controller as ctl_mod
     src = inspect.getsource(getattr(C, method))
     i = src.index("self._reset_workspace_scoped_caches()")
-    j = src.index('_area_call(self, "_reset_qc_plot_area"', i)
-    assert "_plot_text.SEE_NO_PATCH" in src[j:j + 200]
-    assert "blank_patch=True" in src[j:j + 200]
-    assert src.count('"_reset_qc_plot_area"') == 1
-    if "self._qc_features_df = None" in src:
-        # HIGH-3: the reset comes AFTER the table is gone
-        assert src.index("self._qc_features_df = None", i) < j
+    assert "_reset_per_patch_state(self)" in src[i:]
+    assert src.count('"_reset_qc_plot_area"') == 0
+    reset = inspect.getsource(ctl_mod._reset_per_patch_state)
+    j = reset.index('_area_call(c, "_reset_qc_plot_area"')
+    assert "_plot_text.SEE_NO_PATCH" in reset[j:j + 200]
+    assert "blank_patch=True" in reset[j:j + 200]
+    # HIGH-3: the reset comes AFTER the table is gone
+    assert reset.index("c._qc_features_df = None") < j
 
 
 def test_reset_without_an_area_still_clears_the_plot():

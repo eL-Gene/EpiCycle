@@ -25,7 +25,11 @@ from qtpy.QtCore import Qt, QEvent, QObject, QRect, QTimer
 from qtpy.QtGui import QCursor
 from qtpy.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 
-from .native_multiview_widget import NativeMultiviewAnnotator
+from .native_multiview_widget import (
+    NativeMultiviewAnnotator,
+    register_layer_hook,
+    unregister_layer_hook,
+)
 from ..ui_shell.theme import help_button as _help_button
 
 
@@ -401,9 +405,11 @@ class Curation2DAnnotator(NativeMultiviewAnnotator):
 
         # --- Layer insertion listener ---
         # Refresh layer options when new layers appear in the viewer.
-        self._layer_inserted_cb = lambda _e: self._on_layer_inserted(_e)
+        self._layer_inserted_cb = self._on_layer_inserted
         try:
-            self.viewer.layers.events.inserted.connect(self._layer_inserted_cb)
+            register_layer_hook(
+                self, self.viewer.layers.events.inserted, self._layer_inserted_cb
+            )
         except Exception:
             pass
 
@@ -1838,8 +1844,10 @@ class Curation2DAnnotator(NativeMultiviewAnnotator):
 
         # Step 5: Disconnect layer insertion handler.
         try:
-            self.viewer.layers.events.inserted.disconnect(self._layer_inserted_cb)
-        except (ValueError, AttributeError):
+            unregister_layer_hook(
+                self, self.viewer.layers.events.inserted, self._layer_inserted_cb
+            )
+        except AttributeError:
             pass
 
         # Step 5b: Disconnect mode event listeners and teardown 2D hotkeys.

@@ -331,3 +331,23 @@ def test_annotator_unlock_restores_draw_state_only_when_no_op():
         "the FIX-2 safety reasoning (patch-load empty-name early-return) must be "
         "documented in set_load_locked"
     )
+
+
+def test_refused_switch_says_why_in_plot_status():
+    """A switch refused because curation is busy is not console-only: the
+    plot status shows the lock sentence."""
+    from napari_epicycle.fusion_reconstruction import _step3_pr_text as pr
+
+    c = FusionReconstructionController.__new__(FusionReconstructionController)
+    c._curation_busy = True
+    c._qc_view_patch_name = "other_patch"
+    c._append_log = lambda m: None
+    said = []
+    c._set_plot_status = lambda text, kind="info": said.append((text, kind))
+    session = []
+    c._session_say = lambda text, *a, **k: session.append(text)
+
+    c._switch_to_curation_patch("some_patch")
+
+    assert said == [(pr.S3_LOCK_CURATION_BUSY, "warn")]
+    assert session == [pr.S3_LOCK_CURATION_BUSY]

@@ -68,6 +68,10 @@ def _bare_controller():
     c._append_log = lambda m: c._log_messages.append(m)
     c._busy_hidden = []
     c._busy_hide = lambda: c._busy_hidden.append(True)
+    c._qc_staleness_notified = set()
+    c._qc_view_patch_name = ""      # no table in memory: the active-patch lookup stops here
+    c._selected_curation_patch = lambda: ""
+    c._selected_patch_name = lambda: ""
     return c
 
 

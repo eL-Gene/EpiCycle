@@ -312,8 +312,16 @@ def test_the_menu_offers_forget_only_on_a_missing_row(full, monkeypatch):
 
     import napari_epicycle.fusion_reconstruction.controller as C
     monkeypatch.setattr(C, "QMenu", _Menu)
+    # a present row with nothing to offer (no prediction on disk, no model
+    # record) shows no menu
+    c.state_manager._state["patches"]["b.tif"]["status"] = "unprocessed"
     c._pr_row_menu("b.tif", QPoint(0, 0))
     assert shown == []
+    # a present predicted row offers its model details, never Forget
+    c.state_manager._state["patches"]["b.tif"]["status"] = "predicted"
+    c._pr_row_menu("b.tif", QPoint(0, 0))
+    assert shown == [[P.S3_MODEL_DETAILS]]
+    shown.clear()
     c._pr_row_menu(PATCH, QPoint(0, 0))
     assert shown == [[P.S3_FORGET_MENU]]
 

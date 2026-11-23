@@ -87,7 +87,7 @@ from qtpy.QtWidgets import (
 )
 
 from ._stack_thumbs import THUMB_NARROW_PX, THUMB_WIDE_PX
-from .theme import STEP4_ACCENT
+from .theme import STEP4_ACCENT, _qta_icon_or_none
 
 ROLE_NAME = Qt.UserRole
 ROLE_STATUS = Qt.UserRole + 1
@@ -218,9 +218,13 @@ def _font(base: QFont, px: int, mono: bool = False, bold: bool = False):
 
 
 def _icon_pixmap(name: str, colour: str, size: int = ICON):
+    # through the theme's helper: never builds qtawesome's fonts without
+    # an application
+    icon = _qta_icon_or_none(name, colour)
+    if icon is None:
+        return None
     try:
-        import qtawesome as qta
-        return qta.icon(name, color=colour).pixmap(size, size)
+        return icon.pixmap(size, size)
     except Exception:      # noqa: BLE001 -- cosmetic
         return None
 
@@ -411,7 +415,7 @@ class StackRowDelegate(QStyledItemDelegate):
                 g["lines"]["l2"] = QRect(x, y, mid_w, h2)
                 y += h2 + GAP
             if rec.get("line3"):
-                # Step 3 (R7): the voxel-size line under line 2, mono
+                # Step 3: the voxel-size line under line 2, mono
                 sfm = QFontMetrics(f["word_small"])
                 h3 = sfm.height()
                 act = rec.get("row_action")
@@ -454,12 +458,15 @@ class StackRowDelegate(QStyledItemDelegate):
             if plain2 is not None:
                 # Step 2 (L): one dim text -- no status word, no axis
                 pass
-            elif self._mode == MODE_NARROW and self._show_eye:
+            elif (self._mode == MODE_NARROW and self._show_eye
+                  and rec.get("eye") is not False):
+                # a record that says ``"eye": False`` (Step 3: a missing
+                # patch) falls through to its menu glyph below
                 g["eye"] = QRect(eye_x - 1, y, ICON + 2, ICON + 2)
                 g["axis"] = QRect(eye_x - 6 - ax_w, y, ax_w, h2)
             elif (self._mode == MODE_NARROW and self._show_info
                   and rec.get("info") and not rec.get("menu")):
-                # Step 3 (R6): the ⓘ takes the eye's slot
+                # Step 3: the model-details ⓘ takes the eye's slot
                 g["info"] = QRect(eye_x - 1, y, ICON + 2, ICON + 2)
                 g["axis"] = QRect(eye_x - 6 - ax_w, y, ax_w, h2)
             elif self._mode == MODE_NARROW and rec.get("menu"):
@@ -492,7 +499,7 @@ class StackRowDelegate(QStyledItemDelegate):
                 y += h4 + GAP
             top = rec.get("chips_top") or ()
             if top:
-                # Step 3 (R6): the "made by" chip, right under the shape line
+                # Step 3: the "made by" chip, right under the shape line
                 g["chips_top"] = []
                 y = self._layout_chips(g["chips_top"], top, x, y, mid_w,
                                        QFontMetrics(f["chip"]),
@@ -828,7 +835,7 @@ class StackRowDelegate(QStyledItemDelegate):
                                  head_shown)
             l3 = g["lines"].get("l3w")
             if l3 is not None:
-                # Step 3 (R7): mono, amber when the record says so
+                # Step 3's voxel-size line: mono, amber when the record says so
                 painter.setFont(f["word_small"])
                 painter.setPen(self._palette["warn"] if rec.get("line3_warn")
                                else _DIM)
@@ -877,20 +884,10 @@ class StackRowDelegate(QStyledItemDelegate):
                 if locked:
                     painter.setOpacity(1.0)
             if "eye" in g:
-                eye_off = bool(view is not None
-                               and view.property(self._eye_lock_property))
-                if eye_off:
-                    painter.setOpacity(0.35)  # K3: refused under the lock
-                self._paint_icon(painter, g["eye"], "mdi6.eye-outline")
-                if eye_off:
-                    painter.setOpacity(1.0)
+                self._paint_eye(painter, g["eye"], rec, view)
             if "menu" in g:
                 # R1-8: the menu refuses under the lock, so its glyph dims
-                if locked:
-                    painter.setOpacity(0.35)
-                self._paint_icon(painter, g["menu"], "mdi6.dots-horizontal")
-                if locked:
-                    painter.setOpacity(1.0)
+                self._paint_menu(painter, g["menu"], locked)
         else:
             painter.setFont(f["name_mono"])
             painter.setPen(name_col)
@@ -935,21 +932,11 @@ class StackRowDelegate(QStyledItemDelegate):
                                  int(Qt.AlignLeft | Qt.AlignVCenter),
                                  rec.get("axes") or "")
             if "eye" in g:
-                eye_off = bool(view is not None
-                               and view.property(self._eye_lock_property))
-                if eye_off:
-                    painter.setOpacity(0.35)  # K3: refused under the lock
-                self._paint_icon(painter, g["eye"], "mdi6.eye-outline")
-                if eye_off:
-                    painter.setOpacity(1.0)
+                self._paint_eye(painter, g["eye"], rec, view)
             if "menu" in g:
-                if locked:
-                    painter.setOpacity(0.35)
-                self._paint_icon(painter, g["menu"], "mdi6.dots-horizontal")
-                if locked:
-                    painter.setOpacity(1.0)
+                self._paint_menu(painter, g["menu"], locked)
             if "info" in g:
-                # live under the lock: the details can be read (R6)
+                # live under the lock: the details can be read
                 self._paint_icon(painter, g["info"],
                                  "mdi6.information-outline")
             if "l3" in g["lines"]:
@@ -1140,6 +1127,31 @@ class StackRowDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(QRectF(r.adjusted(3, 3, -3, -3)), 2, 2)
         painter.restore()
 
+    def _paint_eye(self, painter, r: QRect, rec: dict, view) -> None:
+        """The eye, dimmed while the list's eye-lock property is set (K3:
+        refused under the lock) or the record asks (``"eye_dim"``: nothing
+        to show yet).  The dim MULTIPLIES the row's own opacity (a locked
+        list paints at 0.55) and gives it back, so what is painted after
+        the eye keeps the row's opacity."""
+        dim = bool(rec.get("eye_dim")) or bool(
+            view is not None and view.property(self._eye_lock_property))
+        prev = painter.opacity()
+        if dim:
+            painter.setOpacity(prev * 0.35)
+        self._paint_icon(painter, r, "mdi6.eye-outline")
+        if dim:
+            painter.setOpacity(prev)
+
+    def _paint_menu(self, painter, r: QRect, locked: bool) -> None:
+        """The ⋯ glyph, dimmed under the lock the same way as the eye: the
+        dim multiplies the row's opacity and gives it back."""
+        prev = painter.opacity()
+        if locked:
+            painter.setOpacity(prev * 0.35)
+        self._paint_icon(painter, r, "mdi6.dots-horizontal")
+        if locked:
+            painter.setOpacity(prev)
+
     @staticmethod
     def _paint_icon(painter, r: QRect, name: str):
         pm = _icon_pixmap(name, _ICON_DIM)
@@ -1288,6 +1300,9 @@ class StackRowDelegate(QStyledItemDelegate):
                 if box.contains(pos):
                     text = tip
                     break
+        elif key == "row_eye" and rec.get("eye_tip"):
+            # Step 3: the row's own sentence for what its eye does
+            text = str(rec["eye_tip"])
         elif key == "row_chip" and rec.get("chips_elide"):
             # an elided chip: the row's own sentence carries the whole text
             text = rec.get("row_tip") or self._help_lines.get(key)
