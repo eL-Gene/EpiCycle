@@ -203,8 +203,8 @@ class TestLastWorkspace:
         gone = str(tmp_path / "gone")
         (d / "last_workspace.json").write_text(
             json.dumps({"schema_version": 1, "path": gone}))
-        # Only validated when it looks like a local drive letter.
-        if wf._is_local_drive_path(gone):
+        # Only validated when it may be probed without risking a stall.
+        if wf.can_probe_path(gone):
             assert wf.load_last_workspace() == ""
         else:
             assert wf.load_last_workspace() == gone
@@ -233,10 +233,85 @@ class TestLastWorkspace:
 
 
 # ---------------------------------------------------------------------------
+# is the remembered folder a workspace?
+# ---------------------------------------------------------------------------
+
+class TestLooksLikeWorkspace:
+    @pytest.mark.parametrize("marker", [
+        "step1_state.json", "step2_state.json", "step3_state.json",
+        "step4_state.json", "hitl_state.json"])
+    def test_a_state_file_marks_a_workspace(self, tmp_path, marker):
+        (tmp_path / marker).write_text("{}", encoding="utf-8")
+        assert wf.looks_like_workspace(str(tmp_path)) is True
+
+    def test_an_artifacts_folder_marks_a_workspace(self, tmp_path):
+        (tmp_path / "artifacts").mkdir()
+        assert wf.looks_like_workspace(str(tmp_path)) is True
+
+    def test_a_plain_folder_is_not_one(self, tmp_path):
+        (tmp_path / "notes.txt").write_text("x")
+        (tmp_path / "data").mkdir()
+        assert wf.looks_like_workspace(str(tmp_path)) is False
+
+    def test_a_file_named_artifacts_is_not_one(self, tmp_path):
+        (tmp_path / "artifacts").write_text("x")
+        assert wf.looks_like_workspace(str(tmp_path)) is False
+
+    def test_a_missing_folder_is_not_one(self, tmp_path):
+        assert wf.looks_like_workspace(str(tmp_path / "gone")) is False
+        assert wf.looks_like_workspace("") is False
+
+    def test_a_network_path_is_never_probed(self, monkeypatch):
+        probed = []
+        monkeypatch.setattr(wf.Path, "is_dir",
+                            lambda self: probed.append(self) or True)
+        unc = r"\\server\share\Project"
+        assert wf.can_probe_path(unc) is False
+        assert wf.looks_like_workspace(unc) is False
+        assert probed == []
+
+    def test_a_drive_letter_path_may_be_probed(self):
+        assert wf.can_probe_path(r"C:\Users\x") is True
+
+
+class TestOpeningStrip:
+    def test_opening_is_one_neutral_strip_naming_the_folder(self):
+        strips = wf.banner_strips("project_setup", "", "",
+                                  opening=r"C:\Users\x\MyProject")
+        assert strips == [(wf.MSG_OPENING.format(name="MyProject"),
+                           "grey", "")]
+        assert "MyProject" in strips[0][0]
+
+    @pytest.mark.parametrize("kind", ["migration", "repair"])
+    def test_a_remembered_folder_is_named_under_the_red_line(self, kind):
+        strips = wf.banner_strips(
+            "project_setup", "", "",
+            remembered=(r"C:\Users\x\MyProject", kind))
+        msg = (wf.MSG_REMEMBERED_MIGRATION if kind == "migration"
+               else wf.MSG_REMEMBERED_REPAIR)
+        assert strips == [
+            ("Choose a workspace folder to begin.", "red", ""),
+            (msg.format(name="MyProject"), "amber", ""),
+        ]
+        assert "Press Browse" in strips[1][0]
+
+    def test_a_remembered_folder_is_not_named_once_one_is_shared(self):
+        strips = wf.banner_strips(
+            "project_setup", SHARED, SHARED,
+            remembered=(r"C:\Users\x\MyProject", "repair"))
+        assert all("MyProject" not in text for text, _k, _p in strips)
+
+    def test_opening_never_hides_a_shared_workspace(self):
+        strips = wf.banner_strips("project_setup", SHARED, SHARED,
+                                  opening=r"C:\Users\x\MyProject")
+        assert strips[0][1] == "green"
+
+
+# ---------------------------------------------------------------------------
 # banner state machine
 # ---------------------------------------------------------------------------
 
-SHARED = r"C:\Users\someone\Desktop\Project"
+SHARED =r"C:\Users\someone\Desktop\Project"
 OTHER = r"D:\Scratch\Rerun"
 
 

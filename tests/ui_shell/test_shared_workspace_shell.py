@@ -603,16 +603,27 @@ class TestBanner:
         assert "Set a workspace in Project Setup" in shell.guidance_label._text
         assert "#e07070" in _sheet(shell.guidance_label)
 
-    def test_the_remembered_suggestion_stays_red(self, app, tmp_path):
-        """F1: a pre-filled box is not a shared workspace."""
+    @pytest.mark.parametrize("kind", ["missing", "plain folder"])
+    def test_a_remembered_folder_missing_or_not_a_workspace_stays_red(
+            self, app, tmp_path, capsys, kind):
+        """Only a folder that holds a workspace is adopted at start-up; a
+        folder that is gone, or holds no workspace, stays a suggestion."""
         shell = _make_shell(app)
+        QWidget.__init__(shell)        # live Qt object: no "closing" skip
         ws = tmp_path / "Remembered"
-        ws.mkdir()
+        if kind == "plain folder":
+            ws.mkdir()
+            (ws / "notes.txt").write_text("not a workspace")
         shell._suggested_workspace = str(ws)
         shell._prefill_step1_from_suggestion()
+        shell._adopt_remembered_workspace_on_start()
         shell._refresh_step_guidance("project_setup")
         assert shell.guidance_label._color_key == "red"
+        assert shell.guidance_label._text == \
+            "Choose a workspace folder to begin."
         assert shell._read_workspace_path() == ""
+        assert ("[WORKSPACE] remembered workspace not adopted: the folder"
+                in capsys.readouterr().out)
 
     def test_a_step_path_without_a_shared_workspace_is_green_unqualified(
             self, app, tmp_path):
@@ -931,6 +942,429 @@ class TestPrefill:
         shell = _make_shell(app)
         shell._prefill_step1_from_suggestion()
         assert shell._step_widgets["project_setup"].output_file_path.text() == ""
+
+
+# ---------------------------------------------------------------------------
+# start-up adoption of the remembered workspace
+# ---------------------------------------------------------------------------
+
+def _pump(app, rounds: int = 10) -> None:
+    """Let the event loop run pending zero-length timers."""
+    for _ in range(rounds):
+        app.processEvents()
+
+
+def _pump_until(app, condition, timeout: float = 10.0) -> bool:
+    """Run the event loop until `condition()` holds (or the timeout)."""
+    import time as _time
+    deadline = _time.perf_counter() + timeout
+    while _time.perf_counter() < deadline:
+        app.processEvents()
+        if condition():
+            return True
+        _time.sleep(0.005)
+    return condition()
+
+
+class _Step1Controller(_RecordingController):
+    """Step 1's side of the start-up handshake: the read-only refusal and
+    the migration release, both recorded."""
+
+    def __init__(self, line, refusal=""):
+        super().__init__(line)
+        self.refusal = refusal
+        self.asked: list = []
+        self.released: list = []
+
+    def start_up_refusal(self, path):
+        self.asked.append(path)
+        return self.refusal
+
+    def release_migration_offer(self, path):
+        self.released.append(path)
+
+
+class TestStartupAdoption:
+    """The start-up rule: a remembered folder that holds a workspace is
+    OPENED once the window has painted -- Step 1 adopts it as it adopts any
+    shared workspace -- unless opening it would need a migration or a repair
+    (Browse does those, with the user)."""
+
+    def _shell(self, app, monkeypatch, suggested, refusal="",
+               warm_done=True):
+        import threading
+        from napari_epicycle.ui_shell.workflow_shell import (
+            EpiCycleWorkflowShell)
+        monkeypatch.setattr(EpiCycleWorkflowShell,
+                            "_START_ADOPT_DELAY_MS", 0)
+        shell = _make_shell(app)
+        line = shell._step_widgets["project_setup"].output_file_path
+        shell._step_widgets["project_setup"].controller = _Step1Controller(
+            line, refusal)
+        # A real Qt object underneath, so the timers and the deletion check
+        # behave as they do on the live shell.
+        QWidget.__init__(shell)
+        shell._suggested_workspace = str(suggested)
+        warm = threading.Event()
+        if warm_done:
+            warm.set()
+
+        def _no_thread_warmup():
+            shell._warm_imports_done = warm
+        shell._start_import_warmup = _no_thread_warmup
+        shell._warm = warm
+        saves: list = []
+        real_save = wf.save_last_workspace
+        monkeypatch.setattr(
+            wf, "save_last_workspace",
+            lambda path: (saves.append(path), real_save(path)))
+        emitted: list = []
+        line.textChanged.connect(lambda text: emitted.append(text))
+        strips: list = []
+        real_set = shell.guidance_label.set_strip
+
+        def _recording_set(text, color_key, *a, **k):
+            strips.append((text, color_key))
+            return real_set(text, color_key, *a, **k)
+        shell.guidance_label.set_strip = _recording_set
+        # What `_build_ui` does, in its order.
+        shell._schedule_remembered_workspace_adoption()
+        shell._prefill_step1_from_suggestion()
+        return shell, saves, emitted, strips
+
+    @staticmethod
+    def _workspace(tmp_path, marker="step1_state.json", name="Proj"):
+        ws = tmp_path / name
+        ws.mkdir()
+        if marker.endswith(".json"):
+            (ws / marker).write_text("{}", encoding="utf-8")
+        else:
+            (ws / marker).mkdir()
+        return ws
+
+    @staticmethod
+    def _ctrl(shell):
+        return shell._step_widgets["project_setup"].controller
+
+    @pytest.mark.parametrize(
+        "marker", ["step1_state.json", "step4_state.json", "artifacts"])
+    def test_a_remembered_workspace_is_adopted_after_the_first_paint(
+            self, app, tmp_path, monkeypatch, capsys, marker):
+        monkeypatch.setenv("EPICYCLE_SYNC_DEBUG", "1")
+        ws = self._workspace(tmp_path, marker)
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        # Deferred: nothing is shared until the event loop has turned.
+        assert shell._workspace_path == ""
+        assert _pump_until(app, lambda: bool(shell._workspace_path))
+        expected = os.path.abspath(str(ws))
+        assert shell._workspace_path == expected
+        # Step 1 ADOPTED it -- it was not browsed there -- so it follows a
+        # later Browse in any step.
+        assert shell._step_path_origin == {"project_setup": "adopted"}
+        ctrl = self._ctrl(shell)
+        assert ctrl.adopted == [(expected, "")]
+        assert emitted == [expected]           # the box's ordinary chain
+        assert ctrl.asked == [str(ws)]
+        assert ctrl.released == [str(ws)]
+        assert shell.guidance_label._color_key == "green"
+        assert expected in shell.guidance_label._text
+        assert "(shared across steps)" in shell.guidance_label._text
+        out = capsys.readouterr().out
+        assert ("[WORKSPACE] remembered workspace adopted at start-up: "
+                f"{expected}") in out
+        assert "[WORKSPACE-PERF]" in out
+        assert ("remembered workspace shown; opening it after the first "
+                "paint") in out
+        assert len(saves) <= 1
+
+    def test_the_opening_lists_sources_but_never_loads_an_image(
+            self, app, tmp_path, monkeypatch):
+        """The start-up rule: opening the remembered workspace lists Step 1's
+        sources and loads none of them -- no Image layer, no source marked
+        loaded, no load worker.  Step 1 here is the REAL controller (adopt,
+        refusal check, migration release and the box's source restore)."""
+        from napari.components import ViewerModel
+        from napari.layers import Image
+        from qtpy.QtWidgets import QListWidget
+        from napari_epicycle.data_preparation.controller import (
+            DataPreparationController)
+
+        # A clean workspace with one source whose prepared store is there.
+        ws = tmp_path / "Clean_S"
+        (ws / "artifacts" / "step1" / "largedata" / "Wound.zarr").mkdir(
+            parents=True)
+        (ws / "step1_state.json").write_text(json.dumps({
+            "schema_version": 2,
+            "sources": [{
+                "source_id": "src_1",
+                "path": str(tmp_path / "data" / "Wound.tif"),
+                "display_name": "Wound",
+                "prepared_store": "artifacts/step1/largedata/Wound.zarr",
+            }],
+            "patches": [],
+        }), encoding="utf-8")
+
+        loads: list = []
+        monkeypatch.setattr(DataPreparationController, "load_source",
+                            lambda self, *a, **k: loads.append(a))
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        step1 = shell._step_widgets["project_setup"]
+        step1.source_file_list = QListWidget(step1)
+        ctrl = DataPreparationController.__new__(DataPreparationController)
+        ctrl.widget = step1
+        ctrl.viewer = ViewerModel()
+        ctrl._step1_migration_offered = set()
+        ctrl._step1_sources_restored = set()
+        ctrl._suppress_publish = False
+        ctrl._workflow_shell = shell
+        ctrl._scanned_files = []
+        ctrl._suspend_source_restore = False
+        ctrl._loaded_source_file = None
+        ctrl._loaded_source_layers = []
+        ctrl._source_load_worker = None
+        ctrl._source_loading = False
+        step1.controller = ctrl
+        # The box's source restore, as Step 1 wires it.
+        step1.output_file_path.textChanged.connect(
+            lambda _t: ctrl._maybe_restore_step1_sources())
+
+        assert _pump_until(app, lambda: bool(shell._workspace_path))
+        assert shell._step_path_origin == {"project_setup": "adopted"}
+        listed = [step1.source_file_list.item(i).data(Qt.UserRole)
+                  for i in range(step1.source_file_list.count())]
+        assert listed == [str(tmp_path / "data" / "Wound.tif")]
+        assert loads == []
+        assert ctrl._loaded_source_file is None
+        assert ctrl._loaded_source_layers == []
+        assert ctrl._source_load_worker is None
+        assert ctrl._source_loading is False
+        assert [layer for layer in ctrl.viewer.layers
+                if isinstance(layer, Image)] == []
+
+    def test_the_perf_line_is_a_debug_line(
+            self, app, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("EPICYCLE_SYNC_DEBUG", raising=False)
+        ws = self._workspace(tmp_path)
+        shell, *_ = self._shell(app, monkeypatch, ws)
+        assert _pump_until(app, lambda: bool(shell._workspace_path))
+        out = capsys.readouterr().out
+        assert "adopted at start-up" in out
+        assert "[WORKSPACE-PERF]" not in out
+
+    def test_the_first_frames_say_opening_never_choose_a_workspace(
+            self, app, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path)
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        # Before the deferred work: a calm, neutral line.
+        assert shell.guidance_label._text == wf.MSG_OPENING.format(
+            name="Proj")
+        assert shell.guidance_label._color_key == "grey"
+        assert shell._read_active_step_status("project_setup") == \
+            "Step 1  ·  opening…"
+        assert _pump_until(app, lambda: bool(shell._workspace_path))
+        assert strips, "the banner was never painted"
+        assert all(text != "Choose a workspace folder to begin."
+                   for text, _key in strips), strips
+        assert all(key != "red" for _text, key in strips), strips
+        assert strips[-1][1] == "green"
+
+    def test_step1_follows_a_later_browse_in_another_step(
+            self, app, tmp_path, monkeypatch):
+        """Adopt A at start-up, Browse B in Step 2, come back to Step 1:
+        Step 1 is on B and the banner is green, not amber on A."""
+        a = self._workspace(tmp_path, name="A")
+        b = self._workspace(tmp_path, name="B")
+        shell, *_ = self._shell(app, monkeypatch, a)
+        assert _pump_until(app, lambda: bool(shell._workspace_path))
+        shell._active_step_id = "roi_hitl_2d"
+        _browse(shell, "roi_hitl_2d", b)
+        shell._active_step_id = "project_setup"
+        shell._adopt_into_step("project_setup")     # what entering Step 1 does
+        shell._refresh_divergence()
+        shell._refresh_step_guidance()
+        assert shell._step_widgets["project_setup"].output_file_path.text() \
+            == os.path.abspath(str(b))
+        assert shell._diverged_steps == {}
+        assert shell._step_path_origin["project_setup"] == "adopted"
+        assert shell.guidance_label._color_key == "green"
+
+    @pytest.mark.parametrize("refusal,kind", [
+        ("it needs the migration Browse offers", "migration"),
+        ("its step1_state.json cannot be read; Browse moves it aside and "
+         "starts afresh", "repair"),
+        ("its prepared-store records are out of date; Browse repairs them",
+         "repair"),
+    ])
+    def test_a_folder_that_needs_browse_is_named_not_prefilled(
+            self, app, tmp_path, monkeypatch, capsys, refusal, kind):
+        """Refused: the box is emptied (so no Step 1 entry restores -- and
+        writes into -- a folder nobody opened), the red line stays, and the
+        line under it names the folder and what Browse will do."""
+        ws = self._workspace(tmp_path)
+        shell, saves, emitted, strips = self._shell(
+            app, monkeypatch, ws, refusal=refusal)
+        ctrl = self._ctrl(shell)
+        assert _pump_until(app, lambda: bool(ctrl.asked))
+        _pump(app)
+        assert shell._workspace_path == ""
+        assert shell._step_path_origin == {}
+        assert ctrl.adopted == [] and ctrl.released == []
+        assert emitted == [] and saves == []          # emptied silently
+        step1 = shell._step_widgets["project_setup"]
+        assert step1.output_file_path.text() == ""
+        # Step 1's Browse dialog starts at the remembered folder.
+        assert step1.remembered_workspace == str(ws)
+        # Refused: today's red sentence, and the folder named under it.
+        assert shell.guidance_label._text == \
+            "Choose a workspace folder to begin."
+        assert shell.guidance_label._color_key == "red"
+        expected = (wf.MSG_REMEMBERED_MIGRATION if kind == "migration"
+                    else wf.MSG_REMEMBERED_REPAIR).format(name="Proj")
+        assert shell.advisory_label._text == expected
+        assert shell._read_active_step_status("project_setup") == \
+            "Step 1  ·  nothing loaded"
+        out = capsys.readouterr().out
+        assert f"[WORKSPACE] remembered workspace not adopted: {refusal}" \
+            in out
+
+    def test_the_named_folder_goes_once_a_workspace_is_shared(
+            self, app, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path)
+        other = self._workspace(tmp_path, name="Other")
+        shell, *_ = self._shell(
+            app, monkeypatch, ws,
+            refusal="it needs the migration Browse offers")
+        assert _pump_until(app, lambda: bool(self._ctrl(shell).asked))
+        _pump(app)
+        _browse(shell, "project_setup", other)
+        assert shell.guidance_label._color_key == "green"
+        assert shell.advisory_label._text == ""
+
+    def test_a_plain_folder_stays_a_suggestion(
+            self, app, tmp_path, monkeypatch, capsys):
+        ws = tmp_path / "Plain"
+        ws.mkdir()
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        _pump(app)
+        assert shell._workspace_path == ""
+        assert self._ctrl(shell).asked == []
+        assert emitted == [] and saves == []
+        assert shell._step_widgets["project_setup"].output_file_path.text() \
+            == str(ws)
+        assert shell.guidance_label._color_key == "red"
+        out = capsys.readouterr().out
+        assert "remembered workspace not adopted" in out
+        assert "remembered workspace shown (nothing loaded)" in out
+        assert "opening it after the first paint" not in out
+
+    def test_no_remembered_workspace_says_so_once(
+            self, app, monkeypatch, capsys):
+        shell = _make_shell(app)
+        QWidget.__init__(shell)
+        shell._schedule_remembered_workspace_adoption()
+        _pump(app)
+        out = capsys.readouterr().out
+        assert out.count("[WORKSPACE] no remembered workspace (none saved, "
+                         "or its folder is gone)") == 1
+        assert shell._workspace_path == ""
+
+    def test_it_waits_for_the_import_warm_up(
+            self, app, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path)
+        shell, *_ = self._shell(app, monkeypatch, ws, warm_done=False)
+        _pump(app, 30)
+        assert shell._workspace_path == ""        # still warming up
+        shell._warm.set()
+        assert _pump_until(app, lambda: bool(shell._workspace_path))
+
+    def test_a_warm_up_that_never_ends_is_capped(
+            self, app, tmp_path, monkeypatch):
+        from napari_epicycle.ui_shell.workflow_shell import (
+            EpiCycleWorkflowShell)
+        monkeypatch.setattr(EpiCycleWorkflowShell, "_WARM_UP_CAP_S", 0.2)
+        ws = self._workspace(tmp_path)
+        shell, *_ = self._shell(app, monkeypatch, ws, warm_done=False)
+        assert _pump_until(app, lambda: bool(shell._workspace_path),
+                           timeout=5.0)
+
+    def test_the_timer_does_nothing_once_the_window_is_closing(
+            self, app, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path)
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        shell._closing = True
+        _pump(app, 30)
+        assert shell._workspace_path == ""
+        assert emitted == [] and saves == []
+        assert self._ctrl(shell).asked == []
+
+    def test_the_timer_does_nothing_once_the_shell_is_deleted(
+            self, app, tmp_path, monkeypatch):
+        from qtpy import sip
+        ws = self._workspace(tmp_path)
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        ctrl = self._ctrl(shell)
+        sip.delete(shell)
+        _pump(app, 30)
+        assert shell.__dict__["_workspace_path"] == ""
+        assert emitted == [] and saves == []
+        assert ctrl.asked == []
+
+    def test_a_browse_to_the_same_folder_first_is_not_adopted_twice(
+            self, app, tmp_path, monkeypatch, capsys):
+        ws = self._workspace(tmp_path)
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        _browse(shell, "project_setup", os.path.abspath(str(ws)))
+        _pump(app, 30)
+        assert shell._workspace_path == os.path.abspath(str(ws))
+        assert len(saves) == 1                    # the Browse's own
+        assert self._ctrl(shell).adopted == []
+        assert "adopted at start-up" not in capsys.readouterr().out
+
+    def test_a_browse_elsewhere_first_wins(self, app, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path, name="Remembered")
+        other = self._workspace(tmp_path, name="Chosen")
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        _browse(shell, "project_setup", other)
+        _pump(app, 30)
+        assert shell._workspace_path == os.path.abspath(str(other))
+        assert saves == [os.path.abspath(str(other))]
+
+    def test_it_runs_once(self, app, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path)
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        shell._adopt_remembered_workspace_on_start()
+        shell._adopt_remembered_workspace_on_start()
+        _pump(app, 30)
+        assert len(saves) == 1
+        assert emitted == [os.path.abspath(str(ws))]
+
+    def test_a_box_the_user_already_changed_is_left_alone(
+            self, app, tmp_path, monkeypatch):
+        ws = self._workspace(tmp_path)
+        shell, saves, emitted, strips = self._shell(app, monkeypatch, ws)
+        line = shell._step_widgets["project_setup"].output_file_path
+        line.setText(str(tmp_path / "Typed"))
+        emitted.clear()
+        shell._adopt_remembered_workspace_on_start()
+        assert shell._workspace_path == ""
+        assert line.text() == str(tmp_path / "Typed")
+        assert emitted == [] and saves == []
+
+    def test_a_step1_without_its_box_says_why(
+            self, app, tmp_path, monkeypatch, capsys):
+        ws = self._workspace(tmp_path)
+        shell, *_ = self._shell(app, monkeypatch, ws)
+        shell._step_widgets["project_setup"] = QWidget()
+        shell._adopt_remembered_workspace_on_start()
+        assert shell._workspace_path == ""
+        assert ("remembered workspace not adopted: Step 1 has no "
+                "workspace box") in capsys.readouterr().out
+
+    @pytest.mark.skipif(os.name == "nt",
+                        reason="an absolute POSIX path is probed off Windows")
+    def test_a_missing_folder_is_missing_off_windows(self, app, tmp_path):
+        shell = _make_shell(app)
+        assert shell._workspace_is_missing(str(tmp_path / "gone")) is True
 
 
 # ---------------------------------------------------------------------------

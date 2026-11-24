@@ -44,6 +44,11 @@ __all__ = [
     "clear_cache",
     "load_last_workspace",
     "save_last_workspace",
+    "can_probe_path",
+    "looks_like_workspace",
+    "MSG_OPENING",
+    "MSG_REMEMBERED_MIGRATION",
+    "MSG_REMEMBERED_REPAIR",
     "banner_state",
     "banner_strips",
     "advisory_color",
@@ -364,7 +369,7 @@ def patch_count(workspace: str, allow_network: bool = False) -> int:
 
 
 # ---------------------------------------------------------------------------
-# The remembered workspace — a SUGGESTION, never an action
+# The remembered workspace — adopted at start-up when it holds a workspace
 # ---------------------------------------------------------------------------
 
 def _epicycle_dir() -> Path:
@@ -386,9 +391,9 @@ def _is_local_drive_path(path: str) -> bool:
 def load_last_workspace() -> str:
     """The remembered workspace path, or ``""``.
 
-    Corrupt, missing, wrong-shaped or (for a local drive letter) deleted →
-    ``""``, silently.  Performs no I/O inside the workspace beyond the single
-    guarded ``isdir``.
+    Corrupt, missing, wrong-shaped or (for a path that may be probed, see
+    `can_probe_path`) deleted → ``""``, silently.  Performs no I/O inside the
+    workspace beyond the single guarded ``isdir``.
     """
     try:
         raw = (_epicycle_dir() / LAST_WORKSPACE_FILENAME).read_text(
@@ -402,13 +407,74 @@ def load_last_workspace() -> str:
     if not isinstance(path, str) or not path.strip():
         return ""
     path = path.strip()
-    if _is_local_drive_path(path):
+    if can_probe_path(path):
         try:
             if not os.path.isdir(path):
                 return ""
         except OSError:
             return ""
     return path
+
+
+#: What marks a folder as an EpiCycle workspace: any step's state file in the
+#: root (``hitl_state.json`` is Step 2's older name), or the ``artifacts/``
+#: tree every step writes under.
+#:
+#: Known limits of this test, kept on purpose:
+#:   * a folder holding only an unrelated ``artifacts/`` folder counts as a
+#:     workspace (low risk: opening it reads, and Step 1 then finds nothing);
+#:   * a MAPPED network drive has a drive letter, so it is probed like a local
+#:     disk.  If the share is disconnected, these checks and the Step 1 restore
+#:     that follows can stall start-up for the network timeout (before the
+#:     start-up adoption, start-up made one ``isdir`` on it).  A UNC path
+#:     (``\\server\share``) is never probed.
+_WORKSPACE_MARKER_FILES = (
+    "step1_state.json",
+    "step2_state.json",
+    "step3_state.json",
+    "step4_state.json",
+    "hitl_state.json",
+)
+_WORKSPACE_MARKER_DIRS = ("artifacts",)
+
+
+def can_probe_path(path: str) -> bool:
+    """True when ``path`` may be looked at without risking a stall.
+
+    A drive-letter path always may (a mapped network drive included — see
+    the note above `_WORKSPACE_MARKER_FILES`).  On Windows anything else (a
+    UNC share) may not: a ``stat`` on a disconnected share can hang the
+    window for seconds.  Elsewhere an absolute path may.
+    """
+    if not path:
+        return False
+    if _is_local_drive_path(path):
+        return True
+    return os.name != "nt" and path.startswith("/")
+
+
+def looks_like_workspace(path: str) -> bool:
+    """True when ``path`` is a folder that already holds an EpiCycle workspace.
+
+    Reads the folder's top level only: one ``is_file`` / ``is_dir`` per marker,
+    no walk, nothing opened.  A path that may not be probed
+    (`can_probe_path`), a folder that is gone, or a plain folder → False.
+    """
+    if not can_probe_path(path):
+        return False
+    try:
+        root = Path(path)
+        if not root.is_dir():
+            return False
+        for name in _WORKSPACE_MARKER_FILES:
+            if (root / name).is_file():
+                return True
+        for name in _WORKSPACE_MARKER_DIRS:
+            if (root / name).is_dir():
+                return True
+    except Exception:          # noqa: BLE001 — a fact never raises
+        return False
+    return False
 
 
 def save_last_workspace(path: str) -> None:
@@ -470,6 +536,16 @@ STATE_LOCAL = "local"
 STATE_STALE = "stale"
 
 _MSG_STEP1_NONE = "Choose a workspace folder to begin."
+#: The neutral line shown while the remembered workspace is being opened at
+#: start-up (``{name}`` is the folder's name).
+MSG_OPENING = "Opening {name}…"
+#: The line under the red one when the remembered workspace was NOT opened at
+#: start-up because opening it needs the user (``{name}`` is the folder's
+#: name): an old-layout migration, or a repair that rewrites a file.
+MSG_REMEMBERED_MIGRATION = ("Last time you used {name}. Press Browse to open "
+                            "it; it needs the old-layout migration.")
+MSG_REMEMBERED_REPAIR = ("Last time you used {name}. Press Browse to open it; "
+                         "it needs a repair EpiCycle makes when you open it.")
 _MSG_OTHER_NONE = "Set a workspace in Project Setup before running this step."
 _MSG_MISSING = ("That workspace folder is no longer where it was. "
                 "Use Browse to find it.")
@@ -527,11 +603,13 @@ def banner_strips(
     advisory: str = "",
     missing: bool = False,
     browsed: bool = False,
+    opening: str = "",
+    remembered: Tuple[str, str] = ("", ""),
 ) -> List[Tuple[str, str, str]]:
     """The banner as a list of strips, top first.
 
     Returns ``[(text, colour_key, path_for_elision), …]`` where ``colour_key``
-    is one of ``"red" | "green" | "amber"`` and ``path_for_elision`` is the
+    is one of ``"red" | "green" | "amber" | "grey"`` and ``path_for_elision`` is the
     substring of ``text`` that may be middle-elided (``""`` when nothing in
     the strip is a path).
 
@@ -543,11 +621,31 @@ def banner_strips(
 
     ``browsed`` — see `banner_state`: amber requires that the user browsed
     THIS step somewhere else, not merely that its path is stale.
+
+    ``opening`` — the remembered workspace the shell is about to open at
+    start-up.  While nothing is shared yet it replaces the red "choose a
+    folder" line with one neutral line naming the folder, so the first frames
+    neither ask for a folder that is being opened nor claim one is open.
+
+    ``remembered`` — ``(path, kind)`` of the remembered workspace that was
+    NOT opened at start-up, ``kind`` being ``"migration"`` or ``"repair"``.
+    While nothing is shared, the red line keeps its place and one amber line
+    under it names the folder and says to press Browse.
     """
     state = banner_state(shared, step_path, browsed=browsed)
+    if state == STATE_NONE and opening:
+        name = os.path.basename(opening.rstrip("/\\")) or opening
+        return [(MSG_OPENING.format(name=name), "grey", "")]
     if state == STATE_NONE:
         msg = _MSG_STEP1_NONE if step_id == "project_setup" else _MSG_OTHER_NONE
-        return [(msg, "red", "")]
+        strips = [(msg, "red", "")]
+        path, kind = (tuple(remembered) + ("", ""))[:2]
+        if path:
+            name = os.path.basename(path.rstrip("/\\")) or path
+            line = (MSG_REMEMBERED_MIGRATION if kind == "migration"
+                    else MSG_REMEMBERED_REPAIR)
+            strips.append((line.format(name=name), "amber", ""))
+        return strips
 
     effective = step_path or shared
     strips: List[Tuple[str, str, str]] = []

@@ -4,6 +4,8 @@ import html
 import os
 import subprocess
 import sys
+import threading
+import time
 import weakref
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,7 +15,9 @@ from typing import Callable, Dict, Optional
 
 import psutil
 import qtawesome as qta
-from qtpy.QtCore import QEvent, QObject, QSize, QTimer, Qt, Signal
+from qtpy.QtCore import (
+    QCoreApplication, QEvent, QObject, QSize, QTimer, Qt, Signal,
+)
 from qtpy.QtGui import QFont, QFontMetrics
 from qtpy.QtWidgets import (
     QDockWidget,
@@ -101,6 +105,12 @@ class _AppCloseGuard(QObject):
             finally:
                 self._asking = False
             if refused_by is None:
+                # The close goes on: a start-up timer still pending must
+                # not adopt a workspace into a closing window.
+                try:
+                    shell._closing = True
+                except Exception:  # noqa: BLE001
+                    pass
                 return False
             print(f"[APP-CLOSE] close refused by step {refused_by}")
             event.ignore()
@@ -193,6 +203,8 @@ _STEP_ICONS: Dict[str, str] = {
 _BANNER_BASE_COLORS: Dict[str, str] = {
     "red": "#e07070",
     "amber": "#d4a843",
+    # Neutral: the remembered workspace is being opened at start-up.
+    "grey": "#aaaaaa",
 }
 
 
@@ -864,6 +876,15 @@ class EpiCycleWorkflowShell(QWidget):
     - bottom history drawer
     """
 
+    # Class-level defaults for the start-up opening's flags (set again in
+    # `__init__`), so a reader never falls through to a Qt attribute lookup.
+    _opening_workspace = ""
+    _remembered_adopt_ran = False
+    _closing = False
+    #: ``(path, "migration" | "repair")`` of the remembered workspace that was
+    #: NOT opened at start-up because it needs Browse; named under the banner.
+    _refused_workspace = ("", "")
+
     def __init__(self, napari_viewer: Viewer):
         super().__init__()
         self.viewer = napari_viewer
@@ -885,12 +906,21 @@ class EpiCycleWorkflowShell(QWidget):
         #: Adopt only ever runs on a user-driven step entry, never during the
         #: `_select_step` that `__init__` performs.
         self._shell_ready = False
-        # A SUGGESTION, kept SEPARATE from the shared workspace: it pre-fills
-        # Step 1's box and nothing else.  A workspace becomes *shared* only
-        # when the user browses to it, in any step, so
-        # a remembered path must not make the shell claim one.  No adopt, no
-        # state load, no source restore, no workspace I/O.
+        # The remembered workspace, kept SEPARATE from the shared one until
+        # it is adopted.  `__init__` only pre-fills Step 1's box with it (no
+        # state load, no source restore, no workspace I/O); the first turn
+        # of the event loop then adopts it as a Browse in Step 1 would, when
+        # the folder exists and holds a workspace.  Otherwise it stays a
+        # suggestion and nothing is shared.
         self._suggested_workspace = _workspace_facts.load_last_workspace()
+        #: The start-up adoption runs once.
+        self._remembered_adopt_ran = False
+        #: Set when napari's window close has gone through, so a start-up
+        #: timer still pending never acts on a closing window.
+        self._closing = False
+        #: The remembered workspace while it is being opened at start-up
+        #: ("" otherwise): the banner and the sidebar say "opening" for it.
+        self._opening_workspace = ""
         self._sidebar_dock_name = "EpiCycle Workflow Sidebar"
         self._history_dock_name = "EpiCycle Run + Artifact History"
         self._sidebar_container: Optional[QWidget] = None
@@ -1049,8 +1079,13 @@ class EpiCycleWorkflowShell(QWidget):
         first_step_id = self._step_specs[0].step_id
         self._select_step(first_step_id)
         # AFTER the startup selection, deliberately: Step 1's `on_step_enter`
-        # has already run against an empty box, so the remembered path cannot
-        # drag a source restore or a migration prompt into start-up.
+        # has already run against an empty box, so the pre-fill itself drags
+        # no source restore or migration prompt into the constructor.  The
+        # schedule decides first (a few cheap checks) whether the remembered
+        # folder will be opened, so the pre-fill's first paint already says
+        # "Opening <folder>…" instead of asking for a folder; the opening
+        # itself waits until the window has painted.
+        self._schedule_remembered_workspace_adoption()
         self._prefill_step1_from_suggestion()
         _hook_session_log_footer()
         self._install_app_close_guard()
@@ -1932,16 +1967,20 @@ class EpiCycleWorkflowShell(QWidget):
         except Exception:      # noqa: BLE001
             return ""
 
-    def set_workspace(self, path: str, source_step: str = "") -> None:
+    def set_workspace(self, path: str, source_step: str = "",
+                      announce_as: str = "") -> None:
         """Publish a workspace the user chose with Browse in `source_step`.
 
         The symmetric rule: **the most recent Browse in ANY step sets
         the shared workspace.**  No step is privileged — users come back to
         the step they left off in and set the folder there.
 
-        Called ONLY from the four Browse handlers — never from a
-        `textChanged` chain, so an adopt or the start-up pre-fill can never
-        masquerade as a user choice.
+        Called ONLY from the four Browse handlers and from the start-up
+        opening of the remembered workspace — never from a `textChanged`
+        chain, so an adopt or the start-up pre-fill can never masquerade as a
+        user choice.  The start-up opening passes NO `source_step` (no step
+        browsed it: every step, Step 1 included, adopts it and so follows a
+        later Browse anywhere); `announce_as` only names it in the log.
 
         What happens:
           * the browsing step is marked ``browsed`` (it is green by
@@ -1979,10 +2018,9 @@ class EpiCycleWorkflowShell(QWidget):
         self._suggested_workspace = path
         _workspace_facts.clear_cache()
         _workspace_facts.save_last_workspace(path)
-        print(f"[WORKSPACE] shared workspace set from {source_step or '?'}: "
-              f"{path}")
-        crash_logger.breadcrumb(
-            f"workspace set from {source_step or '?'}: {path}")
+        origin = source_step or announce_as or "?"
+        print(f"[WORKSPACE] shared workspace set from {origin}: {path}")
+        crash_logger.breadcrumb(f"workspace set from {origin}: {path}")
 
         # Re-adopt the step the user is looking at, so its banner + path box
         # follow immediately; the others follow on entry (`_select_step`).
@@ -2071,9 +2109,12 @@ class EpiCycleWorkflowShell(QWidget):
         """Show the remembered workspace in Step 1's box — and do nothing else.
 
         `blockSignals` keeps the pre-fill out of Step 1's `textChanged` chain
-        (source restore, patch-count refresh, migration timer), so start-up
-        performs no I/O inside the workspace.  The path
-        becomes real the moment the user enters a step or presses Browse.
+        (source restore, patch-count refresh, migration timer), so the
+        constructor performs no I/O inside the workspace.  When the folder is
+        going to be opened (`_schedule_remembered_workspace_adoption` decided
+        so), the opening empties this box again and puts the path back in
+        through the ordinary chain; otherwise this pre-fill is all that
+        remains, and nothing is shared until the user presses Browse.
         """
         if not self._suggested_workspace:
             return
@@ -2093,17 +2134,292 @@ class EpiCycleWorkflowShell(QWidget):
             print(f"[WORKSPACE] could not pre-fill the remembered "
                   f"workspace: {exc}")
             return
-        print(f"[WORKSPACE] remembered workspace shown (nothing loaded): "
-              f"{self._suggested_workspace}")
+        if getattr(self, "_opening_workspace", ""):
+            print(f"[WORKSPACE] remembered workspace shown; opening it after "
+                  f"the first paint: {self._suggested_workspace}")
+        else:
+            print(f"[WORKSPACE] remembered workspace shown (nothing loaded): "
+                  f"{self._suggested_workspace}")
         self._refresh_step_guidance()
         self.refresh_global_state()
 
+    #: The start-up opening waits this long after the first turn of the event
+    #: loop, so the window has painted before any work starts.
+    _START_ADOPT_DELAY_MS = 200
+    #: How often it looks again while the import warm-up is still running …
+    _WARM_UP_POLL_MS = 50
+    #: … and how long it waits for it at most before opening anyway.
+    _WARM_UP_CAP_S = 3.0
+
+    def _schedule_remembered_workspace_adoption(self) -> None:
+        """Decide, at construction, whether the remembered folder will be
+        opened, and if so start the import warm-up and the deferred opening.
+
+        The decision here is cheap (a few ``stat`` calls on the folder's top
+        level, no file opened).  The opening itself waits for the first turn
+        of the event loop plus `_START_ADOPT_DELAY_MS`, and for the import
+        warm-up, so the window paints first and the first ``import zarr``
+        (most of the old start-up block) happens off the main thread.  Until
+        then the banner says "Opening <folder>…".
+        """
+        path = getattr(self, "_suggested_workspace", "") or ""
+        if not path:
+            print("[WORKSPACE] no remembered workspace (none saved, or its "
+                  "folder is gone)")
+            return
+        reason = self._remembered_workspace_precheck(path)
+        if reason:
+            print(f"[WORKSPACE] remembered workspace not adopted: {reason}")
+            return
+        self._opening_workspace = path
+        self._start_import_warmup()
+        QTimer.singleShot(0, self._arm_remembered_workspace_adoption)
+
+    @staticmethod
+    def _remembered_workspace_precheck(path: str) -> str:
+        """Why the remembered folder is not even a candidate, or ``""``."""
+        if not _workspace_facts.can_probe_path(path):
+            return (f"it is not on a local drive (press Browse to open it): "
+                    f"{path}")
+        if not _workspace_facts.looks_like_workspace(path):
+            return f"the folder holds no EpiCycle workspace: {path}"
+        return ""
+
+    def _start_import_warmup(self) -> None:
+        """Import the store reader (and zarr) on a worker thread.
+
+        The first ``import zarr`` scans codec / filesystem plug-ins and took
+        most of a second on the main thread; done here, the opening only
+        waits for it.  A daemon thread: it never holds the app open.
+        """
+        done = threading.Event()
+        self._warm_imports_done = done
+
+        def _warm():
+            try:
+                import zarr  # noqa: F401
+                import zarr.storage  # noqa: F401
+                from packages.epicycle_largedata import (  # noqa: F401
+                    multiscale)
+            except Exception as exc:      # noqa: BLE001
+                print(f"[WORKSPACE] start-up import warm-up failed: {exc}")
+            finally:
+                done.set()
+
+        threading.Thread(target=_warm, name="epicycle-start-up-imports",
+                         daemon=True).start()
+
+    def _warm_up_finished(self) -> bool:
+        done = getattr(self, "_warm_imports_done", None)
+        return done is None or done.is_set()
+
+    def _arm_remembered_workspace_adoption(self) -> None:
+        """First turn of the event loop: give the window time to paint."""
+        if self._shell_is_closing():
+            self._adopt_remembered_workspace_on_start()
+            return
+        self._warm_wait_started = time.perf_counter()
+        QTimer.singleShot(self._START_ADOPT_DELAY_MS,
+                          self._adopt_when_warmed_up)
+
+    def _adopt_when_warmed_up(self) -> None:
+        """Open the remembered folder once the import warm-up is done (or
+        has run for `_WARM_UP_CAP_S`)."""
+        waited = time.perf_counter() - getattr(
+            self, "_warm_wait_started", time.perf_counter())
+        if (self._shell_is_closing() or self._warm_up_finished()
+                or waited >= self._WARM_UP_CAP_S):
+            if not self._warm_up_finished() and not self._shell_is_closing():
+                print(f"[WORKSPACE] start-up imports still loading after "
+                      f"{waited:.1f} s; opening the workspace anyway")
+            self._adopt_remembered_workspace_on_start()
+            return
+        QTimer.singleShot(self._WARM_UP_POLL_MS, self._adopt_when_warmed_up)
+
+    def _shell_is_closing(self) -> bool:
+        """True once the window is closing or this shell's Qt object is gone."""
+        if getattr(self, "_closing", False):
+            return True
+        try:
+            from qtpy import sip
+            if sip.isdeleted(self):
+                return True
+        except Exception:      # noqa: BLE001
+            pass
+        try:
+            if QCoreApplication.closingDown():
+                return True
+        except Exception:      # noqa: BLE001
+            pass
+        return False
+
+    def _adopt_remembered_workspace_on_start(self) -> None:
+        """The start-up rule: open the remembered workspace, not only show it.
+
+        Runs once, at the end of the deferred chain that
+        `_schedule_remembered_workspace_adoption` starts.  When the
+        remembered folder holds a workspace and Step 1 says opening it needs
+        nothing a user should decide (no old-layout migration, no repair that
+        would rewrite or rename a file — `start_up_refusal`), it is shared
+        WITHOUT a source step: every step, Step 1 included, ADOPTS it, so
+        Step 1 takes it through its path box's ordinary `textChanged` chain
+        (sources restored, patches counted) and follows a later Browse in any
+        step.  The migration mark that Step 1's adopt sets is released again,
+        so the migration is not asked now but is offered on the next Step 1
+        entry, as for any folder.
+
+        When Step 1 refuses (a migration or a repair is needed), the folder
+        is NOT left in Step 1's box -- a later Step 1 entry would restore,
+        and so repair, it unasked -- but named under the red banner line,
+        and Step 1's Browse starts there (`_name_refused_workspace`).  A
+        folder that holds no workspace stays a suggestion in the box (Step
+        1's restore writes nothing in it); so does a path that is not on a
+        local drive, which is never probed, exactly as before this rule.  In
+        every case nothing is shared, the banner reads "Choose a workspace
+        folder to begin.", and one console line says why.  A workspace the
+        user has already chosen, or a box the user has already changed, is
+        left alone.
+        """
+        if getattr(self, "_remembered_adopt_ran", False):
+            return
+        self._remembered_adopt_ran = True
+        t0 = time.perf_counter()
+        try:
+            self._open_remembered_workspace(t0)
+        finally:
+            if getattr(self, "_opening_workspace", ""):
+                self._opening_workspace = ""
+                if not self._shell_is_closing():
+                    try:
+                        self.refresh_global_state()
+                    except Exception as exc:      # noqa: BLE001
+                        print(f"[WORKSPACE] could not repaint after the "
+                              f"start-up opening: {exc}")
+
+    def _open_remembered_workspace(self, t0: float) -> None:
+        """The body of `_adopt_remembered_workspace_on_start`."""
+        if self._shell_is_closing():
+            print("[WORKSPACE] remembered workspace not adopted: the window "
+                  "is closing")
+            return
+        path = getattr(self, "_suggested_workspace", "") or ""
+        if not path:
+            return
+        if self._workspace_path:
+            if not self._same_path(self._workspace_path, path):
+                print(f"[WORKSPACE] remembered workspace not adopted: "
+                      f"{self._workspace_path} was chosen first")
+            return
+        if not getattr(self, "_shell_ready", False):
+            print("[WORKSPACE] remembered workspace not adopted: the shell "
+                  "was not ready")
+            return
+        reason = self._remembered_workspace_precheck(path)
+        if reason:
+            print(f"[WORKSPACE] remembered workspace not adopted: {reason}")
+            return
+        widget = self._step_widgets.get("project_setup")
+        line = getattr(widget, "output_file_path", None)
+        if line is None or not hasattr(line, "setText"):
+            print("[WORKSPACE] remembered workspace not adopted: Step 1 has "
+                  "no workspace box")
+            return
+        current = line.text().strip()
+        if current and not self._same_path(current, path):
+            print(f"[WORKSPACE] remembered workspace not adopted: Step 1's "
+                  f"box already holds {current}")
+            return
+        ctrl = self._get_step_controller("project_setup")
+        refusal = getattr(ctrl, "start_up_refusal", None)
+        if callable(refusal):
+            try:
+                reason = refusal(path) or ""
+            except Exception as exc:      # noqa: BLE001
+                reason = f"Step 1 could not check it ({exc})"
+            if reason:
+                print(f"[WORKSPACE] remembered workspace not adopted: "
+                      f"{reason}: {path}")
+                self._name_refused_workspace(path, reason, widget, line)
+                return
+        # Take the silent pre-fill back out, so Step 1 adopts the path through
+        # its box's ordinary signal chain (an empty box always adopts).
+        if current:
+            line.blockSignals(True)
+            try:
+                line.setText("")
+            finally:
+                line.blockSignals(False)
+        # The start-up opening lists Step 1's sources but never loads a source
+        # image into the viewer: that waits for the user's Load.
+        self.set_workspace(path, announce_as="start-up")
+        taken = (self._step_path_origin.get("project_setup") == "adopted"
+                 and self._same_path(line.text().strip(), path))
+        if taken:
+            release = getattr(ctrl, "release_migration_offer", None)
+            if callable(release):
+                release(path)
+        elif self._active_step_id == "project_setup":
+            # Step 1 is on screen and did not take it (its adopt said why):
+            # show the path again rather than an empty box.
+            self._restore_prefill(line, path)
+        print(f"[WORKSPACE] remembered workspace adopted at start-up: "
+              f"{self._workspace_path}")
+        if os.environ.get("EPICYCLE_SYNC_DEBUG") == "1":
+            print(f"[WORKSPACE-PERF] start-up adoption "
+                  f"{(time.perf_counter() - t0) * 1000.0:.1f} ms "
+                  f"(Step 1 check + restore + banner)")
+
+    def _name_refused_workspace(self, path: str, reason: str, widget,
+                                line) -> None:
+        """A remembered folder that needs Browse: name it, do not pre-fill it.
+
+        The box is emptied (signals blocked, as the pre-fill was made), so no
+        Step 1 entry runs its source restore on a folder the user has not
+        opened -- that restore would make the very repair Browse is meant to
+        make, unasked.  The banner keeps the red line and names the folder
+        under it; Step 1's Browse dialog starts at the folder.
+        """
+        kind = "migration" if "migration" in reason else "repair"
+        self._refused_workspace = (path, kind)
+        try:
+            if self._same_path(line.text().strip(), path):
+                line.blockSignals(True)
+                try:
+                    line.setText("")
+                finally:
+                    line.blockSignals(False)
+        except Exception as exc:      # noqa: BLE001
+            print(f"[WORKSPACE] could not take the remembered workspace out "
+                  f"of Step 1's box: {exc}")
+        try:
+            widget.remembered_workspace = path
+        except Exception:      # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _restore_prefill(line, path: str) -> None:
+        """Put the suggestion back in an emptied box, silently."""
+        try:
+            if line.text().strip():
+                return
+            line.blockSignals(True)
+            try:
+                line.setText(path)
+            finally:
+                line.blockSignals(False)
+        except Exception:      # noqa: BLE001
+            pass
+
     def _workspace_is_missing(self, path: str) -> bool:
-        """True when a local-drive workspace path no longer exists (I7/I13)."""
+        """True when a workspace path that may be probed no longer exists.
+
+        A path that may not be probed (a UNC share on Windows; see
+        `_workspace_facts.can_probe_path`) is never looked at (I7/I13).
+        """
         if not path:
             return False
         try:
-            if not _workspace_facts._is_local_drive_path(path):
+            if not _workspace_facts.can_probe_path(path):
                 return False
             return not os.path.isdir(path)
         except Exception:      # noqa: BLE001
@@ -2121,10 +2437,10 @@ class EpiCycleWorkflowShell(QWidget):
             return
         shared = self._workspace_path
         step_path = self._read_step_workspace_path(step_id)
-        # The remembered path pre-filled into Step 1's box is a SUGGESTION,
-        # not a folder anyone has opened (F1): while nothing is shared it
-        # must still read "Choose a workspace folder to begin.", or start-up
-        # would claim a workspace the user never picked.
+        # The remembered path pre-filled into Step 1's box is a SUGGESTION
+        # until it is adopted (the folder must exist and hold a workspace):
+        # while nothing is shared it must still read "Choose a workspace
+        # folder to begin.", or start-up would claim a folder nobody opened.
         if (not shared and step_path and self._suggested_workspace
                 and self._same_path(step_path, self._suggested_workspace)):
             step_path = ""
@@ -2135,6 +2451,8 @@ class EpiCycleWorkflowShell(QWidget):
             advisory=self._build_step_guidance(step_id),
             missing=self._workspace_is_missing(step_path or shared),
             browsed=self._step_path_origin.get(step_id) == "browsed",
+            opening=getattr(self, "_opening_workspace", ""),
+            remembered=getattr(self, "_refused_workspace", ("", "")),
         )
         labels = [self.guidance_label, self.advisory_label]
         # A diverged step's line names two paths and can be clipped in a
@@ -2154,6 +2472,11 @@ class EpiCycleWorkflowShell(QWidget):
         count come from `_workspace_facts`, which caches on an mtime, so the
         3 s poll costs a `stat`.
         """
+        # The remembered workspace is being opened: say so, without reading
+        # anything (this is painted before the shell is ready, too).
+        if getattr(self, "_opening_workspace", "") and not self._workspace_path:
+            short = self._STEP_SHORT_NAMES.get(step_id, "Step 1")
+            return f"{short}  ·  opening…"
         # Before the shell is ready nothing has been chosen and nothing may
         # be read from disk — not even a patch count (N1).
         if not getattr(self, "_shell_ready", False):

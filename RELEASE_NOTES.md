@@ -1,5 +1,20 @@
 # EpiCycle release notes
 
+## 0.1.4 (2026-11-23)
+
+Install fix, from a fresh install on a new NVIDIA card, and EpiCycle reopens your last workspace.
+
+- **Install: new NVIDIA cards (RTX 50 series) now work.** The install pulled the CUDA 11.8 build of PyTorch, which does not know these cards: PyTorch printed "... with CUDA capability sm_120 is not compatible with the current PyTorch installation" and segmentation never moved. The README's three install options and `environment.yml` now pull the CUDA 12.8 build of the same PyTorch (2.7.1), which runs these cards and the older ones alike. It needs an NVIDIA driver that supports CUDA 12.8 or newer; any current driver does.
+- **An existing environment is fixed with one line.** In an Anaconda Prompt, run `conda activate epicycle`, then:
+
+  ```
+  pip install --force-reinstall --no-deps torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
+  ```
+
+  There is no need to reinstall EpiCycle or anything else.
+- **Still being checked:** the GPU steps of reconstruction (u-Segment3D, through its GPU library cupy) still use the CUDA 11 runtime, and we are checking them on RTX 50 series cards.
+- **When you reopen napari, EpiCycle opens the folder you used last**, the same as choosing it with Browse: Step 1 lists its sources again and the other steps pick it up when you open them, but no image is loaded until you press Load. A folder that first needs the old-layout migration or a repair is not opened by itself; it is named under the top line, for you to open with Browse.
+
 ## 0.1.3 (2026-11-24)
 
 New ways to build objects on Step 3's Add page, and fixes found while curating with 0.1.2.
