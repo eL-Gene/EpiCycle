@@ -76,10 +76,24 @@ it back (or the shared folder comes back to it).
 
 ## EpiCycle remembers your last workspace
 
-When you reopen napari, Step 1's box is already filled with the folder you used
-last. Nothing is read or loaded until you actually click into a step — the path
-is a reminder, not an action. If the folder has been moved or renamed the box
-starts empty again, and if you want a different project just press Browse.
+When you reopen napari, EpiCycle opens the folder you used last, the same as
+picking it with Browse: Step 1's box shows it, Step 1's sources are listed again
+in ②, and the line at the top says the workspace is shared across steps. The
+other steps pick it up when you open them. No source image is loaded until you
+press Load. A folder that needs the old-layout migration, or a repair, is not
+opened by itself and is not put in the box; the line under the top one names it
+instead. Press Browse to open it: EpiCycle then makes the repair, or asks before
+migrating an old layout (the Browse window starts in that folder). With
+a large project the panel can stop responding for about a second, just after it
+appears, while the sources are listed.
+
+While it opens, the line at the top reads "Opening" and the folder's name. Only
+a folder that already holds an EpiCycle workspace (a step has saved something
+in it, or it has an artifacts folder) is opened this way. If it has been moved or renamed the box starts empty
+again; if it holds no workspace yet, or it is a network location without a
+drive letter (a path starting with `\\`), the box shows the path but nothing is
+opened, and the line at the top asks you to choose a workspace folder. If you
+want a different project, just press Browse.
 
 ## Where to put it
 

@@ -1088,6 +1088,11 @@ class BoxListPanel(QWidget):
 
 
 class DataPreparationWidget(QWidget):
+    #: The remembered workspace the shell did NOT open at start-up (it needs
+    #: a migration or a repair); Browse starts there while the box is empty.
+    #: Set by the workflow shell.
+    remembered_workspace = ""
+
     def __init__(self, viewer=None):
         super().__init__()
         self.viewer = viewer
@@ -5552,8 +5557,14 @@ class DataPreparationWidget(QWidget):
             self.accordion.setCurrentIndex(target)
 
     def browse_output_file(self):
+        # Start the dialog at the folder already in the box (the open
+        # workspace), so a re-pick or a neighbour is one click away; with an
+        # empty box, at the remembered workspace the shell did not open by
+        # itself (it needs a migration or a repair that Browse makes).
+        start_dir = (self.output_file_path.text().strip()
+                     or getattr(self, "remembered_workspace", "") or "")
         base_dir = QFileDialog.getExistingDirectory(
-            self, "Select Workspace Folder", ""
+            self, "Select Workspace Folder", start_dir
         )
         if not base_dir:
             return

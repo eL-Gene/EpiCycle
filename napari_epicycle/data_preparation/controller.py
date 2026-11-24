@@ -4227,9 +4227,13 @@ class DataPreparationController:
                   f"restored {len(state.get('sources', []))} source(s) "
                   f"(reconciled={changed})")
 
-    def _reconcile_sources_with_stores(self, ws, state):
+    def _reconcile_sources_with_stores(self, ws, state, dry_run=False):
         """Pure-ish reconciliation of the registry against ``largedata/*.zarr``.  Mutates *state* in place; returns True if it
-        changed.  NEVER points a row at another source's store."""
+        changed.  NEVER points a row at another source's store.
+
+        It never writes a file itself (the caller saves a changed state).
+        ``dry_run`` only silences its log lines, for a caller that asks
+        "would the restore change anything?" on a throw-away copy."""
         largedata = self._largedata_dir(ws)
         changed = False
 
@@ -4349,6 +4353,8 @@ class DataPreparationController:
                 if not os.path.isdir(resolved):
                     s["processed_store"] = None
                     changed = True
+                    if dry_run:
+                        continue
                     self._log(
                         "STEP1-RESTORE",
                         f"processed store missing for "
@@ -15216,6 +15222,73 @@ class DataPreparationController:
             self.widget.output_file_path.setText(path)
         finally:
             self._suppress_publish = False
+
+    def start_up_refusal(self, path: str) -> str:
+        """Why the shell must NOT open ``path`` by itself at start-up, or ``""``.
+
+        A start-up must never change a workspace the user has not touched,
+        and must never hide a question Browse would ask.  So this answers,
+        READ-ONLY, whether opening the folder would:
+          * need the old-layout migration (Browse offers it);
+          * rename an unreadable ``step1_state.json`` aside;
+          * rewrite ``step1_state.json`` because the source restore would
+            reconcile its store records (a store gone, an absolute pointer,
+            a store with no row).
+        The restore's own decision is run on a throw-away copy of the state;
+        nothing is written, renamed or logged.  Any failure of the check is
+        itself a reason not to open the folder unasked.
+        """
+        if not path:
+            return "no folder"
+        try:
+            from ._migrate_step1_layout import should_offer_migration
+            if should_offer_migration(path):
+                return "it needs the migration Browse offers"
+        except Exception as exc:      # noqa: BLE001
+            return f"the migration check failed ({exc})"
+        try:
+            from ._paths import step1_state_path
+            from ._state import _normalize
+            state_file = step1_state_path(path)
+            if state_file.exists():
+                try:
+                    data = json.loads(state_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    data = None
+                if not isinstance(data, dict):
+                    return ("its step1_state.json cannot be read; Browse "
+                            "moves it aside and starts afresh")
+                state = _normalize(data)
+            else:
+                state = empty_state()
+            if self._reconcile_sources_with_stores(path, state, dry_run=True):
+                return ("its prepared-store records are out of date; "
+                        "Browse repairs them")
+        except Exception as exc:      # noqa: BLE001
+            return (f"its Step 1 records could not be checked ({exc}); "
+                    f"Browse opens it and repairs what it can")
+        return ""
+
+    def release_migration_offer(self, path: str) -> None:
+        """Undo the migration pre-seed an adopt made, without asking now.
+
+        The start-up adoption goes through `adopt_workspace`, which marks the
+        folder's migration as already offered.  Called right after it, this
+        stops the pending migration timer (no question at start-up) and
+        clears the mark, so the next Step 1 entry offers the migration as it
+        would for any folder.
+        """
+        timer = getattr(self, "_migration_offer_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:      # noqa: BLE001
+                pass
+        try:
+            key = os.path.normcase(os.path.normpath(path))
+            self._step1_migration_offered.discard(key)
+        except Exception:      # noqa: BLE001
+            pass
 
     @staticmethod
     def _same_workspace(a: str, b: str) -> bool:

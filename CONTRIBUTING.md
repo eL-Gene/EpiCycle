@@ -25,7 +25,7 @@ git clone https://github.com/eL-Gene/EpiCycle.git
 cd EpiCycle
 conda create -n epicycle python=3.12
 conda activate epicycle
-pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu118
+pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
 pip install -e ".[pyqt6]" -c requirements-lock.txt
 napari -w napari-epicycle "EpiCycle Plugin"
 ```

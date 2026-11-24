@@ -585,6 +585,44 @@ class TestThroughTheBrowseHandler:
         assert ctrl.widget.output_file_path.text() == str(tmp_path / "B")
         assert ctrl.calls == TEARDOWN_ORDER
 
+    @staticmethod
+    def _dialog_start(box, remembered=None):
+        """The folder Step 1's Browse dialog opens at."""
+        from napari_epicycle.data_preparation import ui as step1_ui
+
+        class _Widget:
+            pass
+
+        ctrl = _controller()
+        ctrl.widget.output_file_path.setText(box)
+        w = _Widget()
+        w.controller = ctrl
+        w.output_file_path = ctrl.widget.output_file_path
+        if remembered is not None:
+            w.remembered_workspace = remembered
+        asked = []
+        real = step1_ui.QFileDialog.getExistingDirectory
+        step1_ui.QFileDialog.getExistingDirectory = staticmethod(
+            lambda *a, **k: asked.append(a) or "")
+        try:
+            step1_ui.DataPreparationWidget.browse_output_file(w)
+        finally:
+            step1_ui.QFileDialog.getExistingDirectory = real
+        assert asked
+        return asked[0][2]
+
+    def test_the_dialog_starts_at_the_open_workspace(self, tmp_path):
+        assert self._dialog_start(str(tmp_path / "A"),
+                                  remembered=str(tmp_path / "R")) == \
+            str(tmp_path / "A")
+
+    def test_an_empty_box_starts_at_the_remembered_workspace(self, tmp_path):
+        assert self._dialog_start("", remembered=str(tmp_path / "R")) == \
+            str(tmp_path / "R")
+
+    def test_nothing_remembered_starts_nowhere_in_particular(self):
+        assert self._dialog_start("") == ""
+
     def test_cancelling_the_dialog_changes_nothing(self, tmp_path):
         ctrl = _controller()
         ctrl.widget.output_file_path.setText(str(tmp_path / "A"))

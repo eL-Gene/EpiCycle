@@ -38,10 +38,10 @@ EpiCycle currently needs these exact versions:
 
 - Python 3.12
 - napari 0.8.0 (exactly this version) with PyQt6
-- PyTorch 2.7.1 with CUDA 11.8 for training, prediction and the whole-tissue engine (CPU-only runs only the curation steps)
+- PyTorch 2.7.1 with CUDA 12.8 for training, prediction and the whole-tissue engine (CPU-only runs only the curation steps)
 - Cellpose 3.1.1.2 (NOT Cellpose 4)
 - u-Segment3D at the pinned commit `5d11e1ef`
-- An NVIDIA GPU with a driver that supports CUDA 11.8 or newer. Newer drivers are backward compatible, so any current driver works; the more recent, the better.
+- An NVIDIA GPU with a driver that supports CUDA 12.8 or newer. Newer drivers are backward compatible, so any current driver works; the more recent, the better.
 
 The options below install exactly these.
 
@@ -58,18 +58,18 @@ Same versions, installed by hand. Run this in an Anaconda Prompt:
 ```
 conda create -n epicycle python=3.12
 conda activate epicycle
-pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu118
-pip install -r https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.3/requirements-lock.txt
-pip install --no-deps "napari-epicycle @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.3.zip"
+pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
+pip install -r https://raw.githubusercontent.com/eL-Gene/EpiCycle/v0.1.4/requirements-lock.txt
+pip install --no-deps "napari-epicycle @ https://github.com/eL-Gene/EpiCycle/archive/refs/tags/v0.1.4.zip"
 ```
 
-The PyTorch line is the CUDA 11.8 build we test with; any current NVIDIA driver runs it (a CUDA 13 driver works too). If you prefer a different CUDA build of the same PyTorch version, pick its line on pytorch.org and use it in place of ours; later CUDA builds are untested but expected to work. Without a GPU, use the CPU build; only the curation steps run.
+The PyTorch line is the CUDA 12.8 build we test with; it runs every current NVIDIA card including the RTX 50 series, and any current driver (a CUDA 13 driver works too). If you prefer another CUDA build of the same PyTorch version, pick its line on pytorch.org and use it in place of ours; other CUDA builds are untested but expected to work, except that the CUDA 11.8 build does not run RTX 50 series cards. Without a GPU, use the CPU build; only the curation steps run.
 
 The `requirements-lock.txt` line installs every other dependency at the exact version we test with. The last line installs EpiCycle itself.
 
-We install u-Segment3D from the exact version we used for the paper, not from its latest release. The latest release works with EpiCycle too, but it expects a newer CUDA than the rest of our setup, and installing it alongside ours leaves two GPU libraries fighting over the same job. We have not tested that on a GPU, so for now we stay with the version we know. Updating everything to the newer CUDA is on the list.
+We install u-Segment3D from the exact version we used for the paper, not from its latest release. The latest release works with EpiCycle too, but its GPU library (cupy) expects CUDA 12, while the version we pin uses the CUDA 11 cupy, and installing it alongside ours leaves two GPU libraries fighting over the same job. We have not tested that on a GPU, so for now we stay with the version we know. PyTorch already runs on CUDA 12.8; u-Segment3D's cupy still uses the CUDA 11 runtime, and moving it to CUDA 12 is coming.
 
-To install a later release, put its tag (`vX.Y.Z`) where the commands above say `v0.1.3`.
+To install a later release, put its tag (`vX.Y.Z`) where the commands above say `v0.1.4`.
 
 **Option C, from a clone**
 
@@ -78,7 +78,7 @@ git clone https://github.com/eL-Gene/EpiCycle.git
 cd EpiCycle
 conda create -n epicycle python=3.12
 conda activate epicycle
-pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu118
+pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
 pip install -e ".[pyqt6]" -c requirements-lock.txt
 napari -w napari-epicycle "EpiCycle Plugin"
 ```
@@ -141,7 +141,7 @@ EpiCycle is free software under the GNU General Public License, version 3 or (at
 - A results viewer
 - Additional measurable features
 - PyPI packaging
-- The whole stack on CUDA 12, including the current u-Segment3D release
+- u-Segment3D's cupy on CUDA 12 (PyTorch is already on CUDA 12.8), with the current u-Segment3D release
 - Updated readme and better guides
 - Quality of life changes from user suggestions
 - Other potential bug fixes

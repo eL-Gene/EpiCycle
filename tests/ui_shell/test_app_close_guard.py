@@ -143,6 +143,21 @@ def test_every_step_agrees_so_the_close_goes_on(window):
     assert ctrls["c"].calls == 1
 
 
+def test_a_close_that_goes_on_marks_the_shell_closing(window):
+    """So a start-up timer still pending never acts on a closing window."""
+    shell = _FakeShell(window, {"a": _Ctrl(answer=True)})
+    _install(shell)
+    assert _close(window).isAccepted()
+    assert getattr(shell, "_closing", False) is True
+
+
+def test_a_refused_close_leaves_the_shell_open(window):
+    shell = _FakeShell(window, {"a": _Ctrl(answer=False)})
+    _install(shell)
+    assert not _close(window).isAccepted()
+    assert getattr(shell, "_closing", False) is False
+
+
 def test_a_hook_that_raises_asks_and_no_keeps_the_window(
         window, close_anyway, capsys):
     close_anyway["answer"] = QMessageBox.No

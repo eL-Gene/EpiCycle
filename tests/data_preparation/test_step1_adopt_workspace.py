@@ -11,6 +11,8 @@ widget, the same style as the rest of `tests/data_preparation/`.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 
 import pytest
@@ -238,3 +240,109 @@ class TestBrowsePublish:
         ctrl._suppress_publish = True
         ctrl.on_workspace_browsed(str(tmp_path))
         assert published == []
+
+
+# ---------------------------------------------------------------------------
+# start-up: may the shell open a remembered folder by itself?
+# ---------------------------------------------------------------------------
+
+def _tree_digest(root):
+    """Every file under `root` with its bytes' hash: any write shows."""
+    out = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            full = os.path.join(dirpath, name)
+            with open(full, "rb") as fh:
+                out[os.path.relpath(full, root)] = hashlib.md5(
+                    fh.read()).hexdigest()
+    return out
+
+
+def _state(ws, sources):
+    with open(os.path.join(ws, "step1_state.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"schema_version": 2, "sources": sources, "patches": []},
+                  fh)
+
+
+_STORES_OUT_OF_DATE = ("its prepared-store records are out of date; Browse "
+                       "repairs them")
+
+
+class TestStartUpRefusal:
+    def test_a_clean_workspace_may_be_opened(self, tmp_path):
+        ws = str(tmp_path)
+        _state(ws, [])
+        assert _controller().start_up_refusal(ws) == ""
+
+    def test_a_workspace_without_a_step1_file_may_be_opened(self, tmp_path):
+        (tmp_path / "step3_state.json").write_text("{}")
+        assert _controller().start_up_refusal(str(tmp_path)) == ""
+
+    def test_a_legacy_layout_needs_the_migration(self, tmp_path):
+        (tmp_path / "hitl_state.json").write_text("{}")
+        (tmp_path / "p1.tif").write_bytes(b"x")
+        (tmp_path / "p1_metadata.json").write_text('{"patch_name": "p1"}')
+        before = _tree_digest(tmp_path)
+        reason = _controller().start_up_refusal(str(tmp_path))
+        assert reason == "it needs the migration Browse offers"
+        assert _tree_digest(tmp_path) == before
+
+    def test_a_skipped_migration_is_not_a_reason(self, tmp_path):
+        (tmp_path / "p1.tif").write_bytes(b"x")
+        (tmp_path / "p1_metadata.json").write_text('{"patch_name": "p1"}')
+        (tmp_path / ".step1_migration_skip").write_text("skip")
+        assert _controller().start_up_refusal(str(tmp_path)) == ""
+
+    def test_a_corrupt_state_file_needs_a_repair_and_is_not_renamed(
+            self, tmp_path):
+        (tmp_path / "step1_state.json").write_text("{not json")
+        before = _tree_digest(tmp_path)
+        reason = _controller().start_up_refusal(str(tmp_path))
+        assert reason == ("its step1_state.json cannot be read; Browse moves "
+                          "it aside and starts afresh")
+        assert _tree_digest(tmp_path) == before
+        assert sorted(os.listdir(tmp_path)) == ["step1_state.json"]
+
+    def test_a_missing_store_needs_a_repair(self, tmp_path):
+        ws = str(tmp_path)
+        _state(ws, [{"source_id": "src_0", "path": "C:/data/a.tif",
+                     "prepared_store": "artifacts/step1/largedata/a.zarr"}])
+        before = _tree_digest(tmp_path)
+        reason = _controller().start_up_refusal(ws)
+        assert reason == _STORES_OUT_OF_DATE
+        assert _tree_digest(tmp_path) == before
+
+    def test_an_absolute_store_pointer_needs_a_repair(self, tmp_path):
+        ws = str(tmp_path)
+        _state(ws, [{"source_id": "src_0", "path": "C:/data/a.tif",
+                     "prepared_store":
+                         "D:/elsewhere/artifacts/step1/largedata/a.zarr"}])
+        before = _tree_digest(tmp_path)
+        assert _controller().start_up_refusal(ws) == _STORES_OUT_OF_DATE
+        assert _tree_digest(tmp_path) == before
+
+    def test_a_plain_folder_is_not_refused_and_its_restore_writes_nothing(
+            self, tmp_path):
+        """A plain folder stays pre-filled in Step 1's box, so Step 1's
+        restore runs on it at the next entry: it must write nothing."""
+        (tmp_path / "notes.txt").write_text("x")
+        (tmp_path / "data").mkdir()
+        before = _tree_digest(tmp_path)
+        ctrl = _controller()
+        assert ctrl.start_up_refusal(str(tmp_path)) == ""
+        ctrl.widget.output_file_path._text = str(tmp_path)
+        ctrl._maybe_restore_step1_sources()
+        assert _key(str(tmp_path)) in ctrl._step1_sources_restored
+        assert _tree_digest(tmp_path) == before
+        assert sorted(os.listdir(tmp_path)) == ["data", "notes.txt"]
+
+
+class TestReleaseMigrationOffer:
+    def test_it_undoes_the_adopt_pre_seed_and_stops_the_timer(self, tmp_path):
+        ctrl = _controller()
+        ctrl.adopt_workspace(str(tmp_path))
+        assert _key(str(tmp_path)) in ctrl._step1_migration_offered
+        ctrl.release_migration_offer(str(tmp_path))
+        assert _key(str(tmp_path)) not in ctrl._step1_migration_offered
+        assert ctrl._migration_offer_timer.stopped == 1
