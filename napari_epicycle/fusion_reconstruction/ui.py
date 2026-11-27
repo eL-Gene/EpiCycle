@@ -620,8 +620,8 @@ class _TwoLineLabel(QLabel):
 
 class _MrRunLine(QWidget):
     """Model Refinement's run line, Predict + Reconstruct's run row without
-    the combo: "Run:" in the section-header style, the run's name at 11 px,
-    the dim tail.  Row min-height 28."""
+    the combo: "Step 3 run:" in the section-header style, the run's name at
+    11 px, the dim tail.  Row min-height 28."""
 
     def __init__(self, parent=None):
         super().__init__(parent)

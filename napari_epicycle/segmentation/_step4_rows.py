@@ -138,17 +138,23 @@ def list_stack_sources(workspace: str, step1_state,
 # ---------------------------------------------------------------------------
 
 
-def spacing_text(spacing: Optional[Dict[str, Any]]) -> str:
-    """``ROW_SPACING_*`` for a record's spacing, or ``ROW_SPACING_NONE``."""
+def spacing_text(spacing: Optional[Dict[str, Any]],
+                 z_assumed: bool = False) -> str:
+    """``ROW_SPACING_*`` for a record's spacing, or ``ROW_SPACING_NONE``.
+    *z_assumed* (a Step 1 value whose Z the file did not give) picks
+    ``ROW_SPACING_STEP1_Z_ASSUMED`` for a ``step1`` value."""
     if not isinstance(spacing, dict) or not spacing.get("zyx"):
         return T.ROW_SPACING_NONE
     try:
         z, y, x = (float(v) for v in spacing["zyx"])
     except (TypeError, ValueError):
         return T.ROW_SPACING_NONE
-    tpl = {"step1": T.ROW_SPACING_STEP1, "file": T.ROW_SPACING_FILE,
-           "user": T.ROW_SPACING_USER}.get(spacing.get("source"),
-                                           T.ROW_SPACING_FILE)
+    if z_assumed and spacing.get("source") == "step1":
+        tpl = T.ROW_SPACING_STEP1_Z_ASSUMED
+    else:
+        tpl = {"step1": T.ROW_SPACING_STEP1, "file": T.ROW_SPACING_FILE,
+               "user": T.ROW_SPACING_USER}.get(spacing.get("source"),
+                                               T.ROW_SPACING_FILE)
     return tpl.format(z=f"{z:.2f}", y=f"{y:.2f}", x=f"{x:.2f}")
 
 
@@ -168,13 +174,17 @@ def build_row(entry: Dict[str, Any], record: Dict[str, Any], *,
               needs: Optional[int] = None,
               ticked: bool = False,
               running: Optional[tuple] = None,
-              cache_complete: bool = False) -> Dict[str, Any]:
+              cache_complete: bool = False,
+              z_assumed: bool = False) -> Dict[str, Any]:
     """The row record of one listed stack.
 
     ``needs`` is how many channels the active model needs (None: unknown,
     so no channel warning); ``running`` is ``(stage, view_text)`` while a
     job works on this stack; ``cache_complete`` says whether a complete 2D
-    cache is on disk (found by the controller at refresh).
+    cache is on disk (found by the controller at refresh); ``z_assumed``
+    says the record's Step 1 voxel size has a Z the file did not give (the
+    controller decides it from Step 1's source row; the record is not
+    changed).
     """
     record = dict(record or {})
     name = entry.get("name") or ""
@@ -200,7 +210,9 @@ def build_row(entry: Dict[str, Any], record: Dict[str, Any], *,
                                    c=n_ch if n_ch is not None else "?")
         if has_3d and isinstance(n_cells, int):
             shape += T.ROW_SHAPE_CELLS.format(n=T.fmt_count(n_cells))
-    sp_text = spacing_text(spacing)
+    assumed = (bool(z_assumed) and isinstance(spacing, dict)
+               and spacing.get("source") == "step1")
+    sp_text = spacing_text(spacing, assumed)
 
     warns_wide: List[str] = []
     warns_narrow: List[str] = []
@@ -314,13 +326,18 @@ def build_row(entry: Dict[str, Any], record: Dict[str, Any], *,
         # saved features CSV the bucket counts read -- the last two only
         # for a stack that has a 3D result
         "vox_text": sp_text,
-        "vox_warn": spacing is None,
+        "vox_warn": spacing is None or assumed,
+        # only when set, so every other row's record keeps its keys; the
+        # row's tooltip (shown where no part of the row has its own)
+        **({"z_assumed": True, "row_tip": T.ROW_SPACING_Z_ASSUMED_TIP,
+            "vox_tip": sp_text + "\n" + T.ROW_SPACING_Z_ASSUMED_TIP}
+           if assumed else {}),
         # ①'s wide row, Session's pattern: line 2 = axes + shape (+ cells),
         # line 3 = the voxel size (amber "voxels" when none); the spacing is
         # no longer part of line 2 and there is no inline button
         "line2": " · ".join(p for p in (axes, shape) if p),
         "line3": sp_text,
-        "line3_warn": spacing is None,
+        "line3_warn": spacing is None or assumed,
         "labels_path": (record.get("labels_path") or "") if has_3d else "",
         "features_csv": (record.get("qc_features_csv") or "") if has_3d
         else "",

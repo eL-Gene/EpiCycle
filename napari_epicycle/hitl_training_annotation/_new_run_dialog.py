@@ -203,8 +203,12 @@ class NewRunDialog(QDialog):
         run_model_sources: Optional[List[Dict]] = None,
         step3_refined_sources: Optional[List[Dict]] = None,
         parent: Optional[QWidget] = None,
+        allow_create_only: bool = True,
     ):
         super().__init__(parent)
+        # False when there is no current run to stay on (the folder's first
+        # run): "Create only" is hidden and the run is always switched to.
+        self._allow_create_only = bool(allow_create_only)
         self._existing_slugs: Set[str] = set(existing_slugs or [])
         self._channels_snapshot: List[str] = list(channels_snapshot or [])
         self._run_model_sources = list(run_model_sources or [])
@@ -591,6 +595,8 @@ class NewRunDialog(QDialog):
             "prepping multiple runs ahead of time."
         )
         btn_row.addWidget(self._create_only_btn)
+        if not self._allow_create_only:
+            self._create_only_btn.setVisible(False)
 
         self._create_activate_btn = QPushButton("Create + Activate", parent=self)
         self._create_activate_btn.setStyleSheet(self._confirm_style)
@@ -797,6 +803,8 @@ class NewRunDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _on_create_only(self):
+        if not self._allow_create_only:
+            return
         self._activate = False
         self._submit()
 

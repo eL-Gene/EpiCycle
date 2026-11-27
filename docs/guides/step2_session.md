@@ -8,7 +8,7 @@ The first section of Step 2. It answers three questions: which project am I in, 
 
 "The project folder every step reads and writes. Shared with Steps 1, 3 and 4."
 
-This is the same project folder you chose in Step 1. Pick it once and every step uses it. A new workspace starts with one run called default; you can add more runs in Curation.
+This is the same project folder you chose in Step 1. Pick it once and every step uses it. A new project has no run until you make one with New Run in Curation. Until then Step 2 saves nothing in the project, and Predict, Accept, Finalize accepted, Train, the 2D annotator, the two imports and the training history each ask you to make a run first.
 
 ## Patch folder
 
@@ -72,6 +72,8 @@ A small table for the run you are working in, one column for each bucket (Latera
 A dash means nothing has been trained for that bucket yet. Under the table: "Switch or create runs with the run row at the top of Curation. Slice counts by status are in Curation → Curation progress; the GPU is in Diagnostics."
 
 Before a workspace is picked the card says "No workspace yet." Pick a workspace above and it fills.
+
+With a workspace but no run, the run line reads "No run yet" and the card's second line asks you to make a run with New Run in Curation. When the project has runs but none of them is active (for example the active run's folder was removed), it reads "None active"; pick a run in the Run picker. When Step 2 cannot use the project's list of runs (the file is damaged, old-layout data sits beside a folder of runs, or another program held the file when the project was opened), the run line names that case and Step 2 saves nothing until it is resolved; the Runs guide says what to do.
 
 ---
 

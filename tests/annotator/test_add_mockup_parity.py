@@ -151,15 +151,26 @@ def test_the_chevrons_carry_the_summaries(panel):
     wl = panel.add_walls_btn.property("_epicycle_chevron_title")
     assert mk == "Markers: nuclei masks · DAPI"
     assert wl.startswith("Walls: membrane · ")
-    assert wl.endswith(" · even out depth")
+    # the tissue outline's default (the shrink-wrap, on any region) is
+    # named after the preparation
+    assert " · even out depth · " in wl
+    assert wl.endswith(" · " + AP.ADD_SUM_OUTLINE_SHRINK)
 
 
 # --------------------------------------------------------------------------- #
 # U-M6, and the LOWs
 # --------------------------------------------------------------------------- #
 def test_the_dark_help_is_on_screen_in_advanced(panel):
-    assert panel._add_dark_help.text() == AP.ADD_HELP_DARK
-    assert not panel._add_dark_help.isHidden()
+    # with No outline picked (the default outline decides what is outside
+    # and says so in the Advanced help slot instead)
+    panel.add_outline_combo.setCurrentIndex(
+        AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
+    try:
+        assert panel._add_dark_help.text() == AP.ADD_HELP_DARK
+        assert not panel._add_dark_help.isHidden()
+    finally:
+        panel.add_outline_combo.setCurrentIndex(
+            AP.OUTLINE_KEYS.index(AP.OUTLINE_SHRINK))
 
 
 def test_dark_below_keeps_its_last_sentence():
@@ -172,11 +183,12 @@ def test_dark_below_keeps_its_last_sentence():
 
 
 def test_millions_never_reads_as_the_limit_when_over_it():
-    assert AP.millions(4_000_001) == "4.1"
-    assert AP.millions(4_000_000) == "4.0"
+    assert AP.millions(100_000_001) == "100.1"
+    assert AP.millions(100_000_000) == "100.0"
+    assert AP.millions(4_000_001) == "4.0", "under the limit: rounded down"
     assert AP.millions(1_048_576) == "1.0"
     assert AP.millions(10) == "0.1"
-    assert "4.0" not in AP.over_limit_line((1, 1, 4_000_001))
+    assert "100.0" not in AP.over_limit_line((1, 1, 100_000_001))
 
 
 def test_the_inline_sentences_are_named_constants():

@@ -440,12 +440,14 @@ ADD_WALL_KINDS = ("membrane", "gradient", "intensity", "frangi", "meijering")
 #: Tooltip-only exceptions, named: the preset combo's item tooltips and
 #: the six sliders inside Numbers....
 from packages.epicycle_annotator.add_preview import (  # noqa: E402
+    ADD_CELLS_PRESET_MAX_VOXELS as _AP_ADD_CELLS_PRESET_MAX_VOXELS,
     ADD_CLEAR_TIP as _AP_ADD_CLEAR_TIP,
     ADD_HELP_BRIDGE as _AP_ADD_HELP_BRIDGE,
     ADD_HELP_DARK_BELOW as _AP_ADD_HELP_DARK_BELOW,
     ADD_HELP_GROW as _AP_ADD_HELP_GROW,
     ADD_HELP_GROWTH_LIMIT as _AP_ADD_HELP_GROWTH_LIMIT,
     ADD_HELP_INCLUDE_MEMBRANE as _AP_ADD_HELP_INCLUDE_MEMBRANE,
+    ADD_HELP_LIVE_ALWAYS as _AP_ADD_HELP_LIVE_ALWAYS,
     ADD_HELP_LIVE_TICK as _AP_ADD_HELP_LIVE_TICK,
     ADD_HELP_LOOK_FOR as _AP_ADD_HELP_LOOK_FOR,
     ADD_HELP_NUC_OUTLINE as _AP_ADD_HELP_NUC_OUTLINE,
@@ -455,6 +457,7 @@ from packages.epicycle_annotator.add_preview import (  # noqa: E402
     ADD_HELP_NUC_RADIUS as _AP_ADD_HELP_NUC_RADIUS,
     ADD_HELP_TWO_GAP as _AP_ADD_HELP_TWO_GAP,
     ADD_WHOLE_TIP as _AP_ADD_WHOLE_TIP,
+    voxel_limit_words as _AP_voxel_limit_words,
 )
 
 ADD_HELP_LINES = {
@@ -595,6 +598,7 @@ ADD_HELP_LINES = {
         "How much smoothing, in voxels of the full-size image. 1.5 is "
         "gentle."),
     "add_live_cb": _AP_ADD_HELP_LIVE_TICK,
+    "add_live_always_cb": _AP_ADD_HELP_LIVE_ALWAYS,
     "add_batch_refine_btn": ADD_REFINE_ALL_TIP,
     "add_refine_piece_btn": (
         "Takes the object selected in the list to the Refine tab."),
@@ -7616,7 +7620,7 @@ class AdvancedFeaturesWidget(QWidget):
         self._add_s1_container = self._status_row(
             "_add_status_dot", self.add_status_label)
         layout.addWidget(self._add_s1_container)
-        # Cells at the default spacing runs, and
+        # Add at the default spacing runs (every path), and
         # says so in amber right under S1 -- never a refusal, never grey.
         self.add_spacing_note = QLabel(AP.ADD_NOTE_DEFAULT_SPACING)
         self.add_spacing_note.setWordWrap(True)
@@ -7681,8 +7685,9 @@ class AdvancedFeaturesWidget(QWidget):
         for key, frac, tip in (
             ("S", 0.125, "About an eighth of the patch on each side."),
             ("M", 0.25, "About a quarter of the patch on each side."),
-            ("L", 0.5, "About half of the patch on each side (cells: up to "
-                       "the 4 million voxel limit)."),
+            ("L", 0.5, "About half of the patch on each side (cells: at most "
+                       "{} voxels).".format(_AP_voxel_limit_words(
+                           _AP_ADD_CELLS_PRESET_MAX_VOXELS))),
         ):
             b = QPushButton(key)
             b.setStyleSheet(PANEL_BTN_STYLE)
@@ -8275,8 +8280,8 @@ class AdvancedFeaturesWidget(QWidget):
         _ca = QVBoxLayout(self._add_cells_adv)
         _ca.setContentsMargins(0, 0, 0, 0)
         _ca.setSpacing(2)
-        # a Cells whole patch: what fills it, at the top where Grow by sits
-        # (Grow by, Wall cost and Growth limit are hidden there)
+        # a Cells whole patch: what fills it under the Grow by pick, at the
+        # top of the card
         self._add_whole_fill_label = QLabel(AP.ADD_HELP_WHOLE_FILL,
                                             self._add_cells_adv)
         self._add_whole_fill_label.setWordWrap(True)
@@ -8284,8 +8289,7 @@ class AdvancedFeaturesWidget(QWidget):
         self._add_whole_fill_label.setVisible(False)
         _ca.addWidget(self._add_whole_fill_label)
         # Grow by, read BY INDEX through AP.GROW_KEYS: the fill as before,
-        # or Spread from each marker (on a box; a whole patch hides the row
-        # and keeps the box's pick)
+        # or Spread from each marker (on a box and on a whole patch)
         self.add_grow_combo = QComboBox()
         self.add_grow_combo.addItems([AP.ADD_GROW_FLOOD, AP.ADD_GROW_SPREAD])
         self.add_grow_combo.setSizeAdjustPolicy(
@@ -8297,8 +8301,7 @@ class AdvancedFeaturesWidget(QWidget):
         _grr.setContentsMargins(0, 0, 0, 0)
         self._add_grow_row.setLayout(_grr)
         _ca.addWidget(self._add_grow_row)
-        # Spread's own two rows (one wrapper each), shown with Spread on a
-        # box only
+        # Spread's own two rows (one wrapper each), shown with Spread
         self._add_spread_adv = QWidget(self._add_cells_adv)
         _sp = QVBoxLayout(self._add_spread_adv)
         _sp.setContentsMargins(0, 0, 0, 0)
@@ -8519,6 +8522,24 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_live_cb.setToolTip(AP.ADD_HELP_LIVE_TICK)
         self.add_live_cb.setVisible(False)
         _adv.addWidget(self.add_live_cb)
+        # directly under it, grey: why a Cells click is not run as you
+        # click here (the orchestrator's sentence, decided with S1's);
+        # hidden while live runs, with the tick off, and while "Always
+        # update as I click" is on
+        self._add_live_note = QLabel("")
+        self._add_live_note.setWordWrap(True)
+        self._add_live_note.setStyleSheet(_HELPER_LINE_STYLE)
+        self._add_live_note.setVisible(False)
+        _adv.addWidget(self._add_live_note)
+        # the live restrictions switched off (Cells ▸ Click markers with the
+        # tick above on only; off by default and never kept: the
+        # orchestrator does not save it)
+        self.add_live_always_cb = QCheckBox(AP.ADD_LIVE_ALWAYS_LABEL)
+        self.add_live_always_cb.setStyleSheet(PANEL_CHECKBOX_STYLE)
+        self.add_live_always_cb.setChecked(False)
+        self.add_live_always_cb.setToolTip(AP.ADD_HELP_LIVE_ALWAYS)
+        self.add_live_always_cb.setVisible(False)
+        _adv.addWidget(self.add_live_always_cb)
         self._add_advanced_help = QLabel("")
         self._add_advanced_help.setWordWrap(True)
         self._add_advanced_help.setStyleSheet(PANEL_WARN_STYLE)
@@ -8744,6 +8765,12 @@ class AdvancedFeaturesWidget(QWidget):
         self.add_grow_combo.currentIndexChanged.connect(
             lambda *_a: (self._apply_add_visibility(),
                          self._refresh_add_summaries()))
+        # "Always update as I click" shows only while the live tick is on
+        self.add_live_cb.toggled.connect(
+            lambda _c: self._apply_add_visibility())
+        # the line under the live tick hides while this is on
+        self.add_live_always_cb.toggled.connect(
+            lambda _c: self._apply_add_visibility())
         self.add_outline_combo.currentIndexChanged.connect(
             self._on_add_outline_index_changed)
         self.add_show_outline_cb.toggled.connect(
@@ -9064,13 +9091,9 @@ class AdvancedFeaturesWidget(QWidget):
         self._apply_add_visibility()
 
     def _add_offered_source_entries(self) -> list:
-        """The From items the combo offers now: all of them on a box; on a
-        Cells whole patch "Objects from ..." (the grey no-run item included)
-        and Click markers -- the nuclei masks hidden, not grey."""
-        entries = list(getattr(self, "_add_source_entries_all", []))
-        if self._add_sources_offered_whole:
-            return [e for e in entries if e[2][0] in ("labels", "paint")]
-        return entries
+        """The From items the combo offers now: all of them, on a box and
+        on a whole patch alike."""
+        return list(getattr(self, "_add_source_entries_all", []))
 
     def _fill_add_source_combo(self, want) -> None:
         """Rebuild the From combo from the offered items with ``want`` (a
@@ -9107,16 +9130,13 @@ class AdvancedFeaturesWidget(QWidget):
             self._add_run_markers = None
 
     def _offer_add_sources(self) -> bool:
-        """A Cells whole patch grows its cells from another run's objects or
-        from Click markers, so while the box is the whole patch the From
-        combo lists the "Objects from ..." items and Click markers.  Rebuilt
-        once per change of the whole-patch flag, silently (no source
-        callback, nothing marked touched).  Going whole, a run or Click
-        markers picked on the box stays picked; nuclei masks are set aside
-        and the combo is blank (a run is never pre-selected).  Back on a box
-        the set-aside pick returns -- unless the user picked a run or Click
-        markers on the whole patch, which then stays.  True when the list
-        was rebuilt."""
+        """A Cells whole patch grows its cells from any source a box takes
+        (another run's objects, nuclei masks, Click markers).  Rebuilt once
+        per change of the whole-patch flag, silently (no source callback,
+        nothing marked touched).  Going whole, the pick on the box stays
+        picked; a blank combo stays blank (a run is never pre-selected).
+        Back on a box a pick made on the whole patch stays; a blank one
+        takes the box's default.  True when the list was rebuilt."""
         ui = getattr(self, "_add_ui", {})
         want = bool(ui.get("whole_patch")) and bool(ui.get("box"))
         if want == bool(self._add_sources_offered_whole):
@@ -9128,8 +9148,7 @@ class AdvancedFeaturesWidget(QWidget):
         self._add_sources_offered_whole = want
         if want:
             keep = (cur if cur is not None
-                    and ((cur[0] == "labels" and cur[1] is not None)
-                         or cur[0] == "paint") else None)
+                    and (cur[0] != "labels" or cur[1] is not None) else None)
             self._add_source_box_key = None if keep is not None else cur
             self._fill_add_source_combo(keep)
         else:
@@ -9318,7 +9337,7 @@ class AdvancedFeaturesWidget(QWidget):
         """Is this card's chevron on the page for the preset and Look for
         nuclei now?  Markers: on Cells, and on Nuclei with the markers;
         Walls: on Cells only; Tissue outline (Nuclei's): on Anywhere and the
-        markers, a box, not a whole patch, before a result."""
+        markers, on a box or a whole patch, before a result."""
         if self.get_add_preset() == "cells":
             return attr in ("add_markers_btn", "add_walls_btn")
         if attr == "add_nuc_outline_btn":
@@ -9326,7 +9345,7 @@ class AdvancedFeaturesWidget(QWidget):
         return attr == "add_markers_btn" and self.add_look_markers()
 
     def _add_nuc_outline_offered(self) -> bool:
-        """Nuclei ▸ Anywhere or the markers, on a box (not a whole patch),
+        """Nuclei ▸ Anywhere or the markers, on a box or a whole patch,
         with no candidates up and not in the review: the Tissue outline card
         is on the page (never on Inside each cell: the cells confine the
         nuclei)."""
@@ -9334,7 +9353,7 @@ class AdvancedFeaturesWidget(QWidget):
         box = bool(ui.get("box"))
         return (self.get_add_preset() != "cells"
                 and not self.add_look_inside()
-                and box and not bool(ui.get("whole_patch"))
+                and box
                 and not bool(ui.get("candidates"))
                 and not bool(ui.get("review")))
 
@@ -9554,13 +9573,11 @@ class AdvancedFeaturesWidget(QWidget):
 
     def _add_nuc_outline_on(self) -> str:
         """The Nuclei outline asked for now: its pick on Anywhere and the
-        markers on a box, ``"none"`` on Cells, on Inside each cell and on a
-        whole patch (the orchestrator's rule: the pick is kept for the next
-        box)."""
+        markers, on a box or a whole patch; ``"none"`` on Cells and on
+        Inside each cell (the orchestrator's rule)."""
         from packages.epicycle_annotator.add_preview import OUTLINE_NONE
 
-        if (self.get_add_preset() == "cells" or self.add_look_inside()
-                or bool(getattr(self, "_add_ui", {}).get("whole_patch"))):
+        if self.get_add_preset() == "cells" or self.add_look_inside():
             return OUTLINE_NONE
         return self.get_add_nuc_outline()
 
@@ -9586,21 +9603,18 @@ class AdvancedFeaturesWidget(QWidget):
         """The Cells choices that follow the box and the patch, applied
         QUIETLY (never a user choice):
 
-        * Grow by is the box's own pick: a whole patch hides the row (it is
-          filled to the walls whatever the row says) and keeps the pick;
+        * Grow by shows on a box and a whole patch alike, both items
+          pickable (on a whole patch Fill is the fill with a background
+          marker, or the box rule as you click; Spread is Spread);
         * an install that cannot spread greys Spread from each marker, and
-          a pick of it falls back to the fill -- on a whole patch too, so a
-          late "no" about numba moves the hidden pick from Spread to Fill;
+          a pick of it falls back to the fill -- on a whole patch too;
         * "Outline of the objects you cleared" is grey, its reason in its
           words, until a Clear is in force; an untouched Tissue outline
-          is the cleared outline on a whole patch when there is one, else
-          the shrink-wrap there, and "No outline (as before)" on a box."""
+          is the cleared outline when there is one, else the shrink-wrap,
+          on a box and a whole patch alike."""
         from packages.epicycle_annotator import add_preview as AP
 
         ui = self._add_ui
-        cells = self.get_add_preset() == "cells"
-        whole_cells = (cells and bool(ui.get("whole_patch"))
-                       and bool(ui.get("box")))
         numba_ok = ui.get("numba_ok") is not False
         in_force = bool(ui.get("cleared_in_force"))
         g = self.add_grow_combo
@@ -9628,11 +9642,10 @@ class AdvancedFeaturesWidget(QWidget):
             for i in range(o.count()):
                 o.setItemData(i, o.itemText(i), Qt.ToolTipRole)
             if "add_outline_combo" not in self._add_touched:
-                if whole_cells:
-                    want = (AP.OUTLINE_CLEARED if in_force
-                            else AP.OUTLINE_SHRINK)
-                else:
-                    want = AP.OUTLINE_NONE
+                # one default for every region: the outline of the objects
+                # cleared while a Clear is in force, else the shrink-wrap
+                want = (AP.OUTLINE_CLEARED if in_force
+                        else AP.OUTLINE_SHRINK)
                 if want != self.get_add_outline():
                     o.setCurrentIndex(AP.OUTLINE_KEYS.index(want))
         finally:
@@ -9815,6 +9828,19 @@ class AdvancedFeaturesWidget(QWidget):
         # markers (a Cells box over the live limit, and a whole patch, wait
         # for Preview: S1 says so)
         self.add_live_cb.setVisible(clicks)
+        # ... and beside it "Always update as I click": Cells ▸ Click
+        # markers with the tick on only (hidden, never grey, where it does
+        # nothing)
+        self.add_live_always_cb.setVisible(
+            cells and kind == "paint" and self.add_live_cb.isChecked())
+        # ... and between them the reason a click is not run as you click
+        # here (Cells ▸ Click markers, the tick on, "Always update as I
+        # click" off, a reason pushed)
+        live_note = str(ui.get("live_tick_note") or "")
+        self._add_live_note.setText(live_note)
+        self._add_live_note.setVisible(
+            cells and kind == "paint" and self.add_live_cb.isChecked()
+            and not self.add_live_always_cb.isChecked() and bool(live_note))
         # the marker list before a result only -- over
         # candidates / REVIEW S5's list is the list; kept, not cleared
         self.add_click_list.setVisible(
@@ -9872,12 +9898,12 @@ class AdvancedFeaturesWidget(QWidget):
         self._add_spacing_row.setVisible(not markers)
         self._add_marker_spacing_row.setVisible(
             markers and self.add_separate_cb.isChecked())
-        # Cells: Grow by on a box, Wall cost and Growth limit with Spread on
-        # a box, Include membrane with Spread or on a whole patch (which is
-        # filled to the walls whatever Grow by says: its line says so, the
-        # three rows are hidden, never grey), Bridge gaps with the
-        # shrink-wrap; the Walls card's Tissue outline, its help (before a
-        # result only) and Show (with an outline chosen)
+        # Cells: Grow by on a box and a whole patch, Wall cost and Growth
+        # limit with Spread, Include membrane with Spread or on a whole
+        # patch filled with a background marker (its line at the top says
+        # what fills it under each pick), Bridge gaps with the shrink-wrap;
+        # the Walls card's Tissue outline, its help (before a result only)
+        # and Show (with an outline chosen)
         outline = self.get_add_outline() if cells else "none"
         by_outline = cells and outline != "none"
         # Nuclei's own Tissue outline (Anywhere and the markers; "none" on
@@ -9887,14 +9913,20 @@ class AdvancedFeaturesWidget(QWidget):
         nuc_by_outline = not cells and nuc_outline != "none"
         nuc_shrink = not cells and nuc_outline == "shrink"
         whole_cells = cells and whole
-        live_rule = whole_cells and bool(ui.get("live_whole_rule"))
-        spread = cells and not whole and self.get_add_grow() == "compete"
-        # the same slot, the live rule's words or the background fill's
-        self._add_whole_fill_label.setText(
-            AP.ADD_HELP_WHOLE_FILL_LIVE if live_rule
-            else AP.ADD_HELP_WHOLE_FILL)
+        spread = cells and self.get_add_grow() == AP.GROW_SPREAD
+        # the box rule is the fill to the walls only (Spread is never filled
+        # as you click)
+        live_rule = (whole_cells and bool(ui.get("live_whole_rule"))
+                     and not spread)
+        # the same slot, Spread's words, the live rule's (as you click, or
+        # on Preview where the click fill stepped aside -- S1 says the
+        # same) or the background fill's
+        self._add_whole_fill_label.setText(AP.whole_fill_help(
+            live_rule, ui.get("live_whole_ok"), spread=spread,
+            always=(self.add_live_cb.isChecked()
+                    and self.add_live_always_cb.isChecked())))
         self._add_whole_fill_label.setVisible(whole_cells)
-        self._add_grow_row.setVisible(cells and not whole)
+        self._add_grow_row.setVisible(cells)
         self._add_spread_adv.setVisible(spread)
         self._add_wall_cost_row.setVisible(spread)
         self._add_growth_limit_row.setVisible(spread)
@@ -9941,7 +9973,8 @@ class AdvancedFeaturesWidget(QWidget):
         self._add_inside_adv.setVisible(inside)
         # the spacing never greys a micron row; at
         # the default (1, 1, 1) the amber note under S1 says so instead --
-        # Cells only, and not over candidates or REVIEW (the ceiling states)
+        # wherever a knob is in microns, and not over candidates or REVIEW
+        # (the ceiling states)
         dark_on = self.add_dark_outside_cb.isChecked()
         # D-1: the dark-off leak note, the spacing note's rules (Cells, no
         # candidates, not REVIEW) -- not under a tissue outline, which
@@ -9952,22 +9985,28 @@ class AdvancedFeaturesWidget(QWidget):
         # the dark-off note gives way (its reason, ADD_DARK_OFF, is in the
         # Advanced help slot anyway); on a whole patch no face is a box face
         dark_amber = dark_note and not derive_shown
-        self.add_dark_off_note.setText(AP.ADD_NOTE_DARK_OFF_LEAK_WHOLE if whole
-                                       else AP.ADD_NOTE_DARK_OFF_LEAK)
+        # on a whole patch under Spread the growth limit, not "a few µm",
+        # is what stops a cell in open background: the Spread note takes
+        # the slot (and is not said again in the Advanced help slot)
+        spread_amber = dark_amber and whole and spread
+        self.add_dark_off_note.setText(
+            AP.ADD_NOTE_SPREAD_OPEN if spread_amber
+            else AP.ADD_NOTE_DARK_OFF_LEAK_WHOLE if whole
+            else AP.ADD_NOTE_DARK_OFF_LEAK)
         self.add_dark_off_note.setVisible(dark_amber)
         # A-M2 (the A1-A4 audit): QC Features -> Settings... is GREY while a
         # box holds the Step 3 lock, so the boxed note says Cancel first
         spacing_text = (AP.ADD_NOTE_DEFAULT_SPACING_BOXED if box
                         else AP.ADD_NOTE_DEFAULT_SPACING)
         self.add_spacing_note.setText(spacing_text)
-        # (not on a Cells whole patch: there S1 refuses at the default
-        # spacing and says the same thing).  The Nuclei markers follow
-        # Cells: their Ball is in microns, on a box or the whole patch; so
-        # does a Nuclei Tissue outline (measured in microns)
-        spacing_note = ((cells or markers or nuc_by_outline)
+        # Nothing refuses at the default spacing: Cells (a box or the
+        # whole patch), the Nuclei markers (their Ball), Inside each cell
+        # (every knob in microns) and a Nuclei Tissue outline (measured in
+        # microns) run on it, and this note says so -- on a box or the
+        # whole patch alike (Anywhere runs on a whole patch too)
+        spacing_note = ((cells or markers or inside or nuc_by_outline)
                         and bool(ui.get("default_spacing"))
-                        and not review and not cands
-                        and not (whole and not markers))
+                        and not review and not cands)
         # the two amber notes STACKED put 7f at 812 px against 759.5; the
         # dark-off note wins S1's slot and the spacing note moves to the
         # Advanced help slot (751 px).  A derive note (Cells) wins over both:
@@ -10021,9 +10060,10 @@ class AdvancedFeaturesWidget(QWidget):
         if spacing_moved:
             adv_msg = "\n\n".join([m for m in (adv_msg, spacing_text) if m])
         extra = []
-        if spread and not by_outline and not dark_on:
+        if spread and not by_outline and not dark_on and not spread_amber:
             # nothing but the growth limit stops a cell in open background
-            # (Spread on a box only: a whole patch never spreads)
+            # (Spread, on a box or a whole patch -- unless the amber slot
+            # says it already)
             extra.append(AP.ADD_NOTE_SPREAD_OPEN)
         if cells and not numba_ok and not whole:
             # on a whole patch S1 says it, and Preview is grey
@@ -10087,9 +10127,11 @@ class AdvancedFeaturesWidget(QWidget):
         if cells:
             parts = []
             ui = getattr(self, "_add_ui", {})
-            if ui.get("whole_patch") and ui.get("box"):
-                # a whole patch is filled to the walls (Grow by hidden);
-                # filled as you click, the membrane tick does not apply
+            if (ui.get("whole_patch") and ui.get("box")
+                    and self.get_add_grow() != AP.GROW_SPREAD):
+                # a whole patch on Fill is filled to the walls (with a
+                # background marker); filled as you click, the membrane
+                # tick does not apply.  Spread: its own summary, below
                 parts.append(AP.advanced_fill_summary(
                     self.add_include_membrane_cb.isChecked(),
                     live=bool(ui.get("live_whole_rule"))))
@@ -10190,6 +10232,7 @@ class AdvancedFeaturesWidget(QWidget):
         on_show_outline=None,
         on_live_toggled=None,
         on_click_pick=None,
+        on_live_always_toggled=None,
     ):
         """Wire the Add page's controls to external orchestration callbacks.
 
@@ -10289,6 +10332,7 @@ class AdvancedFeaturesWidget(QWidget):
               signal="toggled")
         _wire("add_contour_cb", on_contour_toggled, signal="toggled")
         _wire("add_live_cb", on_live_toggled, signal="toggled")
+        _wire("add_live_always_cb", on_live_always_toggled, signal="toggled")
         if on_advanced_changed is not None:
             self._on_add_advanced_cb = on_advanced_changed
             # connected ONCE: the slot reads the callback attribute, so a
@@ -10565,6 +10609,8 @@ class AdvancedFeaturesWidget(QWidget):
         numba_ok: bool | None = None,
         numba_why: str | None = None,
         live_whole_rule: bool | None = None,
+        live_whole_ok: bool | None = None,
+        live_tick_note: str | None = None,
         outline_drawn: bool | None = None,
         outline_refused: bool | None = None,
         outline_drawing: bool | None = None,
@@ -10664,6 +10710,14 @@ class AdvancedFeaturesWidget(QWidget):
             # (which that fill never reads) is hidden, the summary has no
             # membrane part
             ui["live_whole_rule"] = bool(live_whole_rule)
+        if live_whole_ok is not None:
+            # ... and whether it is run as you click now (False: the click
+            # fill stepped aside; the help line then says Preview fills it)
+            ui["live_whole_ok"] = bool(live_whole_ok)
+        if live_tick_note is not None:
+            # the line under "Update as I click": why a Cells click is not
+            # run as you click here ("" none)
+            ui["live_tick_note"] = str(live_tick_note)
         if outline_drawn is not None:
             # the outline's skin is drawn now (main and side views)
             ui["outline_drawn"] = bool(outline_drawn)

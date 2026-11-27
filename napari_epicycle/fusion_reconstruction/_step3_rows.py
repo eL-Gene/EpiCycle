@@ -167,6 +167,10 @@ def build_row(name: str, status: str, axes: Optional[str] = None,
             # protected row is skipped by Predict, so the cell width never
             # reaches it.
             rec["vox_tip"] = T.S3_NO_VOXEL_WARNING
+        elif T.spacing_z_assumed(dict(spacing) if isinstance(
+                spacing, Mapping) else None):
+            # hovering the voxel-size words keeps them and explains them
+            rec["vox_tip"] = line3 + "\n" + T.S3_ROW_SPACING_Z_ASSUMED_TIP
     if running in RUNNING_WORDS:
         rec.update(word=RUNNING_WORDS[running], dots="",
                    colour=RUNNING_COLOUR, icon=RUNNING_ICON)
@@ -462,17 +466,20 @@ def build_session_row(name: str, status: str, axes: Optional[str] = None,
     ``_step3_tier_counts.tier_items`` of the patch's CSV on disk, or
     ``None`` -- is the line of counts under the voxel size."""
     rec = _wide_base(name, status, missing=missing)
-    line3 = T.spacing_row_text(
-        dict(spacing) if isinstance(spacing, Mapping) else None)
+    sp = dict(spacing) if isinstance(spacing, Mapping) else None
+    line3 = T.spacing_row_text(sp)
     none = line3 == T.S3_ROW_SPACING_NONE
     rec.update(axes=(axes or "").strip(),
                n_channels=channel_count(axes, source_shape),
                line2=session_line(axes, source_shape, manifest_info),
-               line3=line3, line3_warn=none, menu=True)
+               line3=line3, line3_warn=T.spacing_row_warn(sp), menu=True)
     if none and not missing:
         # (audit M3) no inline button: Set spacing… is on the
         # row's menu and its right-click only
         rec["row_tip"] = T.S3_SPACING_NO_TAGS_HINT
+    elif T.spacing_z_assumed(sp) and not missing:
+        rec["row_tip"] = T.S3_ROW_SPACING_Z_ASSUMED_TIP
+        rec["vox_tip"] = line3 + "\n" + T.S3_ROW_SPACING_Z_ASSUMED_TIP
     # A2 fold: the eye only where there is a reconstruction to view
     rec["eye"] = rec["status"] in EYE_STATUSES and not missing
     if tier_counts:
@@ -530,9 +537,12 @@ def build_curation_row(name: str, status: str, *, qc_extracted: bool = False,
         # the metadata, never the marks
         rec["line2"] = T.S3_LINE_SEP.join(tags + [meta])
     if spacing is not _NOT_GIVEN and not missing:
-        line3 = T.spacing_row_text(
-            dict(spacing) if isinstance(spacing, Mapping) else None)
-        rec.update(line3=line3, line3_warn=line3 == T.S3_ROW_SPACING_NONE)
+        sp = dict(spacing) if isinstance(spacing, Mapping) else None
+        line3 = T.spacing_row_text(sp)
+        rec.update(line3=line3, line3_warn=T.spacing_row_warn(sp))
+        if T.spacing_z_assumed(sp):
+            rec["row_tip"] = T.S3_ROW_SPACING_Z_ASSUMED_TIP
+            rec["vox_tip"] = line3 + "\n" + T.S3_ROW_SPACING_Z_ASSUMED_TIP
     if tier_counts:
         rec["tier_counts"] = tuple(tier_counts)
     tail = _measured_tail(measured_spacing)

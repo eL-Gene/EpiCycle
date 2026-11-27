@@ -205,6 +205,119 @@ class TestRegisterSource:
                         voxel_size=[2.0, 0.5, 0.5], timestamp="t")
         assert st["sources"][0]["voxel_size_source"] == "user"
 
+    def test_typed_source_detected_kept_on_new_row(self):
+        """A value the spins took from the file header is stored as
+        "detected", not "user"."""
+        st = empty_state()
+        register_source(st, path="D:/d", display_name="d", axes="CZYX",
+                        voxel_size=[2.0, 0.5, 0.5], voxel_size_source="detected",
+                        timestamp="t")
+        assert st["sources"][0]["voxel_size_source"] == "detected"
+
+    def test_typed_source_cannot_dress_up_a_unit_value(self):
+        """A 1/1/1 value stays "unknown" whatever type the caller passes."""
+        st = empty_state()
+        register_source(st, path="D:/d", display_name="d", axes="CZYX",
+                        voxel_size=[1.0, 1.0, 1.0], voxel_size_source="detected",
+                        timestamp="t")
+        assert st["sources"][0]["voxel_size_source"] == "unknown"
+
+
+class TestRegisterSourceFillsUnsetVoxel:
+    """A row created before the first extract (an alias / recipe / axis-order
+    edit, or a Prepare whose store spacing was 1/1/1) has no voxel size.  The
+    spacing on screen at extract must reach it; a value already set is never
+    overwritten."""
+
+    def _row_without_voxel(self, voxel=None, vsrc="unknown"):
+        st = empty_state()
+        upsert_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                      voxel_size=voxel, voxel_size_source=vsrc)
+        return st
+
+    def test_fills_an_unset_voxel_on_revisit(self):
+        st = self._row_without_voxel()
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=[2.0, 0.5, 0.5],
+                        voxel_size_source="detected", prefix="kidney_patch")
+        row = st["sources"][0]
+        assert len(st["sources"]) == 1
+        assert row["voxel_size"] == [2.0, 0.5, 0.5]
+        assert row["voxel_size_source"] == "detected"
+        assert row["prefix"] == "kidney_patch"
+
+    def test_fills_a_unit_voxel_on_revisit(self):
+        """A row holding the 1/1/1 placeholder counts as unset."""
+        st = self._row_without_voxel(voxel=[1.0, 1.0, 1.0])
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=[2.0, 0.5, 0.5])
+        row = st["sources"][0]
+        assert row["voxel_size"] == [2.0, 0.5, 0.5]
+        # no type passed -> the value-based fallback
+        assert row["voxel_size_source"] == "user"
+
+    def test_never_overwrites_a_set_voxel(self):
+        st = self._row_without_voxel(voxel=[3.0, 0.2, 0.2], vsrc="user")
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=[2.0, 0.5, 0.5],
+                        voxel_size_source="detected")
+        row = st["sources"][0]
+        assert row["voxel_size"] == [3.0, 0.2, 0.2]
+        assert row["voxel_size_source"] == "user"
+
+    def test_never_overwrites_a_set_detected_voxel(self):
+        st = self._row_without_voxel(voxel=[3.0, 0.2, 0.2], vsrc="detected")
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=[2.0, 0.5, 0.5],
+                        voxel_size_source="user")
+        row = st["sources"][0]
+        assert row["voxel_size"] == [3.0, 0.2, 0.2]
+        assert row["voxel_size_source"] == "detected"
+
+    def test_unit_incoming_value_writes_nothing(self):
+        st = self._row_without_voxel()
+        before = dict(st["sources"][0])
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=[1.0, 1.0, 1.0],
+                        voxel_size_source="detected")
+        assert st["sources"][0] == before
+
+    def test_none_incoming_value_writes_nothing(self):
+        st = self._row_without_voxel()
+        before = dict(st["sources"][0])
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=None)
+        assert st["sources"][0] == before
+
+    @pytest.mark.parametrize("bad", [
+        [float("nan"), 0.5, 0.5],
+        [float("inf"), 0.5, 0.5],
+        [2.0, 0.0, 0.5],
+        [2.0, -0.5, 0.5],
+        [2000.0, 0.5, 0.5],
+        [2.0, 0.0001, 0.5],
+        [2.0, 0.5],
+        "abc",
+    ])
+    def test_out_of_range_or_malformed_value_writes_nothing(self, bad):
+        st = self._row_without_voxel()
+        before = dict(st["sources"][0])
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=bad)
+        assert st["sources"][0] == before
+
+    def test_other_metadata_still_first_wins(self):
+        """Filling the voxel does not open the other fields: alias and axes
+        keep their first value."""
+        st = empty_state()
+        upsert_source(st, path="D:/d/kidney.tif", display_name="my alias",
+                      source_axes="ZCYX")
+        register_source(st, path="D:/d/kidney.tif", display_name="kidney",
+                        axes="CZYX", voxel_size=[2.0, 0.5, 0.5])
+        row = st["sources"][0]
+        assert row["display_name"] == "my alias"
+        assert row["source_axes"] == "ZCYX"
+
 
 # ---------------------------------------------------------------------------
 # _classify_voxel_source — honest voxel typing (schema-v2 invariant #4)
@@ -909,3 +1022,401 @@ class TestCorruptStateHook:
             set_corrupt_state_hook(None)
             load_state(ws)
             assert seen == []
+
+
+# ---------------------------------------------------------------------------
+# The detected voxel size recorded at select; the "Z assumed" flag
+# ---------------------------------------------------------------------------
+from napari_epicycle.data_preparation import _state as _S   # noqa: E402
+
+
+def _st(*rows, patches=()):
+    st = empty_state()
+    st["sources"].extend(dict(r) for r in rows)
+    st["patches"].extend(dict(p) for p in patches)
+    return st
+
+
+class TestFillUnsetVoxel:
+    def test_fills_an_unset_row_with_its_type_and_flag(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": None, "voxel_size_source": "unknown"})
+        assert _S.fill_unset_voxel(st, "D:/d/a.tif", (2.0, 0.5, 0.5),
+                                   voxel_z_from_xy=False) is True
+        r = st["sources"][0]
+        assert r["voxel_size"] == [2.0, 0.5, 0.5]
+        assert r["voxel_size_source"] == "detected"
+        assert r["voxel_z_from_xy"] is False
+
+    def test_a_unit_row_is_unset(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": [1.0, 1.0, 1.0], "voxel_size_source": "unknown"})
+        assert _S.fill_unset_voxel(st, "d:\\d\\a.tif", (0.4, 0.4, 0.4),
+                                   voxel_z_from_xy=True) is True
+        assert st["sources"][0]["voxel_z_from_xy"] is True
+
+    @pytest.mark.parametrize("src", ["user", "detected"])
+    def test_a_set_value_is_never_replaced(self, src):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": [3.0, 1.0, 1.0], "voxel_size_source": src})
+        assert _S.fill_unset_voxel(st, "D:/d/a.tif", (2.0, 0.5, 0.5),
+                                   voxel_z_from_xy=False) is False
+        assert st["sources"][0]["voxel_size"] == [3.0, 1.0, 1.0]
+        assert "voxel_z_from_xy" not in st["sources"][0]
+
+    def test_never_creates_a_row(self):
+        st = _st()
+        assert _S.fill_unset_voxel(st, "D:/d/a.tif", (2.0, 0.5, 0.5)) is False
+        assert st["sources"] == []
+
+    @pytest.mark.parametrize("bad", [None, (1, 1, 1), (2, 0.5), (0, 1, 1),
+                                     (float("nan"), 1, 2), (5000, 1, 1)])
+    def test_a_value_that_is_not_real_is_not_recorded(self, bad):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": None, "voxel_size_source": "unknown"})
+        assert _S.fill_unset_voxel(st, "D:/d/a.tif", bad) is False
+        assert st["sources"][0]["voxel_size"] is None
+
+
+class TestSetVoxelFlagIfValue:
+    def _row(self, **kw):
+        r = {"source_id": "src_0", "path": "D:/d/a.tif",
+             "voxel_size": [0.208, 0.208, 0.208],
+             "voxel_size_source": "detected"}
+        r.update(kw)
+        return r
+
+    def test_writes_the_flag_while_the_value_is_unchanged(self):
+        st = _st(self._row())
+        assert _S.set_voxel_flag_if_value(
+            st, "D:/d/a.tif", (0.20756646, 0.20756646, 0.20756646), True,
+            decimals=3) is True
+        r = st["sources"][0]
+        assert r["voxel_z_from_xy"] is True
+        assert r["voxel_size"] == [0.208, 0.208, 0.208]   # value untouched
+
+    def test_nothing_when_the_value_changed(self):
+        st = _st(self._row(voxel_size=[2.0, 0.208, 0.208]))
+        assert _S.set_voxel_flag_if_value(
+            st, "D:/d/a.tif", (0.208, 0.208, 0.208), True) is False
+        assert "voxel_z_from_xy" not in st["sources"][0]
+
+    def test_nothing_on_a_user_row(self):
+        st = _st(self._row(voxel_size_source="user"))
+        assert _S.set_voxel_flag_if_value(
+            st, "D:/d/a.tif", (0.208, 0.208, 0.208), True) is False
+
+    def test_a_stale_flag_is_rewritten_false(self):
+        st = _st(self._row(voxel_z_from_xy=True))
+        assert _S.set_voxel_flag_if_value(
+            st, "D:/d/a.tif", (0.208, 0.208, 0.208), False) is True
+        assert st["sources"][0]["voxel_z_from_xy"] is False
+
+    def test_never_creates_a_row(self):
+        st = _st()
+        assert _S.set_voxel_flag_if_value(
+            st, "D:/d/a.tif", (0.2, 0.2, 0.2), True) is False
+        assert st["sources"] == []
+
+
+class TestCheckUserRowHeader:
+    def _row(self, **kw):
+        r = {"source_id": "src_0", "path": "D:/d/a.tif",
+             "voxel_size": [0.5, 0.5, 0.5], "voxel_size_source": "user"}
+        r.update(kw)
+        return r
+
+    def test_equal_to_the_header_becomes_detected_with_its_flag(self):
+        st = _st(self._row())
+        assert _S.check_user_row_header(
+            st, "D:/d/a.tif", (0.5, 0.5, 0.5), (0.5004, 0.5, 0.5), True,
+            decimals=3) is True
+        r = st["sources"][0]
+        assert r["voxel_size_source"] == "detected"
+        assert r["voxel_z_from_xy"] is True
+        assert r["voxel_header_checked"] is True
+        assert r["voxel_size"] == [0.5, 0.5, 0.5]
+
+    def test_unequal_stays_user_but_is_checked(self):
+        st = _st(self._row())
+        assert _S.check_user_row_header(
+            st, "D:/d/a.tif", (0.5, 0.5, 0.5), (2.0, 0.5, 0.5), False) is True
+        r = st["sources"][0]
+        assert r["voxel_size_source"] == "user"
+        assert r["voxel_header_checked"] is True
+        assert "voxel_z_from_xy" not in r
+
+    def test_no_header_stays_user_but_is_checked(self):
+        st = _st(self._row())
+        assert _S.check_user_row_header(
+            st, "D:/d/a.tif", (0.5, 0.5, 0.5), None, False) is True
+        assert st["sources"][0]["voxel_size_source"] == "user"
+        assert st["sources"][0]["voxel_header_checked"] is True
+
+    def test_nothing_when_the_user_changed_the_value_meanwhile(self):
+        st = _st(self._row(voxel_size=[3.0, 0.5, 0.5]))
+        assert _S.check_user_row_header(
+            st, "D:/d/a.tif", (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), True) is False
+        assert "voxel_header_checked" not in st["sources"][0]
+
+    def test_nothing_on_a_row_that_is_no_longer_user(self):
+        st = _st(self._row(voxel_size_source="detected"))
+        assert _S.check_user_row_header(
+            st, "D:/d/a.tif", (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), True) is False
+
+    def test_never_creates_a_row(self):
+        st = _st()
+        assert _S.check_user_row_header(
+            st, "D:/d/a.tif", (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), True) is False
+        assert st["sources"] == []
+
+
+class TestZAssumedReader:
+    @pytest.mark.parametrize("row,want", [
+        ({"voxel_size_source": "detected", "voxel_z_from_xy": True}, True),
+        ({"voxel_size_source": "detected", "voxel_z_from_xy": False}, False),
+        ({"voxel_size_source": "detected"}, False),            # absent = False
+        ({"voxel_size_source": "user", "voxel_z_from_xy": True}, False),
+        ({"voxel_size_source": "unknown", "voxel_z_from_xy": True}, False),
+        ({"voxel_size_source": "detected", "voxel_z_from_xy": "yes"}, False),
+        (None, False),
+    ])
+    def test_the_flag_counts_only_on_a_detected_row(self, row, want):
+        assert _S.voxel_z_assumed(row) is want
+
+
+class TestZAssumedPatchPaths:
+    def _state(self, flag=True, kind="raw"):
+        return _st(
+            {"source_id": "src_0", "path": "D:/d/a.tif",
+             "voxel_size": [0.2, 0.2, 0.2], "voxel_size_source": "detected",
+             "voxel_z_from_xy": flag},
+            {"source_id": "src_1", "path": "D:/d/b.tif",
+             "voxel_size": [2.0, 0.2, 0.2], "voxel_size_source": "detected",
+             "voxel_z_from_xy": False},
+            patches=[
+                {"patch_name": "a_1", "source_id": "src_0", "source_kind": kind,
+                 "relative_path": "artifacts/step1/patches/a_1.tiff"},
+                {"patch_name": "b_1", "source_id": "src_1", "source_kind": "raw",
+                 "relative_path": "artifacts/step1/patches/b_1.tiff"},
+            ])
+
+    def test_a_raw_patch_of_a_flagged_row(self):
+        got = _S.z_assumed_patch_paths(self._state())
+        assert got == frozenset({_S._norm_path(
+            "artifacts/step1/patches/a_1.tiff")})
+
+    def test_no_flag_no_patch(self):
+        assert _S.z_assumed_patch_paths(self._state(flag=False)) == frozenset()
+
+    def test_a_processed_patch_only_when_its_store_equals_the_row(self):
+        st = self._state(kind="processed")
+        rel = "artifacts/step1/patches/a_1.tiff"
+        assert _S.z_assumed_patch_paths(st) == frozenset()
+        assert _S.z_assumed_patch_paths(
+            st, {rel: [0.2004, 0.2, 0.2]}) == frozenset({_S._norm_path(rel)})
+        assert _S.z_assumed_patch_paths(
+            st, {rel: [1.0, 0.2, 0.2]}) == frozenset()
+
+    def test_the_values_by_path(self):
+        vals = _S.z_assumed_patch_values(self._state(kind="processed"))
+        rel = _S._norm_path("artifacts/step1/patches/a_1.tiff")
+        assert vals == {rel: ([0.2, 0.2, 0.2], "processed")}
+
+    def test_never_raises(self):
+        assert _S.z_assumed_patch_paths(None) == frozenset()
+        assert _S.z_assumed_patch_paths({"sources": 3, "patches": "x"}) == \
+            frozenset()
+
+
+class TestNewKeysRoundTrip:
+    def test_an_old_row_without_the_new_keys_loads_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as ws:
+            st = empty_state()
+            st["sources"].append({"source_id": "src_0", "path": "D:/d/a.tif",
+                                  "voxel_size": [2.0, 0.5, 0.5],
+                                  "voxel_size_source": "detected"})
+            save_state(ws, st)
+            r = load_state(ws)["sources"][0]
+            assert "voxel_z_from_xy" not in r
+            assert _S.voxel_z_assumed(r) is False
+            st2 = load_state(ws)
+            st2["sources"][0].update(voxel_z_from_xy=True,
+                                     voxel_header_checked=True)
+            save_state(ws, st2)
+            r2 = load_state(ws)["sources"][0]
+            assert r2["voxel_z_from_xy"] is True
+            assert r2["voxel_header_checked"] is True
+
+
+class TestRegisterSourceFlag:
+    def test_a_new_detected_row_writes_the_flag(self):
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[0.2, 0.2, 0.2],
+                        voxel_size_source="detected", voxel_z_from_xy=True)
+        assert st["sources"][0]["voxel_z_from_xy"] is True
+
+    def test_a_new_detected_row_writes_false_explicitly(self):
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[2.0, 0.2, 0.2],
+                        voxel_size_source="detected")
+        assert st["sources"][0]["voxel_z_from_xy"] is False
+
+    def test_a_new_user_row_has_no_flag(self):
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[2.0, 0.2, 0.2], voxel_size_source="user",
+                        voxel_z_from_xy=True)
+        assert "voxel_z_from_xy" not in st["sources"][0]
+
+    def test_the_revisit_fill_writes_the_flag(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": None, "voxel_size_source": "unknown"})
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[0.2, 0.2, 0.2],
+                        voxel_size_source="detected", voxel_z_from_xy=True)
+        assert st["sources"][0]["voxel_z_from_xy"] is True
+
+    def test_a_revisit_of_a_set_row_leaves_its_flag(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": [0.2, 0.2, 0.2], "voxel_size_source": "detected",
+                  "voxel_z_from_xy": True})
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[0.2, 0.2, 0.2],
+                        voxel_size_source="detected", voxel_z_from_xy=False)
+        assert st["sources"][0]["voxel_z_from_xy"] is True
+
+
+class TestDetectedCeiling:
+    DPI = [352.8, 352.8, 352.8]          # 72 dpi read as centimetres
+
+    def test_a_new_detected_row_over_the_ceiling_records_nothing(self):
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=self.DPI, voxel_size_source="detected")
+        r = st["sources"][0]
+        assert r["voxel_size"] is None
+        assert r["voxel_size_source"] == "unknown"
+
+    def test_the_unset_fill_over_the_ceiling_records_nothing(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": None, "voxel_size_source": "unknown"})
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=self.DPI, voxel_size_source="detected")
+        assert st["sources"][0]["voxel_size"] is None
+        assert _S.fill_unset_voxel(st, "D:/d/a.tif", self.DPI) is False
+
+    def test_a_typed_value_over_the_ceiling_is_kept(self):
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[80.0, 60.0, 60.0], voxel_size_source="user")
+        assert st["sources"][0]["voxel_size"] == [80.0, 60.0, 60.0]
+
+    def test_the_ceiling_is_on_xy_only(self):
+        assert _S.detected_over_ceiling([80.0, 0.5, 0.5]) is False
+        assert _S.detected_over_ceiling([1.0, 50.0, 50.0]) is False
+        assert _S.detected_over_ceiling([1.0, 50.1, 0.5]) is True
+        assert _S.detected_over_ceiling("x") is False
+
+
+class TestRegisterSourceChecked:
+    def test_a_new_user_row_is_checked(self):
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[2.0, 0.2, 0.2], voxel_size_source="user")
+        assert st["sources"][0]["voxel_header_checked"] is True
+
+    def test_a_user_fill_is_checked(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": None, "voxel_size_source": "unknown"})
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[2.0, 0.2, 0.2], voxel_size_source="user")
+        assert st["sources"][0]["voxel_header_checked"] is True
+
+    def test_a_detected_row_is_not_marked_checked(self):
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=[2.0, 0.2, 0.2],
+                        voxel_size_source="detected")
+        assert "voxel_header_checked" not in st["sources"][0]
+
+    def test_detected_recordable_is_the_one_rule(self):
+        assert _S.detected_recordable([2.0, 0.2, 0.2]) is True
+        assert _S.detected_recordable([352.8, 352.8, 352.8]) is False
+        assert _S.detected_recordable([1.0, 1.0, 1.0]) is False
+        assert _S.detected_recordable(None) is False
+
+    def test_the_one_time_check_ignores_a_header_over_the_ceiling(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": [352.8, 352.8, 352.8],
+                  "voxel_size_source": "user"})
+        assert _S.check_user_row_header(
+            st, "D:/d/a.tif", [352.8] * 3, [352.8] * 3, True) is True
+        assert st["sources"][0]["voxel_size_source"] == "user"
+        assert st["sources"][0]["voxel_header_checked"] is True
+
+
+class TestRecordableRange:
+    @pytest.mark.parametrize("bad", [[float("nan"), 0.5, 0.5],
+                                     [-1.0, 0.5, 0.5], [5000.0, 0.5, 0.5],
+                                     [0.5, 0.5], "abc"])
+    def test_a_value_out_of_range_is_never_detected(self, bad):
+        assert _S.detected_recordable(bad) is False
+        st = empty_state()
+        register_source(st, path="D:/d/a.tif", display_name="a", axes="ZYX",
+                        voxel_size=bad if isinstance(bad, list) else None,
+                        voxel_size_source="detected")
+        assert st["sources"][0]["voxel_size_source"] == "unknown"
+
+    def test_drop_unrecordable_detected(self):
+        st = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": [352.8, 352.8, 352.8],
+                  "voxel_size_source": "detected", "voxel_z_from_xy": True})
+        assert _S.drop_unrecordable_detected(
+            st, "D:/d/a.tif", [352.8] * 3) is True
+        r = st["sources"][0]
+        assert r["voxel_size"] is None and r["voxel_size_source"] == "unknown"
+        assert "voxel_z_from_xy" not in r
+        ok = _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                  "voxel_size": [2.0, 0.5, 0.5],
+                  "voxel_size_source": "detected"})
+        assert _S.drop_unrecordable_detected(
+            ok, "D:/d/a.tif", [2.0, 0.5, 0.5]) is False
+        assert _S.drop_unrecordable_detected(
+            empty_state(), "D:/d/a.tif", [352.8] * 3) is False
+
+
+
+class TestPatchReaderCeiling:
+    def _st(self, src_type, voxel):
+        return _st({"source_id": "src_0", "path": "D:/d/a.tif",
+                    "voxel_size": voxel, "voxel_size_source": src_type},
+                   patches=[{"patch_name": "p", "source_id": "src_0",
+                             "source_kind": "raw",
+                             "relative_path": "patches/p.tif"}])
+
+    def test_an_old_detected_print_dpi_is_not_served(self):
+        from napari_epicycle.data_preparation._state import (
+            voxel_size_for_patch_path,
+        )
+        info = voxel_size_for_patch_path(
+            self._st("detected", [352.778] * 3), "patches/p.tif")
+        assert info["voxel_size"] is None
+
+    def test_a_typed_print_dpi_is_served_as_it_is(self):
+        from napari_epicycle.data_preparation._state import (
+            voxel_size_for_patch_path,
+        )
+        info = voxel_size_for_patch_path(
+            self._st("user", [2.0, 352.778, 352.778]), "patches/p.tif")
+        assert info["voxel_size"] == [2.0, 352.778, 352.778]
+
+    def test_a_real_detected_value_is_served(self):
+        from napari_epicycle.data_preparation._state import (
+            voxel_size_for_patch_path,
+        )
+        info = voxel_size_for_patch_path(
+            self._st("detected", [2.0, 0.5, 0.5]), "patches/p.tif")
+        assert info["voxel_size"] == [2.0, 0.5, 0.5]

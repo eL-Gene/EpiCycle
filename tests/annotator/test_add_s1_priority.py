@@ -49,10 +49,10 @@ ROWS = [
     (6, dict(has_box=False), AP.ADD_S1_IDLE),
     # row 7 (ADD_S1_NO_VOXEL_SIZE) is retired: the
     # old key, if a caller still sends it, blocks nothing
-    (8, dict(voxel_known=False, box_shape=(200, 200, 200)),
-     AP.over_limit_line((200, 200, 200))),
-    (8, dict(box_shape=(200, 200, 200), wall_channel=""),
-     AP.over_limit_line((200, 200, 200))),
+    (8, dict(voxel_known=False, box_shape=(500, 500, 500)),
+     AP.over_limit_line((500, 500, 500))),
+    (8, dict(box_shape=(500, 500, 500), wall_channel=""),
+     AP.over_limit_line((500, 500, 500))),
     (9, dict(wall_channel="", nuclei_channel=""), AP.ADD_S1_PICK_WALL_CHANNEL),
     (9, dict(nuclei_channel=""), AP.ADD_S1_PICK_NUCLEI_CHANNEL),
     (9, dict(preset="nuclei", channel=""), AP.ADD_S1_PICK_CHANNEL),
@@ -80,26 +80,27 @@ ROWS = [
     (6, dict(has_box=False, preset="nuclei", look_for="anywhere"),
      AP.ADD_S1_IDLE),
     (6, dict(has_box=False, preset="nuclei"), AP.ADD_S1_IDLE),
-    # Inside with the spacing never set: said before a box (M7)
+    # a spacing never set is no S1 row on any path (the amber note says
+    # it): the old ``spacing_unknown`` key, if a caller still sends it,
+    # blocks nothing -- Inside each cell's idle line is the idle line
     (6, dict(has_box=False, preset="nuclei", look_for="inside",
-             spacing_unknown=True), AP.ADD_S1_NEEDS_SPACING),
+             spacing_unknown=True), AP.ADD_S1_IDLE),
     (6, dict(has_box=False, preset="nuclei", look_for="anywhere",
              spacing_unknown=True), AP.ADD_S1_IDLE),
-    # Inside each cell: row 11 on the Nuclei preset, then the new blocking
-    # rows (the spacing, no cell of that run), then 13
+    # Inside each cell: row 11 on the Nuclei preset, then its blocking
+    # rows (a refused channel, no cell of that run), then 13
     (11, dict(preset="nuclei", look_for="inside", run_state="loading",
               spacing_unknown=True), AP.ADD_S1_RUN_LOADING),
     (11, dict(preset="nuclei", look_for="inside", run_state="refused"),
      AP.ADD_S1_INSIDE_UNUSABLE),
-    (11.2, dict(preset="nuclei", look_for="inside", spacing_unknown=True,
-                inside_count=0), AP.ADD_S1_NEEDS_SPACING_BOXED),
-    # the patch's levels refused the channel: the channel's line, after the
-    # spacing (no levels are measured at an unknown spacing)
+    (11.4, dict(preset="nuclei", look_for="inside", spacing_unknown=True,
+                inside_count=0), AP.ADD_S1_INSIDE_NO_CELLS),
+    # the patch's levels refused the channel: the channel's line
     (11.3, dict(preset="nuclei", look_for="inside", levels_error=True,
                 inside_count=0, info_pending=True),
      AP.ADD_S1_INSIDE_CHANNEL_UNUSABLE),
-    (11.2, dict(preset="nuclei", look_for="inside", spacing_unknown=True,
-                levels_error=True), AP.ADD_S1_NEEDS_SPACING_BOXED),
+    (11.3, dict(preset="nuclei", look_for="inside", spacing_unknown=True,
+                levels_error=True), AP.ADD_S1_INSIDE_CHANNEL_UNUSABLE),
     (11.4, dict(preset="nuclei", look_for="inside", inside_count=0,
                 info_pending=True), AP.ADD_S1_INSIDE_NO_CELLS),
     (13, dict(preset="nuclei", look_for="inside", inside_count=None,
@@ -114,13 +115,18 @@ ROWS = [
      AP.box_line((10, 20, 20), preset="nuclei", empty_share=0.5)),
     (14, dict(preset="nuclei", whole_patch=True, look_for="inside"),
      AP.ADD_S1_PATCH_PLAIN.format(z=10, y=20, x=20, m="0.1", p=50)),
-    # a whole patch stays whole on Anywhere: Preview is grey and says why
-    (8.05, dict(preset="nuclei", whole_patch=True, look_for="anywhere"),
-     AP.ADD_S1_WHOLE_ANYWHERE),
+    # Anywhere on a whole patch runs as on a box: the patch's ready line;
+    # over the Cells limit (its peak memory) the whole patch's size line
+    (14, dict(preset="nuclei", whole_patch=True, look_for="anywhere"),
+     AP.ADD_S1_PATCH_PLAIN.format(z=10, y=20, x=20, m="0.1", p=50)),
+    (8.05, dict(preset="nuclei", whole_patch=True, look_for="anywhere",
+                box_shape=(500, 500, 500)),
+     AP.whole_too_big_line(125_000_000)),
     # Cells on a whole patch: never over the box limit (it is filled to the
-    # walls in one go); the solver, the whole-patch ceiling and the spacing
-    # first, then the outline being measured, then the ready line (the same
-    # words as on Nuclei)
+    # walls in one go); the solver and the whole-patch ceiling first, then
+    # the outline being measured, then the ready line (the same words as on
+    # Nuclei).  The spacing never refuses a Cells whole patch: as on a box,
+    # the default spacing is an amber note, not an S1 row
     (14, dict(whole_patch=True, box_shape=(200, 200, 200), source="labels"),
      AP.ADD_S1_PATCH_PLAIN.format(z=200, y=200, x=200, m="8.0", p=50)),
     (14, dict(whole_patch=True, source="labels"),
@@ -136,25 +142,29 @@ ROWS = [
     (8.12, dict(whole_patch=True, box_shape=(500, 500, 500), source="paint",
                 spacing_unknown=True),
      AP.whole_too_big_line(125_000_000)),
-    # a Cells whole patch takes its markers from another run or from the
-    # clicks: nuclei masks ask for one of them
-    (8.15, dict(whole_patch=True, source="nuclei_masks",
-                spacing_unknown=True),
+    # a Cells whole patch takes its markers from any source a box takes:
+    # nuclei masks pass the row (the ready line); a blank From asks
+    (14, dict(whole_patch=True, source="nuclei_masks",
+              spacing_unknown=True),
+     AP.ADD_S1_PATCH_PLAIN.format(z=10, y=20, x=20, m="0.1", p=50)),
+    (8.15, dict(whole_patch=True, source="labels", run_id=None),
      AP.ADD_S1_WHOLE_PICK_RUN),
-    (8.15, dict(whole_patch=True), AP.ADD_S1_WHOLE_PICK_RUN),
-    # Click markers on a whole patch pass that row and reach the spacing
-    # refusal (in microns: the fill and the Ball)
-    (8.2, dict(whole_patch=True, source="paint", n_clicks=2,
-               spacing_unknown=True),
-     AP.ADD_S1_NEEDS_SPACING_BOXED),
+    # Click markers on a whole patch pass that row; a spacing never set
+    # does not stop them (the amber note says it): the ready line
+    (14, dict(whole_patch=True, source="paint", n_clicks=2,
+              spacing_unknown=True),
+     AP.box_line((10, 20, 20), preset="cells", n_clicks=2,
+                 whole_patch=True)),
     # ... and the marker rows of a box
     (12, dict(whole_patch=True, source="paint", n_clicks=0),
      AP.ADD_S1_NO_MARKERS),
     (14, dict(whole_patch=True, source="paint", n_clicks=3),
      "Whole patch 10 × 20 × 20 voxels · 3 objects marked"),
-    (8.2, dict(whole_patch=True, spacing_unknown=True, wall_channel="",
-               source="labels"),
-     AP.ADD_S1_NEEDS_SPACING_BOXED),
+    # ... nor a whole patch with no Walls channel: that row says what is
+    # missing
+    (9, dict(whole_patch=True, spacing_unknown=True, wall_channel="",
+             source="labels"),
+     AP.ADD_S1_PICK_WALL_CHANNEL),
     # the patch's own words while it is measured
     (13, dict(whole_patch=True, source="labels", info_pending=True),
      AP.ADD_S1_MEASURING_PATCH),
@@ -187,24 +197,32 @@ def test_rows_6_to_13_are_exactly_the_grey_preview_states():
 
 
 def test_the_default_spacing_blocks_nothing():
-    """Decision 22: a ready Cells state stays ready whatever the spacing."""
+    """A ready state stays ready whatever the spacing -- a Cells box, a
+    Cells whole patch (another run's objects or Click markers) and
+    Nuclei ▸ Inside each cell alike: the never-set default runs on its
+    1.0 um fallback and only the amber note says so."""
     for flag in (True, False):
         s = _ready(default_spacing=flag, voxel_known=False)
         assert AP.preview_block(s) is None
+        for kw in (dict(whole_patch=True, source="labels"),
+                   dict(whole_patch=True, source="paint", n_clicks=2),
+                   dict(preset="nuclei", look_for="inside", inside_count=3),
+                   dict(preset="nuclei", look_for="inside", inside_count=3,
+                        whole_patch=True)):
+            s = _ready(default_spacing=flag, spacing_unknown=flag, **kw)
+            assert AP.preview_block(s) is None, (kw, AP.preview_block(s))
 
 
 def test_whole_patch_run_rows():
-    """A Cells whole patch grows its cells from another run's objects or
-    from Click markers: with neither picked (nuclei masks, or the From combo
-    left blank) S1 asks for one -- or, on a patch with no other run, names
-    Click markers or a box.  Both grey Preview, after the solver and the
-    size ceiling."""
+    """A Cells whole patch grows its cells from any source a box takes:
+    with the From combo left blank S1 asks for one -- or, on a patch with
+    no other run, names the nuclei masks and Click markers.  Both grey
+    Preview, after the solver and the size ceiling."""
     whole = dict(whole_patch=True)
-    assert AP.preview_block(_ready(source=AP.SOURCE_NUCLEI, **whole)) == (
-        AP.ADD_S1_WHOLE_PICK_RUN)
+    # nuclei masks pass the row, with or without another run
+    assert AP.preview_block(_ready(source=AP.SOURCE_NUCLEI, **whole)) is None
     assert AP.preview_block(_ready(source=AP.SOURCE_NUCLEI,
-                                   has_other_run=False, **whole)) == (
-        AP.ADD_S1_WHOLE_NO_RUN)
+                                   has_other_run=False, **whole)) is None
     # Click markers pass the row, with or without another run: the marker
     # rows of a box follow, then the ready line
     for other in (True, False):
@@ -242,13 +260,14 @@ def test_whole_patch_run_rows():
                                    n_ticked=2)) is None
     # the words, and the old sentence is gone (a stale reader fails)
     assert AP.ADD_S1_WHOLE_PICK_RUN == (
-        "Pick a run or Click markers under Markers ▸ From — a whole patch "
-        "grows its cells from those markers.")
+        "Pick a run, Nuclei masks or Click markers under Markers ▸ From — a "
+        "whole patch grows its cells from those markers.")
     assert AP.ADD_S1_WHOLE_NO_RUN == (
-        "This patch has no other run — pick Click markers under Markers ▸ "
-        "From, or press S, M or L for a box.")
+        "This patch has no other run — pick Nuclei masks or Click markers "
+        "under Markers ▸ From.")
     for line in (AP.ADD_S1_WHOLE_PICK_RUN, AP.ADD_S1_WHOLE_NO_RUN):
         assert AP.ADD_ITEM_CLICKS in line
+        assert "Nuclei masks" in line
     assert not hasattr(AP, "ADD_S1_WHOLE_NEEDS_RUN")
 
 
@@ -495,3 +514,78 @@ def test_row_12b_is_amber_and_greys_preview():
     assert AP.s1_kind(s) == "warn"
     # an older caller that sends no n_ticked: every marker counts as ticked
     assert AP.preview_block(_ready(source="paint", n_clicks=3)) is None
+
+
+# --------------------------------------------------------------------------- #
+# "Always update as I click": the slow update names its time
+# --------------------------------------------------------------------------- #
+MILLION = 1_000_000
+
+
+@pytest.mark.parametrize("n,kind,growth,kept,want", [
+    # measured 2026-11-24: a 4.2 million box with Vessel ridges walls took
+    # 58.6 s whole -- most of it the wall picture
+    (4_200_000, "frangi", AP.GROW_FLOOD, False,
+     "Updating the region — about a minute here."),
+    # ... the same box once its wall picture is kept: the fill alone
+    (4_200_000, "frangi", AP.GROW_FLOOD, True,
+     "Updating the region — this takes a few seconds here."),
+    # membrane walls at 5.2 million: the fill took about 6 s
+    (5_200_000, "membrane", AP.GROW_FLOOD, False,
+     "Updating the region — this takes a few seconds here."),
+    # Spread on the 5.2 million patch took 65.7 s
+    (5_200_000, "membrane", AP.GROW_SPREAD, False,
+     "Updating the region — about a minute here."),
+    # a 25 million box with membrane walls (over the live limit)
+    (25 * MILLION, "membrane", AP.GROW_FLOOD, False,
+     "Updating the region — about 35 s here."),
+    # the Preview limit with the slowest walls (a box's ridge picture at
+    # 12.6 s per million voxels, measured on Vessel ridges, one box)
+    (100 * MILLION, "meijering", AP.GROW_FLOOD, False,
+     "Updating the region — about 23 minutes here."),
+])
+def test_the_slow_update_names_its_time(n, kind, growth, kept, want):
+    s = AP.live_update_seconds(n, kind, growth, picture_kept=kept)
+    assert AP.live_updating_line(s) == want
+    state = _ready(preset="cells", source=AP.SOURCE_CLICKS, live_on=True,
+                   live_always=True, live_updating=True,
+                   live_updating_seconds=s)
+    assert AP.s1_sentence(state) == want
+    assert AP.s1_kind(state) == "busy"
+
+
+def test_the_whole_patch_fill_takes_the_preview_figure():
+    """A whole patch filled with a background marker (walls the quick fill
+    does not redo) is the whole Preview's fill: its figure, the picture
+    included until kept."""
+    for kind in ("membrane", "frangi"):
+        for kept in (False, True):
+            s = AP.live_update_seconds(18 * MILLION, kind, AP.GROW_PATCH,
+                                       picture_kept=kept)
+            assert s == pytest.approx(60.0 * AP.whole_fill_minutes(
+                18, kind, picture_kept=kept))
+    assert AP.live_updating_line(AP.live_update_seconds(
+        18 * MILLION, "frangi", AP.GROW_PATCH)) == (
+        "Updating the region — about 5 minutes here.")
+
+
+def test_the_time_words_and_their_steps():
+    line = AP.live_updating_line
+    assert line(None) == AP.ADD_S1_LIVE_UPDATING
+    assert line(0) == AP.ADD_S1_LIVE_UPDATING
+    assert line(9.9) == AP.ADD_S1_LIVE_UPDATING
+    assert line(10) == "Updating the region — about 10 s here."
+    assert line(12.4) == "Updating the region — about 10 s here."
+    assert line(12.5) == "Updating the region — about 15 s here."
+    assert line(44.9) == "Updating the region — about 45 s here."
+    assert line(45) == "Updating the region — about a minute here."
+    assert line(89.9) == "Updating the region — about a minute here."
+    assert line(90) == "Updating the region — about 2 minutes here."
+    assert line(150) == "Updating the region — about 3 minutes here."
+    assert AP.ADD_S1_LIVE_UPDATING_TIME == "Updating the region — {t} here."
+
+
+def test_without_a_time_the_old_sentence_stands():
+    state = _ready(preset="cells", source=AP.SOURCE_CLICKS, live_on=True,
+                   live_always=True, live_updating=True)
+    assert AP.s1_sentence(state) == AP.ADD_S1_LIVE_UPDATING

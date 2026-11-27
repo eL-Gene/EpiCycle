@@ -247,3 +247,40 @@ def test_a_patch_whose_records_disagree_shows_no_role(tmp_path):
                   kind="reconstruction")
     assert roles(_channels(2), "patch_A") == {
         1: ROLE_SEGMENT, 0: ROLE_HELPER}
+
+
+# --- a fresh run seeded from its model --------------------------------------
+
+def test_a_fresh_default_runs_roles_follow_its_model(tmp_path):
+    """The workspace's first run, seeded from a model trained on [1, 0] and
+    predicted with it: QC names channel 0 the channel to segment, and no
+    helper (a hard-coded [2, 1] used to name channel 1)."""
+    fake, roles = _records_fake(tmp_path)
+    _write_record(fake, "P1.tif", (1, 0), "2026-11-25T10:00:00")
+    assert roles(_channels(2), "P1.tif") == {0: ROLE_SEGMENT}
+    assert roles(_channels(2)) == {0: ROLE_SEGMENT}
+
+
+def test_the_seg_channel_code_still_changes_no_feature():
+    """The run's code for the channel to segment reaches the extraction as
+    ``seg_channel``, but no feature group reads it: the intensity rows
+    measure the channels ticked in the dialog, by index.  Codes 1 and 2
+    give the same table."""
+    import numpy as np
+
+    from napari_epicycle.segmentation.feature_registry import (
+        build_registry, run_extraction,
+    )
+    labels = np.zeros((6, 12, 12), np.uint32)
+    labels[1:4, 1:5, 1:5] = 1
+    labels[2:5, 6:11, 6:11] = 2
+    rng = np.random.default_rng(0)
+    raw = rng.integers(0, 255, size=(2, 6, 12, 12)).astype(np.uint8)
+    reg = build_registry(checked_channels=_channels(2))
+    assert {g.name for g in reg} >= {"intensity_ch0_", "intensity_ch1_"}
+    a = run_extraction(reg, {"labels": labels, "raw_stack": raw,
+                             "seg_channel": 1})
+    b = run_extraction(reg, {"labels": labels, "raw_stack": raw,
+                             "seg_channel": 2})
+    assert any(col.startswith("ch1_") for col in a.columns)
+    assert a.equals(b)

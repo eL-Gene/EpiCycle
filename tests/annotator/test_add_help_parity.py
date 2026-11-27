@@ -41,6 +41,7 @@ CONTROLS = (
     "add_separate_cb", "add_min_distance_sb", "add_marker_spacing_sb",
     "add_clahe_clip_sb", "add_clear_border_cb", "add_edge_margin_sb", "add_min_size_sb",
     "add_auto_smooth_cb", "add_smooth_sigma_sb", "add_live_cb",
+    "add_live_always_cb",
     "add_batch_refine_btn",
     "add_refine_piece_btn", "add_again_btn",
     # Inside each cell and the whole patch
@@ -145,14 +146,15 @@ def test_the_dark_clearance_reaches_two_microns():
     assert reach.max() >= 2.0 - 0.517
 
 
-def test_the_cells_limit_refuses_four_million_and_one():
+def test_the_cells_limit_refuses_one_hundred_million_and_one():
     from packages.epicycle_annotator.reshape import ReshapeSpec
 
     spec = ReshapeSpec(target="region", seeds="paint", walls="membrane",
                        params={"wall_channel": "membrane", "ridge": False,
                                "outside": "faces"})
-    roi = (slice(0, 1), slice(0, 1), slice(0, 4_000_001))
-    labels = np.zeros((1, 1, 4_000_001), np.uint8)
+    roi = (slice(0, 1), slice(0, 1), slice(0, 100_000_001))
+    # refused before anything is read (np.zeros is not touched)
+    labels = np.zeros((1, 1, 100_000_001), np.uint8)
     out = R.reshape_empty_region(labels, {"membrane": labels}, spec, roi=roi,
                                  seed_points=[(0, 0, 5)], spacing=SP)
     assert out.status == "refused"
@@ -190,8 +192,8 @@ def test_the_voxel_sentences_name_a_button_that_exists():
     assert "self.session_set_spacing_btn = QPushButton(" in ui
     assert "_PRT.S3_SET_SPACING_BTN" in ui
     assert PRT.S3_SET_SPACING_BTN == "Set spacing…"
-    for const in (AP.ADD_NOTE_DEFAULT_SPACING, AP.ADD_S1_NEEDS_SPACING,
-                  AP.ADD_S1_NEEDS_SPACING_BOXED):
+    for const in (AP.ADD_NOTE_DEFAULT_SPACING,
+                  AP.ADD_NOTE_DEFAULT_SPACING_BOXED):
         assert PRT.S3_SET_SPACING_BTN + " in the Session list" in const
     # half size is not a QC setting: it is the tick box under Curate, read
     # when a patch is opened -- the sentence quotes its label exactly

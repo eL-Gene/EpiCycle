@@ -61,7 +61,9 @@ class TestSentences:
     def test_the_empty_states_are_two_lines_not_zeros(self):
         assert len(T.SESSION_PATCHES_EMPTY_LINES) == 2
         assert len(T.RUN_SUMMARY_EMPTY_LINES) == 2
-        assert "default" in T.RUN_SUMMARY_EMPTY_LINES[1]
+        # a new workspace has no run until New Run makes one
+        assert T.RUN_SUMMARY_EMPTY_LINES[1] ==             "Pick one above, then make a run with New Run in Curation."
+        assert "default" not in T.RUN_SUMMARY_EMPTY_LINES[1]
 
     def test_the_dims_text(self):
         assert T.dims_text((124, 240, 240)) == "124 × 240 × 240"

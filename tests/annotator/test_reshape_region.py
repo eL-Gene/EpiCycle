@@ -607,8 +607,8 @@ def test_clicks_fill_their_cells(outside):
 # --------------------------------------------------------------------------- #
 # refusals, budget, cancel, find == preview
 # --------------------------------------------------------------------------- #
-def test_the_budget_refusal_at_four_million_and_one():
-    roi = (slice(0, 1), slice(0, 1), slice(0, 4_000_001))
+def test_the_budget_refusal_at_one_hundred_million_and_one():
+    roi = (slice(0, 1), slice(0, 1), slice(0, 100_000_001))
     tiny = np.zeros((1, 1, 1), np.int32)     # never cropped: refused first
     out = R.reshape_empty_region(tiny, {}, _spec(), roi=roi, spacing=ISO)
     assert out.status == "refused"
@@ -631,7 +631,7 @@ def test_a_box_at_exactly_the_budget_is_not_refused():
 
 def test_the_engine_sentences_are_the_spec_constants():
     assert R.ADD_ENGINE_TOO_BIG == (
-        "This box is too large to fill in one go — the limit is 4 million "
+        "This box is too large to fill in one go — the limit is 100 million "
         "voxels. (Nothing was changed.)")
     assert R.ADD_ENGINE_NO_MARKERS == (
         "No marker was left to grow from — every marker fell in dark space, "
@@ -1079,10 +1079,13 @@ def test_region_seeds_is_one_tuple_shared_with_the_spec():
 
 # -- the too-big sentence follows the budget (L-A4) -------------------------- #
 def test_the_too_big_sentence_follows_the_budget():
-    assert R.too_big_sentence(4_000_000) == R.ADD_ENGINE_TOO_BIG
+    # the default budget is the whole patch's ceiling: one size rule
+    assert R.too_big_sentence(100_000_000) == R.ADD_ENGINE_TOO_BIG
+    assert R.too_big_sentence(R.WHOLE_FILL_MAX_VOXELS) == R.ADD_ENGINE_TOO_BIG
+    assert "100 million" in R.too_big_sentence(100_000_000)
     assert "4 million" in R.too_big_sentence(4_000_000)
     assert "2.5 million" in R.too_big_sentence(2_500_000)
-    assert "4 million" not in R.too_big_sentence(2_500_000)
+    assert "100 million" not in R.too_big_sentence(2_500_000)
     assert "750,000 voxels" in R.too_big_sentence(750_000)
 
 

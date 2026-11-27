@@ -12,7 +12,7 @@ Above the two columns, full width:
 
 | Control | What it does |
 |---|---|
-| **Run** | "The run you are working in: a model applied to the patches, with its own predictions, reconstructions and curation. Switch to work on another run without disturbing the others." |
+| **Step 3 run** | "The run you are working in: a model applied to the patches, with its own predictions, reconstructions and curation. Switch to work on another run without disturbing the others." |
 | **New Run** | "Make a new run with its own model and results." |
 | **Manage** | "Rename, archive or delete the runs of this workspace." |
 
@@ -27,7 +27,7 @@ Above the two columns, full width:
 
   A third grey line says what the models were trained on, for example "Trained on segment 2: green, helper 1: red · Step 2 run “wound-v2”." — the channels the models were trained to read (segment is the channel the model finds things in, helper the optional second channel) and, for a Step 2 model, the run it came from.  The line wraps onto a second line when it is long, and hovering over it shows it whole.  Each channel is named the way the channel boxes in Settings name it; a model trained with 0: gray, which averages every channel into one image and ignores the helper, says so ("Trained on one grayscale image (all channels averaged) · Step 2 run “wound-v2”.") instead of naming a channel.  When the models were not recorded as trained on any channels — a Step 2 or refined model whose training record is missing — the line says "The channels this model was trained on are not recorded." and never guesses.  When the two models were trained on different channels, it names both sets: "Trained on lateral segment 2: green, helper 1: red · axial segment 1: red. Step 2 runs “a” / “b”."  A Cellpose built-in records no channels, so with one of those active — and with no model picked, with only one of the two picked, or with a model file that is gone — the line is not shown.
 
-  A new run made with **New Run** copies its model's training record with the model, so this line and the channel boxes in Settings read the channels it was trained on. A new run on a Cellpose built-in model starts with **Channel to segment** empty: pick it in Settings before Predict (see **Settings**).
+  A new run made with **New Run** copies its model's training record with the model, so this line and the channel boxes in Settings read the channels it was trained on. A new run on a Cellpose built-in model starts with **Channel to segment** empty: pick it in Settings before Predict (see **Settings**). The workspace's first run, and any run that has no channels saved yet and has not predicted, reads its model's training record the same way: its channel boxes show the channels the model was trained on until you change one or predict.
 
   A refined model shows its own name; a Cellpose built-in shows *Pretrained:* before its name (for example *lat: Pretrained: cyto3*). A model that has not been picked yet reads "lat: none" or "ax: none". A long name is shortened in the middle, so both its beginning and its end (often the round number) stay readable; hover over the line to see the full name or path.
 

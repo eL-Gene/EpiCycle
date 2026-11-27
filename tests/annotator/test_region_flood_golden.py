@@ -60,7 +60,7 @@ FINE = (1.0, 0.5, 0.5)
 ADD_CELLS_DEFAULTS = {
     "wall_kind": "membrane", "wall_chain": "zcorrect", "dark_outside": True,
     "dark_otsu_factor": 0.5, "dark_clearance_um": 2.0, "core_erode_um": 1.0,
-    "click_radius_um": 2.0, "box_budget": 4_000_000,
+    "click_radius_um": 2.0, "box_budget": 100_000_000,
 }
 
 #: The real-data case: a read-only driver copy of a Wound patch.
@@ -80,7 +80,7 @@ ADD_CELLS_PREVIEW_DEFAULTS = {
     "dark_clearance_um": 2.0, "dark_otsu_factor": 0.5,
     "nuclei_threshold": 0.0, "dark_outside": True, "source": "labels",
     "wall_kind": "membrane", "wall_chain": "zcorrect",
-    "box_budget": 4_000_000,
+    "box_budget": 100_000_000,
 }
 
 

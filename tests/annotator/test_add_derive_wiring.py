@@ -17,8 +17,9 @@ Pinned:
 * Accept writes only empty voxels; the other run's file and array are
   never written; a stale read of it is dropped and a preset switch resets
   it;
-* the refusals: the 1.0 um default spacing, no cell in the box, every
-  nucleus already taken, nothing found, a run that cannot be read;
+* the 1.0 um default spacing runs (the amber note says it); the refusals:
+  no cell in the box, every nucleus already taken, nothing found, a run
+  that cannot be read;
 * the wrong-run and no-run help lines.
 """
 
@@ -569,15 +570,19 @@ def test_a_read_that_lands_with_no_box_is_not_read_again_later(
 # --------------------------------------------------------------------------- #
 # the refusals
 # --------------------------------------------------------------------------- #
-def test_the_default_spacing_refuses(monkeypatch):
+def test_the_default_spacing_runs_with_the_note(monkeypatch):
+    """A spacing never set is no refusal: Inside each cell runs on the
+    1.0 um fallback and the page asks for the amber default-spacing note."""
+    img, cells = three_cells_scene(sp=(1.0, 1.0, 1.0))
     h, _img, _cells = _harness(monkeypatch, spacing=(1.0, 1.0, 1.0),
-                               source="unknown")
+                               source="unknown", scene=(img, cells))
     h._add_refresh_ui()
-    assert h.adv.last("status_text") == AP.ADD_S1_NEEDS_SPACING_BOXED
-    assert h.adv.last("preview_enabled") is False
-    h._preview_add()
-    assert not h._add_busy
-    assert h._add_transient == AP.ADD_S1_NEEDS_SPACING_BOXED
+    assert h.adv.last("preview_enabled") is True
+    assert h.adv.last("default_spacing") is True
+    assert not h._add_s1_state().get("spacing_unknown")
+    res = _run(h)
+    assert res is not None and res.status == "ok", (
+        getattr(res, "refusal", None), h._add_transient)
 
 
 def test_a_known_one_micron_spacing_runs(monkeypatch):
@@ -587,7 +592,8 @@ def test_a_known_one_micron_spacing_runs(monkeypatch):
     h._add_levels_cache[h._add_levels_key()] = patch_levels(
         _img, _cells, (1.0, 1.0, 1.0))
     kw, why = h._add_gather_preview()
-    assert why is None and kw["params"]["spacing_known"] is True
+    assert why is None, why
+    assert tuple(kw["spacing"]) == (1.0, 1.0, 1.0)
 
 
 @pytest.mark.parametrize("source", ["qc_settings", "patch"])
@@ -595,8 +601,8 @@ def test_a_one_micron_voxel_from_an_explicit_source_runs(monkeypatch,
                                                          source):
     """1.0 um entered in QC Settings (the context then says "qc_settings")
     or set on the patch ("patch": Set spacing..., Step 1, the file's tags)
-    runs Inside each cell; only the never-set fallback ("unknown") is
-    refused -- by the page and by the engine's belt."""
+    runs Inside each cell with no note; the never-set fallback ("unknown")
+    runs too, with the amber default-spacing note."""
     img, cells = three_cells_scene()
     h, _img, _cells = _harness(monkeypatch, spacing=(1.0, 1.0, 1.0),
                                source=source, scene=(img, cells),
@@ -604,16 +610,16 @@ def test_a_one_micron_voxel_from_an_explicit_source_runs(monkeypatch,
     h._add_levels_cache[h._add_levels_key()] = patch_levels(
         img, cells, (1.0, 1.0, 1.0))
     h._add_refresh_ui()
-    assert h.adv.last("status_text") != AP.ADD_S1_NEEDS_SPACING_BOXED
     assert h.adv.last("preview_enabled") is True
-    _run(h)
-    assert h._add_transient != AP.ADD_S1_NEEDS_SPACING_BOXED
+    assert h.adv.last("default_spacing") is False
+    res = _run(h)
+    assert res is not None and res.status == "ok", res.refusal
     h.ctx["spacing_source"] = "unknown"
     h._add_preview_res = None
     h._add_preview_result = None
     h._add_refresh_ui()
-    assert h.adv.last("status_text") == AP.ADD_S1_NEEDS_SPACING_BOXED
-    assert h.adv.last("preview_enabled") is False
+    assert h.adv.last("preview_enabled") is True
+    assert h.adv.last("default_spacing") is True
 
 
 def test_no_cell_of_that_run_in_the_box(monkeypatch):
@@ -799,22 +805,29 @@ def test_a_recipe_refusal_at_preview_is_said_in_plain_words():
     out = AP.run_add_preview(
         preset="nuclei", roi=roi, existing_roi=np.zeros_like(cells),
         next_label=1, spacing=ISO,
-        params={"look_for": AP.LOOK_INSIDE, "spacing_known": True},
+        params={"look_for": AP.LOOK_INSIDE},
         image_roi=img, run_guide_roi=cells, patch_levels=bad)
     assert out.status == "refused"
     assert "no bright level above zero" in out.refusal
     assert "\n" not in out.refusal
 
 
-def test_the_engine_belt_refuses_the_default_spacing():
-    img, cells = three_cells_scene()
+def test_the_engine_runs_at_the_default_spacing():
+    """The engine has no spacing refusal: the 1.0 um default runs, and a
+    missing spacing falls back to 1.0 um on every axis."""
+    img, cells = three_cells_scene(sp=(1.0, 1.0, 1.0))
     roi = tuple(slice(0, n) for n in img.shape)
-    out = AP.run_add_preview(
-        preset="nuclei", roi=roi, existing_roi=np.zeros_like(cells),
-        next_label=1, spacing=(1.0, 1.0, 1.0),
-        params={"look_for": AP.LOOK_INSIDE}, image_roi=img,
-        run_guide_roi=cells)
-    assert out.refusal == AP.ADD_S1_NEEDS_SPACING_BOXED
+    outs = []
+    for spacing in ((1.0, 1.0, 1.0), None):
+        lev = patch_levels(img, cells, (1.0, 1.0, 1.0))
+        out = AP.run_add_preview(
+            preset="nuclei", roi=roi, existing_roi=np.zeros_like(cells),
+            next_label=1, spacing=spacing,
+            params={"look_for": AP.LOOK_INSIDE}, image_roi=img,
+            run_guide_roi=cells, patch_levels=lev)
+        assert out.status == "ok", (spacing, out.refusal)
+        outs.append(out)
+    assert outs[0].ids == outs[1].ids
 
 
 def test_the_walls_tick_says_why_on_inside(monkeypatch):
@@ -940,6 +953,29 @@ def test_a_refused_channel_is_said_under_look_for_nuclei(widget):
         widget.add_look_for_combo.setCurrentIndex(0)
         widget.update_add_ui_state(box_active=False, levels_note="")
     assert widget._add_inside_help.isHidden()
+
+
+def test_inside_shows_the_amber_spacing_note_at_the_default(widget):
+    """Inside each cell runs at the never-set spacing: the amber
+    default-spacing note shows, on a box and on the whole patch, before a
+    result -- as on Cells."""
+    reset_add(widget)
+    widget.update_add_ui_state(look_for_items=_items(), box_active=True,
+                               default_spacing=True)
+    widget.add_look_for_combo.setCurrentIndex(1)
+    try:
+        assert widget.add_look_inside()
+        assert not widget.add_spacing_note.isHidden()
+        assert widget.add_spacing_note.text() == (
+            AP.ADD_NOTE_DEFAULT_SPACING_BOXED)
+        widget.update_add_ui_state(whole_patch=True)
+        assert not widget.add_spacing_note.isHidden()
+        widget.update_add_ui_state(default_spacing=False)
+        assert widget.add_spacing_note.isHidden()
+    finally:
+        widget.add_look_for_combo.setCurrentIndex(0)
+        widget.update_add_ui_state(box_active=False, whole_patch=False,
+                                   default_spacing=False)
 
 
 def test_a_run_is_listed_never_preselected_and_read_by_index(widget):

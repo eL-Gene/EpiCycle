@@ -113,6 +113,24 @@ ADD_ABOUT_BODY = (
     "small objects start unticked."
 )
 
+
+def voxel_limit_words(n) -> str:
+    """A voxel limit in words, as the Cells size lines say theirs ("the
+    limit for cells is 100 million"): whole or tenth millions as
+    "1 million" / "1.5 million"; under a million, the number with
+    thousands separators ("1,000")."""
+    n = int(n)
+    if n >= 1_000_000:
+        return "{:g} million".format(round(n / 1e6, 1))
+    return "{:,}".format(n)
+
+
+#: On Cells, S, M and L and a new box reach at most this many voxels: their
+#: SIZE, not a limit (a box made larger with Numbers... is kept, and filled
+#: up to ``ADD_BOX_BUDGET``).  It keeps the presets the size they were
+#: when it was the Cells limit.
+ADD_CELLS_PRESET_MAX_VOXELS = 4_000_000
+
 # --------------------------------------------------------------------------- #
 # S1
 # --------------------------------------------------------------------------- #
@@ -122,9 +140,11 @@ ADD_S1_IDLE = "Place a box over the space to fill, or press Whole patch."
 #: the same on Cells where Spread from each marker cannot run (no numba):
 #: a Cells whole patch cannot be filled there, so it is not offered
 ADD_S1_IDLE_BOX = "Place a box over the space to fill."
+#: ``{k}``: the Cells limit in words (:func:`voxel_limit_words` of
+#: ``ADD_BOX_BUDGET``, "100 million"), the same for a box and a whole patch
 ADD_S1_BOX = (
-    "Box {z} × {y} × {x} voxels ({m} million; the limit for cells is 4 "
-    "million) · {p} % of it is empty space"
+    "Box {z} × {y} × {x} voxels ({m} million; the limit for cells is {k}) "
+    "· {p} % of it is empty space"
 )
 ADD_S1_BOX_NUCLEI = (
     "Box {z} × {y} × {x} voxels ({m} million) · {p} % of it is empty space"
@@ -140,8 +160,9 @@ ADD_S1_PATCH_CLICKS_ONE = (
 ADD_S1_MEASURING = "Measuring the box…"
 #: the same on a whole patch
 ADD_S1_MEASURING_PATCH = "Measuring the patch…"
+#: ``{k}`` as in ``ADD_S1_BOX`` (see :func:`over_limit_line`)
 ADD_S1_OVER_LIMIT = (
-    "This box is {m} million voxels; the limit for cells is 4 million. "
+    "This box is {m} million voxels; the limit for cells is {k}. "
     "Shrink it with Numbers… or pick S, M or L."
 )
 #: Step 3's physical units are the patch's own voxel size (Set spacing… on
@@ -150,11 +171,13 @@ ADD_S1_OVER_LIMIT = (
 #: QC features read.  The sentences name Set spacing…: it keeps a value per
 #: patch (1 / 1 / 1 too, which QC Settings cannot tell from its factory
 #: default), and it stays live while an Add box holds the Step 3 lock (it
-#: is greyed only while Predict or Reconstruct runs).  Cells uses
-#: that spacing AS IT IS and never refuses -- ``ADD_S1_NO_VOXEL_SIZE`` and
-#: ``ADD_UM_OFF`` are retired; at the default (1, 1, 1) this AMBER,
-#: non-blocking note sits under S1 instead (Wound: a wrong 1 um took the
-#: leak from 0.002-0.017 to 0.05-0.21).
+#: is greyed only while Predict or Reconstruct runs).  Every Add path --
+#: Cells on a box or the whole patch, the Nuclei markers, Inside each cell
+#: -- uses that spacing AS IT IS and never refuses (the 1.0 um isotropic
+#: fallback runs) -- ``ADD_S1_NO_VOXEL_SIZE``, ``ADD_UM_OFF`` and the
+#: Inside / whole-patch spacing refusals are retired; at the default
+#: (1, 1, 1) this AMBER, non-blocking note sits under S1 instead (Wound: a
+#: wrong 1 um took the leak from 0.002-0.017 to 0.05-0.21).
 ADD_NOTE_DEFAULT_SPACING = (
     "Spacing is the default 1.0 µm here — if your voxels are smaller, set "
     "their size with Set spacing… in the Session list, so the µm knobs mean "
@@ -297,7 +320,7 @@ ADD_S1_TICK_ONE_NUCLEUS_ONE = (
 #: ... the Preview found nothing and at least one marker's whole ball lay
 #: off the stain (below the threshold)
 ADD_S1_MARKERS_NONE_ON_STAIN = (
-    "No marker sits on stain above the threshold — lower the threshold, or "
+    "No marker sits on stain above the threshold — lower Threshold, or "
     "move the markers onto the nuclei."
 )
 #: ... the Preview found nothing and every marker's ball lay on kept objects
@@ -319,7 +342,8 @@ ADD_NOTE_MARKERS_DIM_ONE = (
 #: the marker row's tooltip after a Preview in which it made nothing
 ADD_MARKER_DIM_TIP = (
     "At the last Preview this marker sat on stain below the threshold, so "
-    "it made nothing — move it onto the nucleus or lower the threshold."
+    "it made nothing — move it onto the nucleus or lower Threshold under "
+    "Brightness."
 )
 ADD_MARKER_SMALL_TIP = (
     "At the last Preview this marker's nucleus was below Smallest object or "
@@ -345,27 +369,122 @@ ADD_HELP_LIVE_TICK = (
     "Finds the objects again after every click and setting change, so you "
     "see the result without pressing Preview. Preview still works.")
 ADD_HELP_LIVE = ADD_HELP_LIVE_TICK
-#: S1 on a whole patch with the tick on, for Cells ▸ Click markers that
-#: are not filled as you click there: walls the click fill does not redo
-#: (only Membrane sheets and Intensity edges are), a patch over
-#: ``ADD_LIVE_CELLS_WHOLE_MAX_VOXELS``, or a patch the click fill could not
-#: take (its flat spots, the flood not compiled, a failure) -- the console
-#: line says which.  Nuclei ▸ the markers on a whole patch always are.
+#: the tick beside it (Cells ▸ Click markers with "Update as I click" on;
+#: off by default, never kept between napari sessions): the live
+#: restrictions below switched off -- the click fill runs where its flat
+#: spots would step aside, and where it cannot run at all the region is
+#: filled whole a moment after the clicks settle
+ADD_LIVE_ALWAYS_LABEL = "Always update as I click"
+ADD_HELP_LIVE_ALWAYS = (
+    "Runs the quick fill even where its flat spots could place a few tied "
+    "voxels differently from Preview, and where the quick fill cannot run "
+    "at all, redoes the region a moment after you stop clicking. That may "
+    "take minutes on a large region or a slow Wall type; the first line "
+    "says how long.")
+#: the quiet before that whole fill (longer than a click's: a burst of
+#: clicks makes one slow run, not several)
+ADD_LIVE_SLOW_DEBOUNCE_MS = 700
+#: S1 (busy) while that whole fill runs; nothing greys, Stop works, and a
+#: click meanwhile queues one more run.  The time is estimated from the
+#: region's voxels, its walls and Grow by (:func:`live_update_seconds`,
+#: worded by :func:`live_updating_line`): under
+#: ``LIVE_FEW_SECONDS`` (or with no estimate) this sentence ...
+ADD_S1_LIVE_UPDATING = (
+    "Updating the region — this takes a few seconds here.")
+#: ... and from there the estimate, ``{t}`` "about 35 s" / "about a
+#: minute" / "about 3 minutes"
+ADD_S1_LIVE_UPDATING_TIME = "Updating the region — {t} here."
+#: under this many seconds the slow update says "a few seconds"
+LIVE_FEW_SECONDS = 10.0
+#: Cells ▸ Click markers runs as you click on a box or a whole patch of at
+#: most this many voxels (equality is live) -- ONE rule for any region,
+#: since the box and the whole patch share the same click fill.  The click
+#: fill holds its prepared region in memory (about 40 bytes a voxel, about
+#: 66 while it is prepared), and its first flood -- the first click on a
+#: region -- cannot be stopped.  The number is the slow-patch threshold.
+#: Above it the balls appear and Preview is the way (a box keeps its plain
+#: flood with closed faces: its edge cuts through tissue; only a whole
+#: patch's faces are the end of the data).
+ADD_LIVE_CELLS_MAX_VOXELS = 20_000_000
+#: A live click the click fill cannot take (its flat spots, the flood not
+#: compiled, a failure, or -- on a box -- walls or a Grow by it does not
+#: redo) still runs the full fill when the region (a box or a whole patch)
+#: holds at most this many voxels: a full run on a live click is allowed up
+#: to this size (measured 0.5-0.6 s at 0.66 million voxels, 5.8-6.8 s at
+#: 5.2 million).  Above it the click steps aside -- nothing runs, S1 says
+#: to press Preview -- since that flood cannot be stopped; a flood still
+#: being compiled is not a step aside there: the click waits for it
+#: (:data:`LIVE_PREPARING`).
+ADD_LIVE_FULL_RUN_MAX_VOXELS = 1_000_000
+#: S1 row 13.5 with the tick on for Cells ▸ Click markers: one family, the
+#: region its only difference.  Over ``ADD_LIVE_CELLS_MAX_VOXELS`` the
+#: limit is named ({n}: the limit in words, see :func:`voxel_limit_words`
+#: -- "20 million") ...
+ADD_S1_LIVE_OVER_GATE_BOX = (
+    "Press Preview to see the cells — this box is over {n} voxels.")
+ADD_S1_LIVE_OVER_GATE_PATCH_SIZE = (
+    "Press Preview to see the cells — this patch is over {n} voxels.")
+#: ... and under it, a region not filled as you click for another reason:
+#: on a whole patch, walls the click fill does not redo (only Membrane
+#: sheets and Intensity edges are); on a box over
+#: ``ADD_LIVE_FULL_RUN_MAX_VOXELS``, those walls or a Grow by other than
+#: Fill to the walls; on either region over that size, one the click fill
+#: could not take (its flat spots, switched off, a failure) -- the
+#: console line says which.  Nuclei ▸ the markers on a whole patch
+#: always are.
 ADD_S1_LIVE_OVER_GATE_PATCH = (
     "Press Preview to see the cells — this patch is not updated as you "
     "click.")
-#: Cells ▸ Click markers runs as you click on a box of at most this many
-#: voxels (provisional); above it the balls appear and Preview is the way
-ADD_LIVE_CELLS_MAX_VOXELS = 1_000_000
-#: ... and on a whole patch of at most this many voxels (the slow-patch
-#: threshold; equality is live).  The prepared patch is held in memory
-#: (about 40 bytes a voxel, about 66 while it is prepared) and its first
-#: flood cannot be stopped; above it the patch waits for Preview
-ADD_LIVE_CELLS_WHOLE_MAX_VOXELS = 20_000_000
-#: S1 on a Cells box over that limit with the tick on ({n}: the limit in
-#: words, see :func:`voxel_limit_words` -- "1 million")
-ADD_S1_LIVE_OVER_GATE_BOX = (
-    "Press Preview to see the cells — this box is over {n} voxels.")
+ADD_S1_LIVE_STEPPED_ASIDE_BOX = (
+    "Press Preview to see the cells — this box is not updated as you "
+    "click.")
+#: ... and the same step aside, for the click fill's flat spots, while the
+#: spacing was never set: the tissue outline's smallest piece is a volume
+#: in µm³, so at the 1.0 µm fallback (larger voxels than most stacks')
+#: debris in the dark around the tissue can count as tissue, and its flat
+#: spots stop the click fill where the true spacing would not
+ADD_S1_LIVE_STEPPED_ASIDE_SPACING_BOX = (
+    "Press Preview to see the cells — at the default 1.0 µm spacing this "
+    "box is not updated as you click; Set spacing… in the Session list may "
+    "change that.")
+ADD_S1_LIVE_STEPPED_ASIDE_SPACING_PATCH = (
+    "Press Preview to see the cells — at the default 1.0 µm spacing this "
+    "patch is not updated as you click; Set spacing… in the Session list "
+    "may change that.")
+#: ... and on a box or a whole patch over ``ADD_LIVE_FULL_RUN_MAX_VOXELS``
+#: that IS run as you click, while the click fill is still being compiled
+#: (once per process, a few seconds after the first box): the clicks wait
+#: and are drawn once it is ready -- not a step aside (Preview still works,
+#: and is not named)
+ADD_S1_LIVE_PREPARING = (
+    "Preparing the fill — your clicks will be drawn in a moment.")
+#: the grey line directly under "Update as I click" (Cells ▸ Click
+#: markers) while S1 row 13.5 holds: its reason in at most 60 characters,
+#: naming the control that changes it by its word on the page.  One
+#: decision for both rows (:func:`live_row_reason`, read by
+#: :func:`s1_sentence` and :func:`live_tick_note`).  Hidden while clicks
+#: run as you click, with the tick off, and while "Always update as I
+#: click" is on (it lifts every one of these).  Over the live limit
+#: (``{n}`` as S1 names it) ...
+ADD_LIVE_NOTE_OVER = "Not live over {n} — tick Always update as I click."
+#: ... walls the quick fill does not redo (only Membrane sheets and
+#: Intensity edges are) ...
+ADD_LIVE_NOTE_WALLS = (
+    "Not live here: Wall type — tick Always update as I click.")
+#: ... Grow by on Spread from each marker ...
+ADD_LIVE_NOTE_GROW = "Not live here: Grow by — tick Always update as I click."
+#: ... a step aside for the quick fill's flat spots at a set spacing ...
+ADD_LIVE_NOTE_FLAT = (
+    "Not live here: flat spots — tick Always update as I click.")
+#: ... and at the never-set spacing (S1 names Set spacing… too) ...
+ADD_LIVE_NOTE_SPACING = (
+    "Not live here: default spacing — Set spacing… may help.")
+#: ... a quick fill that could not take the region for another reason
+#: (it failed, or it is switched off; the console says which) ...
+ADD_LIVE_NOTE_OFF = (
+    "Not live here: the quick fill could not run — press Preview.")
+#: ... and the quick fill still being prepared (the clicks wait)
+ADD_LIVE_NOTE_PREPARING = "Preparing the fill…"
 #: Accept pressed before the last change is drawn: it waits for it (the
 #: button reads ADD_ACCEPT_WAITING_BTN meanwhile)
 ADD_S1_ACCEPT_WAITING = "Accepting once the last click is drawn."
@@ -664,6 +783,12 @@ ADD_NOTE_RUN_SLIVERS_ONE = (
     "1 run object lay mostly over kept objects and was skipped"
 )
 
+#: Cells ▸ Nuclei masks on a whole patch: a marker under this many cubic
+#: microns is counted in the counts note (kept all the same: no floor yet)
+ADD_SMALL_MARKER_UM3 = 10.0
+ADD_NOTE_SMALL_MARKERS = "{n} markers were under 10 µm³"
+ADD_NOTE_SMALL_MARKERS_ONE = "1 marker was under 10 µm³"
+
 # the counts note: (key, many, one); joined with " · "
 _COUNT_PARTS = (
     # first: the one part the user must act on, so the one-line elision
@@ -687,6 +812,9 @@ _COUNT_PARTS = (
     ("n_nuclei_slivers",
      "{n} nuclei slivers against kept objects were skipped",
      "1 nuclei sliver against kept objects was skipped"),
+    # Cells ▸ Nuclei masks (a box or a whole patch): the markers found
+    # under ADD_SMALL_MARKER_UM3 (kept; said so the user can judge them)
+    ("n_small_markers", ADD_NOTE_SMALL_MARKERS, ADD_NOTE_SMALL_MARKERS_ONE),
     ("n_slivers", ADD_NOTE_RUN_SLIVERS, ADD_NOTE_RUN_SLIVERS_ONE),
     ("n_markers_over_kept", "{n} markers sat on kept objects",
      "1 marker sat on kept objects"),
@@ -1028,16 +1156,6 @@ ADD_NOTE_HALFSIZE_BOXED = (
     "full size in 2-voxel steps. For best results, press Close box, untick "
     "Downsample patches 2× on load under Curate, and open the patch again."
 )
-#: Inside each cell refuses at the 1.0 um default: every knob there is in
-#: microns, and on finer voxels each would be off by the same factor
-ADD_S1_NEEDS_SPACING = (
-    "These settings are in µm, and this patch's spacing is the 1.0 µm "
-    "default — set its voxel size with Set spacing… in the Session list "
-    "first."
-)
-#: the same refusal with a box placed: Set spacing… stays live with a box
-#: up (no "close the box first" any more), so it is one sentence
-ADD_S1_NEEDS_SPACING_BOXED = ADD_S1_NEEDS_SPACING
 ADD_S1_INSIDE_UNUSABLE = (
     "That run cannot be used on this patch — the reason is under Look for "
     "nuclei."
@@ -1117,13 +1235,10 @@ ADD_WHOLE_SIZE_BTN = "Whole"
 #: the two Whole buttons' tooltip: plain help -- they are never grey; a
 #: choice that cannot fill a whole patch greys Preview and S1 says why
 ADD_WHOLE_TIP = "Use the whole patch as the box."
-#: S1 (Preview grey) on a whole patch with Look for nuclei ▸ Anywhere in the
-#: box: the Anywhere finder over a whole patch is one long step Stop cannot
-#: cut short, so it runs on boxes only
-ADD_S1_WHOLE_ANYWHERE = (
-    "Anywhere in the box runs on boxes — pick Inside each cell, or S, M or "
-    "L."
-)
+#: the strip's busy line after Stop on a region over
+#: ``ADD_SLOW_PATCH_VOXELS``: a step already running (a distance map, a
+#: flood) is never cut short, so Stop waits for it to end
+ADD_STOP_STEP_ENDS = "Stop takes effect when this step ends."
 ADD_HELP_WHOLE = (
     "The box is the whole patch, so it does not move. S, M or L make it a "
     "box again."
@@ -1135,25 +1250,47 @@ ADD_S1_PATCH_PLAIN = (
 )
 #: above this many voxels the whole patch says a Preview may take minutes
 ADD_SLOW_PATCH_VOXELS = 20_000_000
-#: S1 (Preview grey) on a Cells whole patch with neither a run nor Click
-#: markers picked under Markers ▸ From: there the list offers the other
-#: runs and Click markers (finding nuclei masks over a whole patch is one
-#: long step Stop cannot cut short), and a run is never picked for the user
+#: the nuclei finder alone (Cells ▸ Nuclei masks finds them and stops),
+#: seconds per million voxels: 61 s on 100 million (the steps below)
+FINDER_SECONDS_PER_MILLION = 0.61
+#: Nuclei ▸ Anywhere in the box, seconds per million voxels for the WHOLE
+#: Preview (the finder, then the edge flags, the smoothing of every object
+#: and the size pass): 6.8 s on 5.2 million voxels with 358 nuclei (a
+#: real patch), 12.6 s on 8.2 million with 1,243 (synthetic).  The finder
+#: alone is about 0.6 s per million (on 100 million: 2.9 threshold + 37.2
+#: distance map + 3.3 blur + 5.9 peaks + 10.2 flood + 1.1 size floor).
+ANYWHERE_SECONDS_PER_MILLION = 1.4
+#: above this many voxels a Cells whole patch filled as you click (at most
+#: ``ADD_LIVE_CELLS_MAX_VOXELS``) says its first update prepares it once
+#: and may take a while: that prepare was measured at 10.5 s on 5.2
+#: million voxels
+ADD_SLOW_LIVE_PATCH_VOXELS = 5_000_000
+#: S1 (Preview grey) on a Cells whole patch with nothing picked under
+#: Markers ▸ From (a run is never picked for the user there)
 ADD_S1_WHOLE_PICK_RUN = (
-    "Pick a run or Click markers under Markers ▸ From — a whole patch "
-    "grows its cells from those markers."
+    "Pick a run, Nuclei masks or Click markers under Markers ▸ From — a "
+    "whole patch grows its cells from those markers."
 )
-#: ... and on a patch with no other run (the list holds its grey item and
-#: Click markers)
+#: ... and on a patch with no other run (the list holds its grey item,
+#: the nuclei masks and Click markers)
 ADD_S1_WHOLE_NO_RUN = (
-    "This patch has no other run — pick Click markers under Markers ▸ "
-    "From, or press S, M or L for a box."
+    "This patch has no other run — pick Nuclei masks or Click markers "
+    "under Markers ▸ From."
 )
 #: the amber slot on a large Cells whole patch; ``{t}`` is
 #: :func:`wait_phrase` of :func:`whole_fill_minutes` (see
 #: :func:`patch_slow_line`)
 ADD_NOTE_PATCH_SLOW_STEPS = (
     "This patch is {m} million voxels; a Preview may take {t}, "
+    "longer on a slower computer. Stop acts between steps."
+)
+#: ... and on a Cells box over ``ADD_SLOW_PATCH_VOXELS`` (a box follows the
+#: whole patch's size rule, so a box that large is filled in one go by a
+#: Preview too); ``{t}`` is the box's own figure (``patch_slow_line``
+#: with its Grow by: ``BOX_FILL_SECONDS_PER_MILLION`` for the fill to the
+#: walls, Spread's rate for Spread), a rough one
+ADD_NOTE_BOX_SLOW_STEPS = (
+    "This box is {m} million voxels; a Preview may take {t}, "
     "longer on a slower computer. Stop acts between steps."
 )
 #: the amber slot on a large Nuclei whole patch: that wait was never timed
@@ -1170,8 +1307,10 @@ ADD_NOTE_PATCH_SLOW_LIVE = (
     "This patch is {m} million voxels; the first update reads it once and "
     "may take a while. Later clicks are quick."
 )
-#: ... and for Cells ▸ Click markers on a whole patch filled as you click:
-#: the first update prepares the patch (its wall picture and its fill)
+#: ... and for Cells ▸ Click markers on a whole patch filled as you click,
+#: over ``ADD_SLOW_LIVE_PATCH_VOXELS`` and while no prepared patch is kept
+#: for it: the first update prepares the patch (its wall picture and its
+#: fill)
 ADD_NOTE_PATCH_SLOW_LIVE_CELLS = (
     "This patch is {m} million voxels; the first update prepares it once "
     "and may take a while. Later clicks are quick."
@@ -1183,6 +1322,8 @@ WAIT_UNDER_A_MINUTE = "under a minute"
 WAIT_A_MINUTE = "a minute"
 WAIT_MINUTES = "{n} minutes"
 WAIT_ABOUT = "about {w}"
+#: under 45 s the slow update's wait is said in seconds, to 5 s
+WAIT_SECONDS = "{n} s"
 #: painted before the whole-patch read on the main thread
 ADD_S1_GATHERING = "Reading the patch…"
 #: painted before Accept's write on a whole patch (a visible moment on the
@@ -1197,8 +1338,10 @@ ADD_S1_REMOVING_RESULT = "Taking the result off the screen…"
 ADD_S1_DRAWING_WALLS = "Drawing the wall picture…"
 ADD_S1_DRAWING_MARKERS = "Drawing the markers…"
 #: the amber slot on Cells with a ridge wall type: its wall picture is
-#: slow to build (it grows with the patch and with fewer cores), kept on a
-#: whole patch and built again at every Preview of a box.  On a whole
+#: slow to build (it grows with the patch and with fewer cores).  It is kept
+#: on a whole patch and on a box at or under ``ADD_LIVE_CELLS_MAX_VOXELS``
+#: (said until it is kept), and built again at every Preview of a larger
+#: box.  On a whole
 #: patch ``{t}`` is :func:`wait_phrase` of the whole Preview's
 #: :func:`whole_fill_minutes` (the picture included), and from
 #: ``ADD_RIDGE_MEMORY_NOTE_GB`` on the ``_MEMORY`` form names the memory
@@ -1225,11 +1368,35 @@ FILL_SECONDS_GROWTH = 0.035
 #: million voxels, with this peak memory in GB per million voxels
 RIDGE_PICTURE_SECONDS_PER_MILLION = 10.0
 RIDGE_GB_PER_MILLION = 0.2
+#: ... and on a box filled as you click, the wall picture of a ridge wall
+#: type per million voxels: measured on Vessel ridges, one 4.2 million box
+#: (its 58.6 s update less the fill's own time)
+RIDGE_BOX_PICTURE_SECONDS_PER_MILLION = 12.6
+#: ... the fill to the walls of a box (or of a whole patch filled the way a
+#: box is) as the slow live update runs it, on a warm stage: measured
+#: 5.8-6.8 s on 5.2 million voxels with Membrane sheets
+LIVE_FLOOD_SECONDS_PER_MILLION = 1.3
+#: ... the same fill as a cold Preview of a box runs it (the levels read,
+#: the walls built, the smoothing): 12.5 s on 4.6 million and 52.0 s on
+#: 23.0 million voxels (synthetic tissue, Membrane sheets, one machine)
+BOX_FILL_SECONDS_PER_MILLION = 2.3
+#: ... and Spread from each marker: measured 65.7 s on a 5.2 million patch
+#: (one measurement, on one patch)
+SPREAD_SECONDS_PER_MILLION = 12.6
+#: a box over ``ADD_LIVE_CELLS_MAX_VOXELS``: its wall picture is not kept
 ADD_NOTE_RIDGES_BOX = (
     "{kind} is slow on a box this large: its wall picture is built again at "
     "every Preview. Membrane sheets is much faster."
 )
-#: a Cells box from this size on says so with a ridge wall type
+#: a box at or under ``ADD_LIVE_CELLS_MAX_VOXELS`` whose wall picture is
+#: not kept yet: it is built once, by the next run, and kept for the box
+ADD_NOTE_RIDGES_BOX_ONCE = (
+    "{kind} is slow on a box this large: its wall picture is built once, "
+    "then kept for this box. Membrane sheets is much faster."
+)
+#: a Cells box from this size on says so with a ridge wall type (its wall
+#: picture: about 12.6 s per million voxels, measured on Vessel ridges, one
+#: box -- about 25 s here)
 ADD_RIDGE_BOX_VOXELS = 2_000_000
 #: what "Look for nuclei" sends the engine (by index through the panel's map)
 LOOK_ANYWHERE = "anywhere"
@@ -1302,9 +1469,15 @@ ADD_SUM_ADVANCED_FILL_NO_MEMBRANE = "filled to the walls · membrane left out"
 ADD_SUM_ADVANCED_FILL_LIVE = "filled to the walls"
 #: the helper line at the top of the Cells card under Advanced, on a whole
 #: patch only: what fills it, and how to fill what it leaves empty
+#: the one way a whole patch differs from a box, and its reason
+ADD_HELP_WHOLE_FILL_WHY = (
+    "A patch edge is the end of the data; a box edge cuts through tissue."
+)
+#: (worded to stay three lines at the page's width: the Advanced-open
+#: whole-patch states may not grow)
 ADD_HELP_WHOLE_FILL = (
-    "A whole patch is filled to the walls from every marker at once. Tissue "
-    "far from every marker stays empty; to fill it, click markers there too."
+    "Filled from every marker at once; far tissue stays empty (click "
+    "markers there). " + ADD_HELP_WHOLE_FILL_WHY
 )
 #: ... in the same slot on a whole patch filled as you click (Cells ▸ Click
 #: markers, "Update as I click" on, walls the click fill redoes)
@@ -1313,11 +1486,52 @@ ADD_HELP_WHOLE_FILL_LIVE = (
     "fills too. To keep it empty, untick Update as I click and press "
     "Preview."
 )
+#: ... and on a whole patch with Grow by ▸ Spread from each marker
+ADD_HELP_WHOLE_FILL_SPREAD = (
+    "Spread from each marker grows every cell of the whole patch at once; "
+    "each stops at a wall, where a neighbour got there first, or at its "
+    "growth limit. Tissue no cell gets to stays empty."
+)
+#: ... and on the same patch when the click fill stepped aside from it (its
+#: flat spots, a failure: S1 says to press Preview): a Preview fills it,
+#: still the way a box is
+ADD_HELP_WHOLE_FILL_PREVIEW = (
+    "Filled on Preview, the way a box is: tissue far from every marker "
+    "fills too. To keep it empty, untick Update as I click and press "
+    "Preview."
+)
+#: ... and there with "Always update as I click" on: the region is filled
+#: whole a moment after the clicks settle
+ADD_HELP_WHOLE_FILL_ALWAYS = (
+    "Filled a moment after your clicks (Always update as I click is on), "
+    "the way a box is: tissue far from every marker fills too."
+)
+
+
+def whole_fill_help(live_rule, live_ok=None, spread=False,
+                    always=False) -> str:
+    """The helper line of a Cells whole patch under Advanced: grown by
+    Spread from each marker (``spread``, Grow by's pick; never the live
+    rule); the fill with a background marker (``live_rule`` False); filled
+    as you click by the box rule; or by that rule on Preview only, when the
+    click fill stepped aside (``live_ok`` False -- the S1 gate says the
+    same) -- or, there with "Always update as I click" on (``always``), a
+    moment after the clicks.  ``live_ok`` ``None`` (not said): as you
+    click."""
+    if spread:
+        return ADD_HELP_WHOLE_FILL_SPREAD
+    if not live_rule:
+        return ADD_HELP_WHOLE_FILL
+    if live_ok is False:
+        return (ADD_HELP_WHOLE_FILL_ALWAYS if always
+                else ADD_HELP_WHOLE_FILL_PREVIEW)
+    return ADD_HELP_WHOLE_FILL_LIVE
 #: S1 (Preview grey) on a Cells whole patch over the fill's ceiling;
-#: ``{k}`` is the ceiling in millions (see :func:`whole_too_big_line`)
+#: ``{k}`` is the ceiling in words, as a box's line says its limit (see
+#: :func:`whole_too_big_line`)
 ADD_S1_WHOLE_TOO_BIG = (
     "This patch is {m} million voxels; a whole patch can be filled up to "
-    "{k} million. Press S, M or L for a box."
+    "{k}. Press S, M or L for a box."
 )
 #: in the Advanced help slot under Spread with no outline and the dark tick
 #: off: nothing but the growth limit stops a cell in open background
@@ -1364,9 +1578,11 @@ ADD_S1_WARMING = (
 )
 #: S1 (a transient) when a Numbers... slider or S / M / L makes a Cells
 #: whole patch a box again and the box had to shrink to the Cells limit
+#: (``ADD_BOX_BUDGET``).  Formatted once, at import, from the constant: a
+#: test that patches ``ADD_BOX_BUDGET`` does not change this sentence
 ADD_S1_LEFT_WHOLE_CLAMPED = (
     "The box is no longer the whole patch; for cells it was shrunk to the "
-    "4 million voxel limit."
+    "{} voxel limit.".format(voxel_limit_words(ADD_BOX_BUDGET))
 )
 #: the confirm a Numbers... slider or S / M / L asks before it makes a
 #: whole patch holding markers a box again (red, as Clear objects')
@@ -1394,7 +1610,7 @@ ADD_OUTLINE_CLEARED_GREY = (
     "Outline of the objects you cleared (clear some first)"
 )
 ADD_OUTLINE_SHRINK = "Shrink-wrap around the stain"
-ADD_OUTLINE_NONE = "No outline (as before)"
+ADD_OUTLINE_NONE = "No outline"
 OUTLINE_CLEARED = "cleared"
 OUTLINE_SHRINK = "shrink"
 OUTLINE_NONE = "none"
@@ -1408,7 +1624,7 @@ ADD_HELP_OUTLINE_SHRINK = (
     "narrower than Bridge gaps (Advanced) are closed over."
 )
 ADD_HELP_OUTLINE_NONE = (
-    "Only the box edges and dark space stop the cells, as before."
+    "Only the box edges and dark space stop the cells."
 )
 ADD_SHOW_OUTLINE = "Show the tissue outline"
 ADD_OUTLINE_PENDING = "Measuring the tissue outline…"
@@ -1472,14 +1688,6 @@ ADD_AMBER_ONE_CHANNEL_RUN_SPREAD = (
     "to their nuclei."
 )
 ADD_AMBER_ONE_CHANNEL_BRIDGE = " and Bridge gaps to 16 µm"
-#: the same on a whole patch, where Grow by and Wall cost are hidden: a box
-#: is the way to grow from nuclear walls
-ADD_AMBER_ONE_CHANNEL_WHOLE = (
-    "Only one channel. If it is the nuclear stain, walls read from nuclei "
-    "squeeze cells down to their nuclei — press S, M or L for a box, then "
-    "pick Grow by ▸ Spread from each marker and set Wall cost to 0 under "
-    "Advanced."
-)
 #: the walls summary's outline word
 ADD_SUM_OUTLINE_SHRINK = "outline: shrink-wrap"
 ADD_SUM_OUTLINE_CLEARED = "outline: cleared objects"
@@ -1557,8 +1765,9 @@ def count_phrase(n, one, many, **kw) -> str:
 
 def millions(n) -> str:
     """``{m}``: millions at 1 dp, at least 0.1.  Rounded DOWN at or under
-    the Cells limit and UP above it, so a box over the limit never reads
-    as the limit itself ("4.0 million" for 4,000,001 -- B2 fix pass)."""
+    the Cells limit (``ADD_BOX_BUDGET``) and UP above it, so a box over the
+    limit never reads as the limit itself ("100.0 million" for
+    100,000,001 -- B2 fix pass)."""
     n = float(n)
     tenths = n / 1e5
     if n > ADD_BOX_BUDGET:
@@ -1566,17 +1775,6 @@ def millions(n) -> str:
     else:
         v = math.floor(tenths + 1e-9) / 10.0
     return "{:.1f}".format(max(0.1, v))
-
-
-def voxel_limit_words(n) -> str:
-    """A voxel limit in words, as the Cells size lines say theirs ("the
-    limit for cells is 4 million"): whole or tenth millions as
-    "1 million" / "1.5 million"; under a million, the number with
-    thousands separators ("1,000")."""
-    n = int(n)
-    if n >= 1_000_000:
-        return "{:g} million".format(round(n / 1e6, 1))
-    return "{:,}".format(n)
 
 
 def box_line(shape, *, preset, empty_share=None, n_clicks=None,
@@ -1607,14 +1805,17 @@ def box_line(shape, *, preset, empty_share=None, n_clicks=None,
         tpl = ADD_S1_BOX
     else:
         tpl = ADD_S1_BOX_NUCLEI
-    return tpl.format(z=z, y=y, x=x, m=millions(n), p=p)
+    return tpl.format(z=z, y=y, x=x, m=millions(n), p=p,
+                      k=voxel_limit_words(ADD_BOX_BUDGET))
 
 
 def whole_too_big_line(n) -> str:
     """``ADD_S1_WHOLE_TOO_BIG`` for a whole patch of ``n`` voxels, against
-    the fill's ceiling (the engine's ``WHOLE_FILL_MAX_VOXELS``)."""
+    the fill's ceiling (the engine's ``WHOLE_FILL_MAX_VOXELS``), named in
+    words as :func:`over_limit_line` names a box's."""
     limit = int(_region.WHOLE_FILL_MAX_VOXELS)
-    return ADD_S1_WHOLE_TOO_BIG.format(m=millions(int(n)), k=millions(limit))
+    return ADD_S1_WHOLE_TOO_BIG.format(m=millions(int(n)),
+                                       k=voxel_limit_words(limit))
 
 
 def ridge_picture_minutes(m) -> float:
@@ -1661,20 +1862,101 @@ def wait_phrase(minutes) -> str:
     return WAIT_ABOUT.format(w=words)
 
 
-def patch_slow_line(n, wall_kind=None, *, picture_kept=False) -> str:
+def live_update_seconds(n, wall_kind=None, growth=GROW_FLOOD, *,
+                        picture_kept=False) -> float:
+    """Rough seconds the slow update ("Always update as I click": the
+    region filled whole) takes on a region of ``n`` voxels: the growth
+    rule's figure (``growth`` as :func:`cells_growth` names it -- the fill
+    to the walls, Spread, or a whole patch's fill with a background marker,
+    whose figure is the whole Preview's), plus the wall picture of a ridge
+    wall type (``RIDGE_WALL_KINDS``, ``RIDGE_BOX_PICTURE_SECONDS_PER_MILLION``)
+    unless it is kept already.  A 4.2 million box with Vessel ridges walls
+    was measured at 58.6 s (this gives about 58 s: "about a minute")."""
+    m = max(0.0, float(n)) / 1e6
+    if growth == GROW_SPREAD:
+        seconds = m * SPREAD_SECONDS_PER_MILLION
+    elif growth == GROW_PATCH:
+        seconds = 60.0 * whole_fill_minutes(m, None)
+    else:
+        seconds = m * LIVE_FLOOD_SECONDS_PER_MILLION
+    if wall_kind in RIDGE_WALL_KINDS and not picture_kept:
+        # a whole patch's fill keeps the whole Preview's figure; a box's
+        # picture was timed on a box
+        seconds += (60.0 * ridge_picture_minutes(m) if growth == GROW_PATCH
+                    else m * RIDGE_BOX_PICTURE_SECONDS_PER_MILLION)
+    return seconds
+
+
+def live_updating_line(seconds) -> str:
+    """S1 while the slow update runs: ``ADD_S1_LIVE_UPDATING`` with no
+    estimate or under ``LIVE_FEW_SECONDS``; else
+    ``ADD_S1_LIVE_UPDATING_TIME`` with "about N s" (to 5 s) under 45 s, and
+    from there :func:`wait_phrase`'s minutes."""
+    if seconds is None or float(seconds) < LIVE_FEW_SECONDS:
+        return ADD_S1_LIVE_UPDATING
+    seconds = float(seconds)
+    if seconds < 45.0:
+        n = int(5 * math.floor(seconds / 5.0 + 0.5))
+        t = WAIT_ABOUT.format(w=WAIT_SECONDS.format(n=n))
+    else:
+        t = wait_phrase(seconds / 60.0)
+    return ADD_S1_LIVE_UPDATING_TIME.format(t=t)
+
+
+def patch_slow_line(n, wall_kind=None, *, picture_kept=False,
+                    box=False, find_nuclei=False, growth=None) -> str:
     """``ADD_NOTE_PATCH_SLOW_STEPS`` for a Cells whole patch of ``n`` voxels
     with the wall type ``wall_kind`` (``None``: the Membrane sheets
-    figure)."""
+    figure); ``box``: ``ADD_NOTE_BOX_SLOW_STEPS`` for a Cells box of ``n``
+    voxels.  ``growth`` (``GROW_FLOOD`` / ``GROW_SPREAD``): the figure of
+    that growth rule (:func:`live_update_seconds`) instead of the whole
+    patch's fill with a background marker.  ``find_nuclei``: Markers ▸
+    Nuclei masks still to be found here -- the finder's figure
+    (:func:`finder_minutes`) is added."""
     n = int(n)
-    t = wait_phrase(whole_fill_minutes(n / 1e6, wall_kind,
-                                       picture_kept=picture_kept))
-    return ADD_NOTE_PATCH_SLOW_STEPS.format(m=millions(n), t=t)
+    if growth == GROW_FLOOD:
+        # a cold Preview of a box: its own rate, plus a ridge wall picture
+        # still to be built
+        m = n / 1e6
+        seconds = m * BOX_FILL_SECONDS_PER_MILLION
+        if wall_kind in RIDGE_WALL_KINDS and not picture_kept:
+            seconds += m * RIDGE_BOX_PICTURE_SECONDS_PER_MILLION
+        minutes = seconds / 60.0
+    elif growth == GROW_SPREAD:
+        minutes = live_update_seconds(n, wall_kind, growth,
+                                      picture_kept=picture_kept) / 60.0
+    else:
+        minutes = whole_fill_minutes(n / 1e6, wall_kind,
+                                     picture_kept=picture_kept)
+    if find_nuclei:
+        minutes += finder_minutes(n / 1e6)
+    t = wait_phrase(minutes)
+    tpl = ADD_NOTE_BOX_SLOW_STEPS if box else ADD_NOTE_PATCH_SLOW_STEPS
+    return tpl.format(m=millions(n), t=t)
 
 
-def nuclei_patch_slow_line(n, live=False) -> str:
+def anywhere_minutes(m) -> float:
+    """Rough minutes of a Nuclei ▸ Anywhere in the box Preview over ``m``
+    million voxels (the finder, then the finish: ``ANYWHERE_SECONDS_PER_MILLION``)."""
+    return max(0.0, float(m)) * ANYWHERE_SECONDS_PER_MILLION / 60.0
+
+
+def finder_minutes(m) -> float:
+    """Rough minutes of the nuclei finder alone over ``m`` million voxels
+    (Cells ▸ Nuclei masks: ``FINDER_SECONDS_PER_MILLION``)."""
+    return max(0.0, float(m)) * FINDER_SECONDS_PER_MILLION / 60.0
+
+
+def nuclei_patch_slow_line(n, live=False, anywhere=False) -> str:
     """``ADD_NOTE_PATCH_SLOW_PLAIN`` for a Nuclei whole patch of ``n``
     voxels (no figure for the wait); ``live`` -- the markers updating as
-    you click -- ``ADD_NOTE_PATCH_SLOW_LIVE``."""
+    you click -- ``ADD_NOTE_PATCH_SLOW_LIVE``; ``anywhere`` -- Anywhere in
+    the box, whose wait was timed -- ``ADD_NOTE_PATCH_SLOW_STEPS`` with
+    :func:`anywhere_minutes`."""
+    if anywhere and not live:
+        return ADD_NOTE_PATCH_SLOW_STEPS.format(
+            m=millions(int(n)),
+            t=wait_phrase(anywhere_minutes(int(n) / 1e6)))
     tpl = ADD_NOTE_PATCH_SLOW_LIVE if live else ADD_NOTE_PATCH_SLOW_PLAIN
     return tpl.format(m=millions(int(n)))
 
@@ -1694,22 +1976,30 @@ def ridges_whole_line(kind, n, wall_kind) -> str:
 
 
 def cells_growth(params) -> str:
-    """The growth rule a Cells Preview hands the engine: the fill to the
-    walls with a background marker (``GROW_PATCH``) on a whole patch,
-    whatever Grow by says -- or, with ``params["box_rule"]`` (Click markers
-    on a whole patch with "Update as I click" on), the fill to the walls
-    with no background marker, as in a box (``GROW_FLOOD``); else the Grow
-    by pick (the flood by default)."""
+    """The growth rule a Cells Preview hands the engine: on a whole patch,
+    Spread from each marker when Grow by says so (``GROW_SPREAD``, grown in
+    tiles), else the fill to the walls with a background marker
+    (``GROW_PATCH``) -- or, with ``params["box_rule"]`` (Click markers on a
+    whole patch with "Update as I click" on and the fill to the walls), the
+    fill to the walls with no background marker, as in a box
+    (``GROW_FLOOD``); on a box the Grow by pick (the flood by default)."""
     p = params or {}
     if bool(p.get("whole_patch", False)):
         if bool(p.get("box_rule", False)):
             return GROW_FLOOD
+        if p.get("growth") == GROW_SPREAD:
+            return GROW_SPREAD
         return GROW_PATCH
     return p.get("growth") or GROW_FLOOD
 
 
 def over_limit_line(shape) -> str:
-    return ADD_S1_OVER_LIMIT.format(m=millions(int(np.prod([int(v) for v in shape]))))
+    """``ADD_S1_OVER_LIMIT`` for a Cells box of ``shape``, against
+    ``ADD_BOX_BUDGET`` (the whole patch's ceiling too, see
+    :func:`whole_too_big_line`)."""
+    return ADD_S1_OVER_LIMIT.format(
+        m=millions(int(np.prod([int(v) for v in shape]))),
+        k=voxel_limit_words(ADD_BOX_BUDGET))
 
 
 def two_tail(s) -> str:
@@ -1913,11 +2203,9 @@ def cells_with_two(ids, owner) -> int:
 
 def one_channel_note(*, spread, shrink, whole=False) -> str:
     """``ADD_AMBER_ONE_CHANNEL_RUN`` for the page as it is: Spread already
-    picked or not, Bridge gaps on the page (the shrink-wrap) or not; on a
-    whole patch (``whole``), where Grow by and Wall cost are hidden,
-    ``ADD_AMBER_ONE_CHANNEL_WHOLE``."""
-    if whole:
-        return ADD_AMBER_ONE_CHANNEL_WHOLE
+    picked or not, Bridge gaps on the page (the shrink-wrap) or not.  A
+    whole patch (``whole``) reads the same: Grow by, Wall cost and Bridge
+    gaps are under Advanced there too."""
     tpl = (ADD_AMBER_ONE_CHANNEL_RUN_SPREAD if spread
            else ADD_AMBER_ONE_CHANNEL_RUN)
     return tpl.format(bridge=ADD_AMBER_ONE_CHANNEL_BRIDGE if shrink else "")
@@ -1941,7 +2229,19 @@ def numba_answer():
     first time): call it on a worker.  When it can, the click-by-click
     Cells fill's flood is compiled here too (``incremental.warm_kernel``,
     once per process), so the first Cells click never pays it; until then
-    that fill leaves the run to the full one by itself."""
+    that fill leaves the run to the full one by itself, and a live click on
+    a region over ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` waits
+    (:data:`LIVE_PREPARING`).  However it ends, the click fill is settled
+    for the process (:func:`click_fill_compiling` is False from here): a
+    flood still not compiled then cannot be, and is a real fallback."""
+    global _CLICK_FILL_SETTLED
+    try:
+        return _numba_answer()
+    finally:
+        _CLICK_FILL_SETTLED = True
+
+
+def _numba_answer():
     from .reshape import compete
 
     try:
@@ -2281,11 +2581,6 @@ def preview_block(state) -> str | None:
     if not s.get("has_box"):
         # Whole patch sits beside Place box on both presets, never grey: the
         # idle line names it whatever the choices
-        inside = (s.get("preset") == "nuclei"
-                  and s.get("look_for") == LOOK_INSIDE)
-        if inside and s.get("spacing_unknown"):
-            # said before a box is placed, not only after (M7)
-            return ADD_S1_NEEDS_SPACING
         if (s.get("preset") == "cells"
                 and s.get("numba_ok", True) is False):
             # a Cells whole patch needs Spread, which cannot run here
@@ -2294,21 +2589,24 @@ def preview_block(state) -> str | None:
     cells = s.get("preset") == "cells"
     shape = s.get("box_shape")
     whole = bool(s.get("whole_patch"))
-    if (not cells and whole
+    if (not cells and whole and shape is not None
             and s.get("look_for") not in (LOOK_INSIDE, LOOK_MARKERS)):
-        # a whole patch stays whole whatever is picked; Anywhere's finder
-        # runs on boxes only (one long step Stop cannot cut short).  The
-        # markers are placed on a whole patch as in a box
-        return ADD_S1_WHOLE_ANYWHERE
+        # Anywhere runs on a whole patch as on a box (Stop acts between its
+        # steps); its peak memory (about 55 bytes a voxel) holds it to the
+        # Cells limit, said as a whole patch's size
+        n = int(np.prod([int(v) for v in shape]))
+        if n > int(_region.WHOLE_FILL_MAX_VOXELS):
+            return whole_too_big_line(n)
     if cells and shape is not None and not whole:
         n = int(np.prod([int(v) for v in shape]))
         if n > int(s.get("box_budget", ADD_BOX_BUDGET)):
             return over_limit_line(shape)
     if cells and whole:
         # a whole patch is filled to the walls in one go: the growth engine
-        # must be able to run here, the patch must be under the fill's
-        # ceiling (refused before anything is read), and every knob is in
-        # microns
+        # must be able to run here and the patch must be under the fill's
+        # ceiling (refused before anything is read).  The spacing refuses
+        # nothing: at the never-set default it runs as a box does and the
+        # amber note says so
         if s.get("numba_ok", True) is False:
             return whole_needs_numba_sentence(s.get("numba_why"))
         if shape is not None:
@@ -2316,16 +2614,12 @@ def preview_block(state) -> str | None:
             if n > int(_region.WHOLE_FILL_MAX_VOXELS):
                 return whole_too_big_line(n)
         source = s.get("source", SOURCE_RUN)
-        if source != SOURCE_CLICKS and (source != SOURCE_RUN
-                                        or not s.get("run_id")):
-            # the markers of a whole patch come from another run or from
-            # the clicks (another pick keeps the whole patch; Preview waits
-            # for one): pick one -- with no other run on this patch, Click
-            # markers or a box
+        if source == SOURCE_RUN and not s.get("run_id"):
+            # the markers of a whole patch come from any source a box takes;
+            # a blank From (a run is never picked for the user there) waits
+            # for a pick
             return (ADD_S1_WHOLE_PICK_RUN if s.get("has_other_run")
                     else ADD_S1_WHOLE_NO_RUN)
-        if s.get("spacing_unknown"):
-            return ADD_S1_NEEDS_SPACING_BOXED
     if not cells:
         if not s.get("channel"):
             return ADD_S1_PICK_CHANNEL
@@ -2348,13 +2642,12 @@ def preview_block(state) -> str | None:
             return None
         if s.get("look_for") == LOOK_INSIDE:
             # Inside each cell: row 11 on the Nuclei preset (the other run),
-            # then the spacing refusal and a box with no cell of that run
+            # then a refused channel and a box with no cell of that run (the
+            # spacing refuses nothing: the amber note says the default)
             if s.get("run_state") == "loading":
                 return ADD_S1_RUN_LOADING
             if s.get("run_state") == "refused":
                 return ADD_S1_INSIDE_UNUSABLE
-            if s.get("spacing_unknown"):
-                return ADD_S1_NEEDS_SPACING_BOXED
             if s.get("levels_error"):
                 # the patch's levels refused this channel (not the run)
                 return ADD_S1_INSIDE_CHANNEL_UNUSABLE
@@ -2431,13 +2724,13 @@ def run_no_markers_line(state) -> str:
 
 def whole_measures_nothing(preset, source, look_for) -> bool:
     """True when a whole patch with these choices can be neither previewed
-    nor measured: Cells with neither another run's objects nor Click
-    markers, or Nuclei on Anywhere in the box (neither Inside each cell nor
-    the markers).  The box-info gather reads nothing for it, and the page's
-    Auto lines say nothing is being measured -- one rule for both."""
+    nor measured: Cells with no marker source the page knows.  Every Look
+    for nuclei runs on a whole patch as on a box.  The box-info gather
+    reads nothing for it, and the page's Auto lines say nothing is being
+    measured -- one rule for both."""
     if preset == "cells":
-        return source not in (SOURCE_RUN, SOURCE_CLICKS)
-    return look_for not in (LOOK_INSIDE, LOOK_MARKERS)
+        return source not in (SOURCE_RUN, SOURCE_CLICKS, SOURCE_NUCLEI)
+    return False
 
 
 def measuring_line(state) -> str:
@@ -2463,6 +2756,11 @@ def s1_sentence(state) -> str:
         return s.get("busy_text") or (ADD_S1_WORKING_PATCH
                                       if s.get("whole_patch")
                                       else ADD_S1_WORKING)
+    if s.get("live_updating"):
+        # "Always update as I click": the region filled whole after the
+        # clicks settled, on a live run (never busy: nothing greys); the
+        # time estimated at its launch
+        return live_updating_line(s.get("live_updating_seconds"))
     review = s.get("review")
     if review is not None:
         n, v, n_sel = review
@@ -2491,20 +2789,20 @@ def s1_sentence(state) -> str:
         return block
     cells = s.get("preset") == "cells"
     markers = not cells and s.get("look_for") == LOOK_MARKERS
-    if (s.get("live_on") and cells
-            and s.get("source") == SOURCE_CLICKS):
-        # row 13.5 for Cells ▸ Click markers: a whole patch whose walls the
-        # click fill does not redo (``live_whole_ok`` False), or a box over
-        # the live limit, is not run as you click
-        if s.get("whole_patch"):
-            if not s.get("live_whole_ok"):
-                return ADD_S1_LIVE_OVER_GATE_PATCH
-        else:
-            shape = s.get("box_shape")
-            if shape and int(np.prod([int(v) for v in shape])) > int(
-                    ADD_LIVE_CELLS_MAX_VOXELS):
-                return ADD_S1_LIVE_OVER_GATE_BOX.format(
-                    n=voxel_limit_words(ADD_LIVE_CELLS_MAX_VOXELS))
+    row = live_row_reason(s)
+    if row is not None:
+        whole_patch = bool(s.get("whole_patch"))
+        if row == LIVE_ROW_OVER:
+            return (ADD_S1_LIVE_OVER_GATE_PATCH_SIZE if whole_patch
+                    else ADD_S1_LIVE_OVER_GATE_BOX).format(
+                n=voxel_limit_words(ADD_LIVE_CELLS_MAX_VOXELS))
+        if row == LIVE_ROW_SPACING:
+            return (ADD_S1_LIVE_STEPPED_ASIDE_SPACING_PATCH if whole_patch
+                    else ADD_S1_LIVE_STEPPED_ASIDE_SPACING_BOX)
+        if row == LIVE_ROW_ASIDE:
+            return (ADD_S1_LIVE_OVER_GATE_PATCH if whole_patch
+                    else ADD_S1_LIVE_STEPPED_ASIDE_BOX)
+        return ADD_S1_LIVE_PREPARING
     if not cells and not markers and s.get("empty_share") is None:
         # the empty share is measured on the box-info worker; Nuclei's
         # Preview does not wait for it (it is not row 13), S1 does.  The
@@ -2518,6 +2816,113 @@ def s1_sentence(state) -> str:
         n_clicks=n_clicks, n_ticked=s.get("n_ticked"),
         whole_patch=bool(s.get("whole_patch")),
         look_for=s.get("look_for"))
+
+
+#: S1 row 13.5's reasons (:func:`live_row_reason`): over the live limit;
+#: stepped aside for the flat spots at the never-set spacing; stepped
+#: aside for anything else (walls or a Grow by the click fill does not
+#: redo, its flat spots at a set spacing, a failure); the click fill still
+#: being prepared
+LIVE_ROW_OVER = "over"
+LIVE_ROW_SPACING = "spacing"
+LIVE_ROW_ASIDE = "aside"
+LIVE_ROW_PREPARING = "preparing"
+
+
+def live_row_reason(state):
+    """Why a Cells ▸ Click markers click is not run as you click here, as
+    S1 row 13.5 and the line under the tick both say it (one decision for
+    the two rows), or ``None``: the tick on, "Always update as I click"
+    off (with it on only the compile wait holds -- every region up to the
+    Preview limit is updated, slowly where the click fill cannot run), and one
+    rule for a box and a whole patch -- a region over the live limit
+    (named); a whole patch whose walls the click fill does not redo or
+    that it could not take (``live_whole_ok`` False); a box over the
+    full-run size the click fill does not or could not take
+    (``live_box_ok`` False); a region that is run as you click but whose
+    click fill is still being compiled (``fill_pending``).  A step aside
+    for the flat spots at the never-set spacing (``flat_spots`` and
+    ``default_spacing``) is told apart: the spacing may change it."""
+    s = state or {}
+    if not (s.get("live_on") and s.get("preset") == "cells"
+            and s.get("source") == SOURCE_CLICKS):
+        return None
+    if s.get("live_always"):
+        # "Always update as I click": no region steps aside, but a click
+        # fill still being compiled is a wait with the tick on too
+        return LIVE_ROW_PREPARING if s.get("fill_pending") else None
+    shape = s.get("box_shape")
+    if shape and int(np.prod([int(v) for v in shape])) > int(
+            ADD_LIVE_CELLS_MAX_VOXELS):
+        return LIVE_ROW_OVER
+    if s.get("whole_patch"):
+        aside = not s.get("live_whole_ok")
+    else:
+        aside = not s.get("live_box_ok", True)
+    if aside:
+        if s.get("flat_spots") and s.get("default_spacing"):
+            return LIVE_ROW_SPACING
+        return LIVE_ROW_ASIDE
+    if s.get("fill_pending"):
+        return LIVE_ROW_PREPARING
+    return None
+
+
+def _s1_outranks_live_row(s) -> bool:
+    """True when S1 says a passing state instead of row 13.5: a transient,
+    busy, an update running, the review, a result on screen.  (A reason
+    Preview is grey -- a marker to place -- keeps the line: it says what
+    the clicks will meet.)"""
+    if s.get("transient") or s.get("busy") or s.get("live_updating"):
+        return True
+    return s.get("review") is not None or s.get("candidates") is not None
+
+
+def live_tick_note(state) -> str:
+    """The grey line under "Update as I click": S1 row 13.5's reason
+    (:func:`live_row_reason`), short, naming the control that changes it
+    (``""``: no line).  A step aside is told apart by ``live_aside``
+    (``"walls"`` / ``"grow"``: what the click fill does not redo) and
+    ``flat_spots``; any other is the click fill that could not run."""
+    s = state or {}
+    if s.get("live_always"):
+        # the tick lifts every reason this line gives (the compile wait
+        # S1 says on its own)
+        return ""
+    if _s1_outranks_live_row(s):
+        # S1 says a passing state first (a transient, busy, an update, the
+        # review, a result): the line under the tick waits for it to go
+        return ""
+    shape = s.get("box_shape")
+    whole = bool(s.get("whole_patch"))
+    if shape:
+        n = int(np.prod([int(v) for v in shape]))
+        limit = (int(_region.WHOLE_FILL_MAX_VOXELS) if whole
+                 else int(s.get("box_budget", ADD_BOX_BUDGET)))
+        if n > limit:
+            # Preview is grey for the size (S1 says it): a line sending
+            # the user to it, or to the tick, would mislead
+            return ""
+    if whole and s.get("numba_ok", True) is False:
+        return ""               # the whole patch cannot be filled here
+    row = live_row_reason(s)
+    if row is None:
+        return ""
+    if row == LIVE_ROW_OVER:
+        return ADD_LIVE_NOTE_OVER.format(
+            n=voxel_limit_words(ADD_LIVE_CELLS_MAX_VOXELS))
+    if row == LIVE_ROW_SPACING:
+        return ADD_LIVE_NOTE_SPACING
+    if row == LIVE_ROW_PREPARING:
+        return ADD_LIVE_NOTE_PREPARING
+    why = s.get("live_aside")
+    if why == "walls":
+        return ADD_LIVE_NOTE_WALLS
+    if why == "grow":
+        return ADD_LIVE_NOTE_GROW
+    if s.get("flat_spots"):
+        return ADD_LIVE_NOTE_FLAT
+    return ADD_LIVE_NOTE_OFF
 
 
 def measuring_stage(state, reader=None):
@@ -2537,8 +2942,7 @@ def measuring_stage(state, reader=None):
     if key is not None or reader is None:
         return key
     s = dict(state or {})
-    if preview_block(s) in (ADD_S1_WHOLE_ANYWHERE, ADD_S1_WHOLE_PICK_RUN,
-                            ADD_S1_WHOLE_NO_RUN):
+    if preview_block(s) in (ADD_S1_WHOLE_PICK_RUN, ADD_S1_WHOLE_NO_RUN):
         # a whole patch these choices cannot measure: nothing is named
         return None
     if reader == "run":
@@ -2561,7 +2965,7 @@ def s1_kind(state) -> str:
         return "warn"
     if s.get("transient"):
         return "warn"
-    if s.get("busy"):
+    if s.get("busy") or s.get("live_updating"):
         return "busy"
     if s.get("review") is not None:
         return "review"
@@ -2579,7 +2983,8 @@ def s1_kind(state) -> str:
         return "busy"
     if block is not None:
         return "warn"
-    if s1_sentence(s) in (ADD_S1_MEASURING, ADD_S1_MEASURING_PATCH):
+    if s1_sentence(s) in (ADD_S1_MEASURING, ADD_S1_MEASURING_PATCH,
+                          ADD_S1_LIVE_PREPARING):
         return "busy"
     return "ready"
 
@@ -2606,6 +3011,12 @@ class AddPreviewResult:
     n_dropped_dark: int = 0
     n_dropped_thin: int = 0
     n_nuclei_slivers: int = 0
+    #: Cells ▸ Nuclei masks (a box or a whole patch): markers under
+    #: ``ADD_SMALL_MARKER_UM3``
+    n_small_markers: int = 0
+    #: ... and the nuclear seeds found there, handed back for the page to
+    #: keep (``{"seeds", "n_small"}``; ``None`` when none were found here)
+    nuclei_seeds: dict | None = None
     n_markers_over_kept: int = 0
     n_fragments_dropped: int = 0
     n_below_min_size: int = 0
@@ -2926,10 +3337,13 @@ def run_add_preview(*, preset, roi, existing_roi, next_label, spacing, params,
                     existing_patch=None, marker_engine=False,
                     marker_stage=None,
                     marker_previous=None, stage_holder=None,
-                    stage_key=None) -> AddPreviewResult:
+                    stage_key=None, nuclei_seeds=None) -> AddPreviewResult:
     """One Preview of the box.  Every array is a BOX CROP the
-    main thread copied; ``click_points`` are VOLUME ZYX (made box-local
-    here).  ``id_max`` is the label dtype's largest id.
+    main thread copied, except Cells' image channels (``wall_roi``,
+    ``dark_rois``, ``nuclei_roi``): those are the layers' own arrays, on a
+    box as on the whole patch, cut to the box here on the worker (the
+    engine slices before it reads); ``click_points`` are VOLUME ZYX (made
+    box-local here).  ``id_max`` is the label dtype's largest id.
     ``reserved_ids``, one per click point in the same order:
     the ids the markers reserved at placement -- the k-th marker's object
     is written as ``reserved_ids[k]``, not ``next_label + rank``.
@@ -3056,13 +3470,20 @@ def run_add_preview(*, preset, roi, existing_roi, next_label, spacing, params,
                          cancel_event=cancel_event, progress=progress,
                          outline_roi=outline_roi,
                          elevation_roi=elevation_roi,
-                         stage_holder=stage_holder, stage_key=stage_key)
+                         stage_holder=stage_holder, stage_key=stage_key,
+                         nuclei_seeds=nuclei_seeds)
         if res.click_how:
             res.click_ms = (_perf_counter() - t0) * 1000.0
         return res
-    except ReshapeCancelled:
+    except ReshapeCancelled as cancel:
         out.status = "cancelled"
         out.result = None
+        # the walls the cancelled run had built already (the engine hands
+        # them on the exception): the page keeps them for the run that
+        # follows a superseded update
+        elev = getattr(cancel, "elevation", None)
+        if elev is not None:
+            out.elevation = elev
         return out
 
 
@@ -3214,6 +3635,7 @@ def _run_nuclei(out, *, roi, existing_roi, next_label, spacing, params,
         min_distance=int(params.get("min_distance", 3)),
         next_label=(1 if outline_box is not None else int(next_label)),
         spacing=spacing,
+        cancel_event=cancel_event,
     )
     n = int(len(np.unique(result)) - (1 if (result == 0).any() else 0))
     if n == 0:
@@ -3583,17 +4005,11 @@ def _run_nuclei_inside(out, *, existing_roi, next_label, spacing, params,
         raise ValueError("Inside each cell needs image_roi")
     if run_guide_roi is None:
         raise ValueError("Inside each cell needs run_guide_roi")
-    known = params.get("spacing_known")
-    if known is None:
-        known = spacing is not None and not spacing_is_default(spacing)
-    if spacing is None or not known:
-        # every knob here is in microns: at the 1.0 um default each would be
-        # off by the voxel size (the page refuses first; this is the belt).
-        # ``spacing_known`` is the page's word: a half-size session of
-        # 0.5 um voxels really is 1.0 um per voxel
-        out.status = "refused"
-        out.refusal = ADD_S1_NEEDS_SPACING_BOXED
-        return out
+    if spacing is None:
+        # every knob here is in microns; with no spacing handed in, the
+        # 1.0 um isotropic fallback (what the page runs on when the
+        # spacing was never set -- its amber note says so)
+        spacing = (1.0, 1.0, 1.0)
     if _cancelled(cancel_event):
         out.status = "cancelled"
         return out
@@ -3909,17 +4325,38 @@ def cells_spec(params):
     )
 
 
+def _small_marker_count(seeds, spacing) -> int:
+    """The objects of ``seeds`` under ``ADD_SMALL_MARKER_UM3`` cubic
+    microns at ``spacing`` (z, y, x; ``None``: 1 µm a side)."""
+    a = np.asarray(seeds)
+    if not a.size or int(a.max()) <= 0:
+        return 0
+    voxel = (float(np.prod([float(v) for v in spacing]))
+             if spacing is not None else 1.0)
+    sizes = np.bincount(a.ravel().astype(np.int64, copy=False))[1:]
+    sizes = sizes[sizes > 0]
+    return int(np.count_nonzero(sizes * voxel < ADD_SMALL_MARKER_UM3))
+
+
 def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
                nuclei_roi, wall_roi, dark_rois, run_guide_roi, click_points,
                dark_threshold, id_max, cancel_event, progress,
                reserved_ids=None, outline_roi=None, elevation_roi=None,
-               stage_holder=None, stage_key=None):
-    """``outline_roi`` -- the finished tissue outline (bool; built ONCE over
+               stage_holder=None, stage_key=None, nuclei_seeds=None):
+    """``nuclei_seeds`` -- Markers ▸ Nuclei masks on a whole patch: the
+    seeds an earlier Preview found (``out.nuclei_seeds``), handed in again
+    while what they were found from is unchanged; ``None``: found here.
+    ``outline_roi`` -- the finished tissue outline (bool; built ONCE over
     the whole patch, or its box crop) for ``params["outline"]``, handed to
     the engine as its run argument ``outline=``; ``elevation_roi`` -- the
     wall picture built ONCE and handed in again: for the whole patch (Whole
     patch), or for a box at or under ``ADD_LIVE_CELLS_MAX_VOXELS`` (its own,
-    kept from the box's first run); ``None``: built here over the box.  An
+    kept from the box's first run); ``None``: built here over the box.
+    ``params["live"]`` -- a run after a click, on a box or a whole patch:
+    over ``ADD_LIVE_FULL_RUN_MAX_VOXELS``, where the click fill steps aside
+    the run is refused (:data:`NOT_LIVE_HERE`) instead of a full flood, and
+    while the click fill is still being compiled it waits
+    (:data:`LIVE_PREPARING`).  An
     engine refusal comes back with
     its sentence in ``out.refusal`` and its reason code, unchanged, in
     ``out.refusal_reason``."""
@@ -3937,24 +4374,47 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
     if source == SOURCE_NUCLEI:
         from .add_segment import add_segment_region
 
-        if nuclei_roi is None:
-            raise ValueError("the nuclei-masks source needs nuclei_roi")
-        if _cancelled(cancel_event):
-            out.status = "cancelled"
-            return out
-        if progress is not None:
-            try:
-                # the nuclei are this source's MARKERS: "Finding markers...",
-                # not the Nuclei preset's "Finding bright
-                # objects..." (live-shot fix V6)
-                progress("add_markers", 0, 4)
-            except Exception:
-                pass
-        seed_layer = add_segment_region(
-            nuclei_roi, existing_roi, clahe=False, clahe_clip=0.01,
-            threshold=params.get("nuclei_threshold", "otsu"),
-            min_size=0, separate=True, min_distance=3, next_label=1,
-            spacing=spacing)
+        whole = bool(params.get("whole_patch", False))
+        kept = (nuclei_seeds or {}).get("seeds") if whole else None
+        if (kept is not None
+                and tuple(np.shape(kept)) == tuple(np.shape(existing_roi))):
+            # the seeds an earlier Preview of this patch found, unchanged
+            seed_layer = kept
+            out.n_small_markers = int(nuclei_seeds.get("n_small", 0) or 0)
+        else:
+            if nuclei_roi is None:
+                raise ValueError("the nuclei-masks source needs nuclei_roi")
+            if tuple(np.shape(nuclei_roi)) != tuple(np.shape(existing_roi)):
+                # the channel's own array (a box's): cut to the box here, on
+                # the worker, as the page's crop was
+                nuclei_roi = np.array(nuclei_roi[tuple(roi)], np.float64,
+                                      copy=True)
+            if _cancelled(cancel_event):
+                out.status = "cancelled"
+                return out
+            if progress is not None:
+                try:
+                    # the nuclei are this source's MARKERS: "Finding
+                    # markers...", not the Nuclei preset's "Finding bright
+                    # objects..." (live-shot fix V6)
+                    progress("add_markers", 0, 4)
+                except Exception:
+                    pass
+            # Stop acts between the finder's steps (ReshapeCancelled, as
+            # the engine raises it)
+            seed_layer = add_segment_region(
+                nuclei_roi, existing_roi, clahe=False, clahe_clip=0.01,
+                threshold=params.get("nuclei_threshold", "otsu"),
+                min_size=0, separate=True, min_distance=3, next_label=1,
+                spacing=spacing, cancel_event=cancel_event)
+            # one rule for every region: no floor; the markers under
+            # ADD_SMALL_MARKER_UM3 are counted on a box and a whole patch
+            # alike; a whole patch's seeds are handed back for the page to
+            # keep for this patch
+            out.n_small_markers = _small_marker_count(seed_layer, spacing)
+            if whole:
+                out.nuclei_seeds = {"seeds": seed_layer,
+                                    "n_small": int(out.n_small_markers)}
     elif source == SOURCE_RUN:
         if run_guide_roi is None:
             raise ValueError("the run source needs run_guide_roi")
@@ -3970,11 +4430,23 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
     # after the run (see the loop below)
     grouped = (seed_points is not None and reserved_ids is not None
                and len(set(reserved_ids)) < len(reserved_ids))
-    # a run after a click on a whole patch (not a Preview press): where
-    # the click fill steps aside the patch is not flooded whole -- many
-    # seconds -- the run is refused instead and the page asks for Preview
-    live_whole = (bool(params.get("live", False))
-                  and bool(params.get("whole_patch", False)))
+    # a run after a click (not a Preview press), on a box or a whole
+    # patch over ADD_LIVE_FULL_RUN_MAX_VOXELS: where the click fill steps
+    # aside the region is not flooded whole -- that flood cannot be
+    # stopped, and takes many seconds near the live limit -- the run is
+    # refused instead and the page asks for Preview.  At or under it the
+    # full run answers the click, as a Preview would
+    live_click = (bool(params.get("live", False))
+                  and int(np.prod(np.shape(existing_roi)))
+                  > int(ADD_LIVE_FULL_RUN_MAX_VOXELS))
+    region_word = ("whole patch" if params.get("whole_patch", False)
+                   else "box")
+    if (live_click and stage_holder is not None and seed_points is not None
+            and reserved_ids is not None and _click_fill_compiling(spec)):
+        # the click fill is still being compiled: the click waits for it
+        # (nothing is remembered against the region; the page runs again
+        # once the solver check has answered)
+        return _live_preparing(out, cancel_event)
     clicks = None
     if (stage_holder is not None and seed_points is not None
             and reserved_ids is not None):
@@ -3982,15 +4454,17 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
                       spacing=spacing, wall_roi=wall_roi, dark_rois=dark_rois,
                       dark_threshold=dark_threshold, outline_roi=outline_roi,
                       elevation_roi=elevation_roi, cancel_event=cancel_event,
-                      progress=progress, holder=stage_holder, key=stage_key)
+                      progress=progress, holder=stage_holder, key=stage_key,
+                      allow_flat=bool(params.get("live_always", False)))
         if not grouped:
             done = _cells_by_click(
                 out, params=params, seed_points=seed_points,
                 reserved_ids=reserved_ids, id_max=id_max, **bridge)
             if done is not None:
                 return done
-            if live_whole:
-                return _not_live_here(out, out.click_how, cancel_event)
+            if live_click:
+                return _not_live_here(out, out.click_how, cancel_event,
+                                      region=region_word)
         else:
             # the seeds of one cell: every run of the loop below is one
             # step of the same stage (a re-run without the refused seeds is
@@ -4005,7 +4479,7 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
             res = clicks.step(points, keep)
             if res is not None:
                 return res
-            if live_whole:
+            if live_click:
                 return None             # the caller refuses (no flood)
         return reshape_empty_region(
             existing_roi, {"membrane": wall_roi}, spec, roi=roi,
@@ -4017,21 +4491,57 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
             elevation=elevation, outline=outline_roi)
 
     keep = list(range(len(seed_points or ())))
+    skipped = []
+    memo_now = None
+    if clicks is not None:
+        # the seeds the last click's run refused ("apart") are remembered
+        # in the holder with the list they were judged against and the
+        # stage that judged them: while clicks are only added (that list
+        # is a prefix of this one, the same stage, the labels unchanged) a
+        # refused seed cannot regain touch, so it is left out of the first
+        # step.  Handing every refused seed in again at each click, and
+        # taking it out again, put a change at each one's place, and the
+        # click fill's one window spanned them all -- the whole patch,
+        # seconds a click, growing with every refusal.  The rule this
+        # gives is placement-time judgement: a seed refused when it was
+        # placed stays refused.  A run without a kept stage judges every
+        # seed at once instead, and can refuse a seed that the refused
+        # one's cell stood in front of, which the click-by-click run keeps
+        # (the refused seed was never there for it) -- a few voxels, in a
+        # corner; recorded
+        memo_now = [(tuple(int(v) for v in p), int(r))
+                    for p, r in zip(seed_points, reserved_ids)]
+        memo = stage_holder.get("apart")
+        stage_now = stage_holder.get("stage")
+        if (memo and stage_holder.get("key") == stage_key
+                and stage_now is not None and memo[2] is stage_now
+                and np.array_equal(existing_roi,
+                                   getattr(stage_now, "existing", None))
+                and memo_now[:len(memo[0])] == list(memo[0])):
+            skipped = [i for i, s in enumerate(memo_now) if s in memo[1]]
+            if skipped:
+                keep = [i for i in keep if i not in skipped]
+                print("[ADD] click markers refused last time stay out: {}"
+                      .format([reserved_ids[i] for i in skipped]))
     res = _engine(keep, elevation_roi)
     if res is None:
-        return _not_live_here(out, clicks.why, cancel_event)
+        return _not_live_here(out, clicks.why, cancel_event,
+                              region=region_word)
     # a seed whose cell does not touch its object's is refused, and the
     # engine runs again without it -- the answer is the one it would have
     # given had that seed never been placed (its neighbours keep the space
     # it took).  The walls do not read the markers: the run's own wall
     # picture is handed in again
-    skipped = []
+    joined = None                   # the loop's last join, reused below
+    joined_for = None
     while grouped and res.status == "ok":
-        why = _join_cell_seeds(
+        joined = _join_cell_seeds(
             res.result, [seed_points[i] for i in keep],
             [reserved_ids[i] for i in keep], existing_roi,
             radius_um=float(params.get("click_radius_um", 1.0)),
-            spacing=spacing)[3]
+            spacing=spacing)
+        joined_for = (res.result, list(keep))
+        why = joined[3]
         new = [keep[j] for j, w in enumerate(why) if w == "apart"]
         if not new:
             break
@@ -4046,8 +4556,16 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
                       elevation_roi if elevation_roi is not None
                       else getattr(res, "elevation", None))
         if res is None:
-            return _not_live_here(out, clicks.why, cancel_event)
+            return _not_live_here(out, clicks.why, cancel_event,
+                                  region=region_word)
     out.by_click = bool(getattr(res, "by_click", False))
+    if (clicks is not None and memo_now is not None
+            and stage_holder.get("stage") is not None):
+        # remembered for the next click (the step cleared the holder),
+        # with the stage that judged them
+        stage_holder["apart"] = (tuple(memo_now),
+                                 {memo_now[i] for i in skipped},
+                                 stage_holder.get("stage"))
     if clicks is not None and out.by_click:
         out.click_how = clicks.how
         out.click_window = clicks.window
@@ -4090,13 +4608,18 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
         engine = res.result
         if grouped:
             # markers sharing an id: one cell grown from several seeds (the
-            # refused ones were left out of the last run)
-            (engine, mapping, out.absorbed_ids, why,
-             _apart) = _join_cell_seeds(
-                engine, [seed_points[i] for i in keep],
-                [reserved_ids[i] for i in keep], existing_roi,
-                radius_um=float(params.get("click_radius_um", 1.0)),
-                spacing=spacing)
+            # refused ones were left out of the last run); the loop's last
+            # join judged these same inputs -- it is reused, not redone
+            if (joined is not None and joined_for[0] is engine
+                    and joined_for[1] == keep):
+                (engine, mapping, out.absorbed_ids, why, _apart) = joined
+            else:
+                (engine, mapping, out.absorbed_ids, why,
+                 _apart) = _join_cell_seeds(
+                    engine, [seed_points[i] for i in keep],
+                    [reserved_ids[i] for i in keep], existing_roi,
+                    radius_um=float(params.get("click_radius_um", 1.0)),
+                    spacing=spacing)
             out.seed_why = [None] * len(seed_points)
             for j, i in enumerate(keep):
                 out.seed_why[i] = why[j]
@@ -4155,17 +4678,44 @@ def _run_cells(out, *, roi, existing_roi, next_label, spacing, params,
     return out
 
 
-#: The refusal reason of a run after a click on a whole patch where the
-#: click fill steps aside (flat spots, the flood not compiled, switched
-#: off, a failure): no full flood runs, nothing is drawn, the markers stay,
-#: and the page says to press Preview (which fills the patch whole).
+#: The refusal reason of a run after a click on a box or a whole patch
+#: over ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` where the click fill steps aside
+#: (flat spots, switched off, a flood that could not be compiled, a
+#: failure): no full flood runs, nothing is drawn, the markers stay, and
+#: the page says to press Preview (which fills the region whole).
 NOT_LIVE_HERE = "not-live-here"
+#: The refusal reason of the same run while the click fill is still being
+#: compiled (:func:`click_fill_compiling`): nothing runs, nothing is drawn,
+#: the markers stay and nothing is remembered against the region -- the
+#: page says the clicks wait (``ADD_S1_LIVE_PREPARING``) and runs again
+#: once the solver check has answered.
+LIVE_PREPARING = "live-preparing"
 
 
-def _not_live_here(out, why, cancel_event):
+def _live_preparing(out, cancel_event):
+    """``out`` refused with :data:`LIVE_PREPARING` (no sentence: the page
+    says its own), or cancelled when a Stop came meanwhile.  No console
+    line of the click fill (``click_how`` empty): the page prints the
+    wait."""
+    if _cancelled(cancel_event):
+        out.status = "cancelled"
+        out.result = None
+        return out
+    out.status = "refused"
+    out.refusal = None
+    out.refusal_reason = LIVE_PREPARING
+    out.result = None
+    out.by_click = False
+    out.click_how = ""
+    out.click_window = 0
+    return out
+
+
+def _not_live_here(out, why, cancel_event, *, region="whole patch"):
     """``out`` refused with :data:`NOT_LIVE_HERE` (no sentence: the page
     says its own gate), or cancelled when a Stop came meanwhile.  ``why``
-    -- the console words of why the full run would have answered."""
+    -- the console words of why the full run would have answered;
+    ``region`` -- "box" or "whole patch", for the console."""
     if _cancelled(cancel_event):
         out.status = "cancelled"
         out.result = None
@@ -4180,8 +4730,8 @@ def _not_live_here(out, why, cancel_event):
     out.by_click = False
     out.click_how = "not run as you click {}".format(why).strip()
     out.click_window = 0
-    out.messages.append("[ADD] the whole patch is not filled as you click "
-                        "here: press Preview to fill it")
+    out.messages.append("[ADD] the {} is not filled as you click here: "
+                        "press Preview to fill it".format(region))
     return out
 
 
@@ -4214,6 +4764,29 @@ def _engine_refusal(out, reason, *, outline, budget):
 #: takes the full run, with no sentence on the page.
 _INCREMENTAL_OFF = False
 
+#: Set once the solver check (:func:`numba_answer`) has answered in this
+#: process, however it ended: until then a flood not compiled yet is being
+#: compiled, after it a flood not compiled never will be.
+_CLICK_FILL_SETTLED = False
+
+
+def click_fill_compiling() -> bool:
+    """True while the click fill's flood is still being compiled in this
+    process (the solver check has not answered, the fill is not switched
+    off): a cold flood is a wait, not a fallback."""
+    from .reshape import incremental as INC
+
+    return (not _INCREMENTAL_OFF and not _CLICK_FILL_SETTLED
+            and not INC.kernel_is_warm())
+
+
+def _click_fill_compiling(spec) -> bool:
+    """:func:`click_fill_compiling`, for a ``spec`` the click fill would
+    take once compiled (the fill to the walls with click markers)."""
+    from .reshape import incremental as INC
+
+    return click_fill_compiling() and INC.is_click_fill(spec)
+
 
 def _click_fill_possible(spec) -> bool:
     """True when the click-by-click fill may answer for ``spec`` in this
@@ -4227,22 +4800,33 @@ def _click_fill_possible(spec) -> bool:
 
 def _click_stage(*, spec, roi, existing_roi, spacing, wall_roi, dark_rois,
                  dark_threshold, outline_roi, elevation_roi, cancel_event,
-                 holder, key, progress=None):
+                 holder, key, progress=None, allow_flat=False):
     """The holder's stage for ``key`` -- kept, or prepared again when it is
     missing or anything but the clicks changed.  ``(stage, None)``;
     ``(None, None)`` when this box keeps the full run (flat spots,
     remembered for the key); ``(None, (reason, sentence))`` for prepare's
     own refusals.  Raises what ``prepare`` raises (the caller drops the
-    stage)."""
+    stage).
+
+    ``allow_flat`` ("Always update as I click", a live run): flat spots
+    never send the box to the full run -- a remembered full run is
+    prepared again, and the stage is kept despite them (one console line
+    says so).  Without it a stage kept despite flat spots answers nothing
+    (``(None, None)``: the full run answers exactly) and stays in the
+    holder for the next live click."""
     from .reshape import incremental as INC
 
-    if (holder.get("full") and holder.get("key") == key
+    if (not allow_flat and holder.get("full") and holder.get("key") == key
             and holder.get("spec") == spec
             and np.array_equal(existing_roi, holder.get("existing"))):
         return None, None
     stage = holder.get("stage")
     if (stage is not None and holder.get("key") == key and stage.spec == spec
             and np.array_equal(existing_roi, stage.existing)):
+        if not allow_flat and getattr(stage, "flat_override", None):
+            # a Preview over a stage kept despite its flat spots: the full
+            # run is the exact answer; the stage waits for the next click
+            return None, None
         return stage, None
     holder.clear()
     # the strip names the wait (the first click of a box or a patch): the
@@ -4256,7 +4840,10 @@ def _click_stage(*, spec, roi, existing_roi, spacing, wall_roi, dark_rois,
                        if spec.params["outside"] == "faces+dark" else None),
         dark_threshold=dark_threshold, spacing=spacing,
         elevation=elevation_roi, outline=outline_roi,
-        cancel_event=cancel_event)
+        cancel_event=cancel_event, allow_flat=bool(allow_flat))
+    if stage is not None and getattr(stage, "flat_override", None):
+        print("[ADD] click fill kept despite {} flat pairs (Always update "
+              "is on)".format(int(getattr(stage, "n_flat_pairs", 0) or 0)))
     if refusal is not None and refusal[0] == INC.FULL_RUN:
         # flat spots: the full run answers, nothing is shown
         print(refusal[1])
@@ -4297,7 +4884,8 @@ def _click_fill_off_why(spec, *, holder=True) -> str:
     if _INCREMENTAL_OFF:
         return "switched off for this session"
     if not INC.kernel_is_warm():
-        return "the flood is not compiled yet"
+        return ("the flood could not be compiled" if _CLICK_FILL_SETTLED
+                else "the flood is not compiled yet")
     return "the click fill cannot run"
 
 
@@ -4313,8 +4901,10 @@ def _say(progress, stage) -> None:
 
 def _fell_back(holder, key, why) -> None:
     """The holder remembers that the click fill could not take this key
-    (the flood not compiled or switched off, a failure): the page then
-    stops running a whole patch as you click until the key changes."""
+    (switched off, the flood that could not be compiled, a failure): the
+    page then stops running the region as you click until the key changes.
+    A flood still being compiled is never recorded
+    (:func:`_click_fill_compiling`): that is a wait."""
     holder.update(key=key, fallback=str(why))
 
 
@@ -4352,18 +4942,23 @@ class _ClickSteps:
 
     def __init__(self, *, spec, roi, existing_roi, spacing, wall_roi,
                  dark_rois, dark_threshold, outline_roi, elevation_roi,
-                 cancel_event, progress, holder, key):
+                 cancel_event, progress, holder, key, allow_flat=False):
         self._stage_args = dict(
             spec=spec, roi=roi, existing_roi=existing_roi, spacing=spacing,
             wall_roi=wall_roi, dark_rois=dark_rois,
             dark_threshold=dark_threshold, outline_roi=outline_roi,
             elevation_roi=elevation_roi, cancel_event=cancel_event,
-            holder=holder, key=key, progress=progress)
+            holder=holder, key=key, progress=progress,
+            allow_flat=bool(allow_flat))
         self._spec = spec
         self._cancel = cancel_event
         self._progress = progress
         self._holder = holder
         self._key = key
+        # the compile state is read before the fill's: the worker warms the
+        # kernel between two reads, and a cold read followed by a warm one
+        # must not be remembered as a fallback
+        compiling = _click_fill_compiling(spec)
         self.off = not _click_fill_possible(spec)
         #: the console line's words: how the first step found the stage,
         #: the voxels every step flooded, why the full run answered
@@ -4371,7 +4966,7 @@ class _ClickSteps:
         self.window = 0
         self.why = ("" if not self.off
                     else "full run ({})".format(_click_fill_off_why(spec)))
-        if self.off:
+        if self.off and not compiling:
             _fell_back(holder, key, self.why)
 
     def step(self, points, keep):
@@ -4435,7 +5030,7 @@ class _ClickSteps:
 def _cells_by_click(out, *, spec, roi, existing_roi, spacing, params,
                     wall_roi, dark_rois, dark_threshold, outline_roi,
                     elevation_roi, seed_points, reserved_ids, id_max,
-                    cancel_event, progress, holder, key):
+                    cancel_event, progress, holder, key, allow_flat=False):
     """Cells ▸ Click markers ▸ Fill to the walls, redone only where the
     clicks changed it (``reshape.incremental``); ``None`` when the full run
     must answer instead -- the fill is not the fill to the walls with click
@@ -4468,13 +5063,20 @@ def _cells_by_click(out, *, spec, roi, existing_roi, spacing, params,
 
     The answer equals the full run's except that the faint pairs and the
     unfilled share are not measured (empty / ``None``, the log line says
-    ``n/a (by click)``); ``result`` is a copy, never the stage's array."""
+    ``n/a (by click)``); ``result`` is a copy, never the stage's array.
+    ``allow_flat`` ("Always update as I click" on, a live run): the box's
+    flat spots never send it to the full run (see :func:`_click_stage`);
+    a tie there may then fall differently from the full run's by a few
+    voxels."""
     from .reshape.engine import ReshapeCancelled
     from .reshape.region import REGION_STAGES
 
+    compiling = _click_fill_compiling(spec)   # before the fill's state (as _ClickSteps)
     if not _click_fill_possible(spec):
         out.click_how = "full run ({})".format(_click_fill_off_why(spec))
-        _fell_back(holder, key, out.click_how)
+        if not compiling:
+            # a flood still being compiled is a wait, never remembered
+            _fell_back(holder, key, out.click_how)
         return None
     try:
         before = holder.get("stage")
@@ -4483,7 +5085,8 @@ def _cells_by_click(out, *, spec, roi, existing_roi, spacing, params,
             wall_roi=wall_roi, dark_rois=dark_rois,
             dark_threshold=dark_threshold, outline_roi=outline_roi,
             elevation_roi=elevation_roi, cancel_event=cancel_event,
-            holder=holder, key=key, progress=progress)
+            holder=holder, key=key, progress=progress,
+            allow_flat=bool(allow_flat))
         if stage is None and refusal is None:
             out.click_how = "full run (flat spots)"
             return None                 # this box keeps the full run
@@ -4851,8 +5454,11 @@ def add_box_info(*, existing_roi, dark_sources, dark_rois, spacing, stride,
     """The one box-info job.  ``dark_sources`` maps each channel name
     to ONE level's 3D array of the WHOLE patch (only ``[::stride]`` is
     read, here, on the worker); ``dark_cache`` is the cached threshold or
-    ``None``.  ``existing_roi`` / ``dark_rois`` / ``run_guide_roi`` /
-    ``nuclei_roi`` / ``image_roi`` are box crops the main thread copied.
+    ``None``.  ``existing_roi`` and ``nuclei_roi`` / ``image_roi`` on a
+    box are box crops the main thread copied; ``run_guide_roi`` is a view
+    of the box (read only); ``dark_rois`` are the layers' own arrays, on a
+    box as on the whole patch, cut to the box by the engine here on the
+    worker (an array already the box's shape is taken as the crop).
     On the Nuclei preset ``image_roi`` (the Brightness channel's crop)
     yields the histogram and its Auto (B4.2).
 
@@ -4961,9 +5567,17 @@ def add_box_info(*, existing_roi, dark_sources, dark_rois, spacing, stride,
             return info
         if (preset == "cells" and source == SOURCE_NUCLEI
                 and nuclei_roi is None and nuclei_source is not None):
-            # the whole layer: cut to the box first (never a whole read)
+            # the whole layer: cut to the box first (never a whole read);
+            # on a whole patch its strided sample, as the Brightness card's
+            # histogram is (a float64 copy of the patch was 0.8 GB at 100
+            # million voxels); a box keeps its whole crop
             nuc = (nuclei_source if roi is None
                    else nuclei_source[tuple(roi)])
+            if (params.get("whole_patch")
+                    and int(np.prod(np.shape(nuc)))
+                    > int(BRIGHTNESS_SAMPLE_VOXELS)):
+                st = dark_stride(np.shape(nuc), int(BRIGHTNESS_SAMPLE_VOXELS))
+                nuc = nuc[(slice(None, None, st),) * len(np.shape(nuc))]
             nuclei_roi = np.asarray(nuc, np.float64)
         if (preset == "cells" and source == SOURCE_NUCLEI
                 and nuclei_roi is not None):

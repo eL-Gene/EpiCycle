@@ -41,7 +41,16 @@ distinct levels, or from the frozen edge (checked above).  It does not when
 the order comes from two markers of exactly equal height (the heap hands
 those out in an order set by every marker in the box) or from a tie one
 level lower.  Both need flat spots: touching voxels with exactly the same
-wall value.  So:
+wall value.  Two markers on one flat patch at the lowest value are
+flooded whole at the click that pairs them; a later click elsewhere is
+NOT flooded whole for them (it was, until 2026-11-25: one such pair made
+every later click flood the whole box), although the full flood's order
+among equal markers can shift with any marker added or removed -- so on
+their shared patch the two can swap voxels against a later full Preview.
+Measured (the whole-patch session test): with the box faces or the dark
+outside as markers the swap was never seen (0 of 528 steps each); on a
+whole patch with the dark tick off, 3 of 264 steps, at most 127 voxels,
+inside the pair's own cells.  So:
 
 * only the wall pictures of :data:`CLICK_FILL_WALLS` (membrane, gradient)
   are redone by click; the plain intensity and the ridge filters leave
@@ -597,6 +606,10 @@ class CellsClickFill:
     a time).
     """
 
+    #: the flat-spot reason :func:`prepare` let through when asked to
+    #: (``allow_flat``); ``None``: the box had none the rule keeps whole
+    flat_override = None
+
     def __init__(self, *, spec, roi, spacing, shape, existing, elevation,
                  dark_raw, outline, cores, messages, low=None,
                  other_patches=frozenset(), n_flat_pairs=0):
@@ -787,7 +800,7 @@ class CellsClickFill:
         box_n = int(np.prod(self.shape))
         whole = tuple((0, n) for n in self.shape)
         if (_voxels(window) > WINDOW_WHOLE_SHARE * box_n
-                or self._clicks_share_a_low_patch(order)):
+                or self._clicks_share_a_low_patch(order, added)):
             window = whole
         before = {}
         while True:
@@ -849,14 +862,25 @@ class CellsClickFill:
         out.seconds = time.perf_counter() - t0
         return out
 
-    def _clicks_share_a_low_patch(self, order):
+    def _clicks_share_a_low_patch(self, order, changed=None):
         """True when a click's ball lies on a flat patch at the lowest wall
         value that also holds another click or a marker that is not a click:
         markers of equal height, whose order of leaving the flood depends on
         every marker in the box -- only the whole box floods them as the
-        full run does."""
+        full run does.  ``changed`` (the slots this step added): only a
+        tie that involves one of them floods the whole box.  A pair that
+        shared a patch before this step keeps the split the flood that
+        paired them drew; a later click elsewhere CAN shift the full
+        flood's order among equal markers, so against a later full
+        Preview the two may swap voxels on their shared patch (measured:
+        never with the faces or the dark outside as markers; on a whole
+        patch with the dark tick off 3 of 264 steps, at most 127 voxels --
+        the module notes).  Before this, one such pair anywhere made EVERY
+        later click flood the whole box for the rest of the session (8 s a
+        click on a 5 M patch).  ``None``: any pair, as before."""
         if not self._low.any():
             return False
+        chg = None if changed is None else set(changed)
         seen = {}
         for s in order:
             pt = self._slots[s].point
@@ -866,8 +890,13 @@ class CellsClickFill:
             sl = _slices(b)
             on = self._low[sl][self._ball[sl] == s]
             for patch in np.unique(on[on > 0]):
-                if (int(patch) in self._low_other
-                        or seen.setdefault(int(patch), s) != s):
+                if int(patch) in self._low_other:
+                    if chg is None or s in chg:
+                        self._low_ties += 1
+                        return True
+                    continue
+                first = seen.setdefault(int(patch), s)
+                if first != s and (chg is None or s in chg or first in chg):
                     self._low_ties += 1
                     return True
         return False
@@ -1315,7 +1344,7 @@ class CellsClickFill:
 
 def prepare(labels, images, spec, *, roi, dark_channels=None,
             dark_threshold=None, spacing=(1, 1, 1), elevation=None,
-            outline=None, cancel_event=None):
+            outline=None, cancel_event=None, allow_flat=False):
     """Prepare the box once per box and settings: the same inputs as
     :func:`.region.reshape_empty_region` (box crops, the wall picture in
     ``elevation=`` when the page holds it, the patch's outline in
@@ -1329,7 +1358,13 @@ def prepare(labels, images, spec, *, roi, dark_channels=None,
     (``"too-big"``, ``"outline-per-box"``), or :data:`FULL_RUN` when the
     box has flat spots the rule keeps whole (:func:`flat_survey`) -- then
     the caller runs the
-    full Preview and shows nothing (the sentence is for the log)."""
+    full Preview and shows nothing (the sentence is for the log).
+
+    ``allow_flat`` -- the user asked for the click fill whatever the flat
+    spots: the stage is returned all the same, its ``flat_override`` holding
+    the survey's reason (``None`` when there was none) and
+    ``n_flat_pairs`` the count as always.  A tie there may then be broken
+    differently from the full run, by a few voxels."""
     spacing = _spacing(spacing)
     _check_spec(spec)
     if spec.seeds != "paint":
@@ -1375,7 +1410,7 @@ def prepare(labels, images, spec, *, roi, dark_channels=None,
         elev, existing, cores, dark_raw=dark_raw, outline=outline_box,
         clearance_um=p["dark_clearance_um"], spacing=spacing,
         faces=bool(p.get("faces_outside", True)))
-    if why is not None:
+    if why is not None and not allow_flat:
         return None, (FULL_RUN, FLAT_SENTENCE.format(why=why))
     _check_cancel(cancel_event)
     stage = CellsClickFill(spec=spec, roi=roi, spacing=spacing, shape=shape,
@@ -1383,6 +1418,7 @@ def prepare(labels, images, spec, *, roi, dark_channels=None,
                            dark_raw=dark_raw, outline=outline_box,
                            cores=cores, messages=sink.messages, low=low,
                            other_patches=other_patches, n_flat_pairs=n_flat)
+    stage.flat_override = why
     return stage, None
 
 
@@ -1456,8 +1492,10 @@ def flat_survey(elevation, existing, cores, *, dark_raw, outline,
     * a flat patch at the lowest value holding two markers of different
       labels -- two clicks, or a click and the outside or a kept core:
       markers of equal height leave the flood in an order set by every
-      marker in the box.  Clicks are not known here, so this is checked on
-      every click (:meth:`CellsClickFill.step` then floods the whole box).
+      marker in the box.  Clicks are not known here, so the click that
+      pairs them is checked (:meth:`CellsClickFill.step` then floods the
+      whole box, once; see the module notes for what a later click may
+      leave).
 
     The lowest and highest values are the wall picture's clips (a
     normalised picture puts its darkest 1 % at exactly 0 and its brightest

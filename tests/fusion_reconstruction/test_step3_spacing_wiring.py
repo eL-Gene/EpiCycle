@@ -810,8 +810,10 @@ def test_a_none_qc_spacing_is_no_fallback_at_every_reader(
     assert c._patch_spacing("B.tif") is None          # voxel units
     c._qc_launch_spacing = {}
     c._write_qc_extraction_context("B.tif")           # no TypeError
-    assert read_extraction_context(_paths.qc_features_csv(
-        c.working_dir, "B", run_id=None))["spacing"] == [1.0, 1.0, 1.0]
+    ctx = read_extraction_context(_paths.qc_features_csv(
+        c.working_dir, "B", run_id=None))
+    # an unknown voxel size is written as unknown, never as (1, 1, 1)
+    assert ctx["spacing"] is None and ctx["spacing_source"] == "unknown"
     assert c._check_qc_extraction_staleness("B.tif") is None
     c._write_qc_extraction_context("A.tif")
     assert c._check_qc_extraction_staleness("A.tif") is None
@@ -944,7 +946,8 @@ def test_the_sidecar_is_written_and_read_per_patch(w, tmp_path, monkeypatch):
     csv = lambda n: _paths.qc_features_csv(c.working_dir, n,  # noqa: E731
                                            run_id=None)
     assert read_extraction_context(csv("A"))["spacing"] == VOXEL_A
-    assert read_extraction_context(csv("B"))["spacing"] == [1.0, 1.0, 1.0]
+    b_ctx = read_extraction_context(csv("B"))
+    assert b_ctx["spacing"] is None and b_ctx["spacing_source"] == "unknown"
     # each patch is compared with ITS OWN record
     assert c._check_qc_extraction_staleness("A.tif") is None
     assert c._check_qc_extraction_staleness("B.tif") is None
@@ -1074,3 +1077,241 @@ def test_an_unknown_spacing_stays_unknown_when_downsampled(
     ctx = c._on_annotator_reshape_context()
     assert ctx["spacing"] == (1.0, 1.0, 1.0)
     assert ctx["spacing_source"] == "unknown"
+
+
+# ======================================== an unknown voxel size stays unknown
+
+def test_known_spacing_writes_its_source(w, tmp_path, monkeypatch):
+    """The sidecar names where a known voxel size came from."""
+    from napari_epicycle.fusion_reconstruction import _paths
+    from napari_epicycle.fusion_reconstruction._qc_extraction_context import (
+        read_extraction_context,
+    )
+    c = _load(w, tmp_path, monkeypatch)
+    c._qc_launch_spacing = {"A.tif": {"zyx": VOXEL_A, "source": "step1"}}
+    c._write_qc_extraction_context("A.tif")
+    ctx = read_extraction_context(_paths.qc_features_csv(
+        c.working_dir, "A", run_id=None))
+    assert ctx["spacing"] == VOXEL_A
+    assert ctx["spacing_source"] == "step1"
+    # QC Settings' value as the fallback carries its own word
+    c._qc_launch_spacing = {}
+    c._qc_settings["spacing"] = (1.0, 0.4, 0.4)
+    c._write_qc_extraction_context("B.tif")
+    ctx = read_extraction_context(_paths.qc_features_csv(
+        c.working_dir, "B", run_id=None))
+    assert ctx["spacing"] == [1.0, 0.4, 0.4]
+    assert ctx["spacing_source"] == "qc_settings"
+
+
+def test_voxel_unit_features_stay_stale_when_a_step1_size_arrives(
+        w, tmp_path, monkeypatch):
+    """The live order: B is extracted with no voxel size (features in voxel
+    units, the sidecar says ``null``); Step 1 then learns B's size; the user
+    opens Set spacing… and confirms that same size.  B's features were
+    never measured at it: the confirm lists B, and after the store the
+    staleness check says the spacing changed from voxel units."""
+    import napari_epicycle.fusion_reconstruction.controller as C
+    from napari_epicycle.fusion_reconstruction import _paths
+    from napari_epicycle.fusion_reconstruction._qc_extraction_context import (
+        read_extraction_context,
+    )
+    step1_b = [1.0, 0.3, 0.3]
+    c = _load(w, tmp_path, monkeypatch)
+    c._qc_settings["spacing"] = None
+    c._qc_launch_spacing = {}
+    assert c._patch_spacing("B.tif") is None
+    # the extraction's finish, in voxel units
+    c._record_extraction_spacing("B.tif")
+    c._write_qc_extraction_context("B.tif")
+    assert c.state_manager.get_measured_spacing("B.tif") is None
+    assert read_extraction_context(_paths.qc_features_csv(
+        c.working_dir, "B", run_id=None))["spacing"] is None
+    # Step 1 learns B's voxel size meanwhile; the next resolve stores it
+    _step1(tmp_path, voxel_b=step1_b)
+    c._resolve_listed_spacing("t")
+    assert c._patch_spacing("B.tif") == {"zyx": step1_b, "source": "step1"}
+    monkeypatch.setattr(c, "_get_qc_extracted_patches", lambda: {"B.tif"})
+    monkeypatch.setattr(c, "_make_set_spacing_dialog",
+                        lambda n, r: _FakeDialog(n, r, zyx=step1_b))
+    bodies = []
+    monkeypatch.setattr(C, "themed_confirm",
+                        lambda parent, title, body, **k:
+                        bodies.append(body) or True)
+    assert c._open_set_spacing(["B.tif"]) is True
+    assert bodies == [P.spacing_confirm_text(["B.tif"])]
+    assert c.state_manager.get_patch_spacing("B.tif") == {
+        "zyx": step1_b, "source": "user"}
+    assert c._check_qc_extraction_staleness("B.tif") == \
+        "spacing changed from voxel units to (1.0, 0.3, 0.3)"
+
+
+def test_the_stale_notice_says_voxel_units(w, tmp_path, monkeypatch):
+    """A patch measured in voxel units, then given a voxel size: the
+    ``[QC-STALE]`` line and the modal both say "from voxel units"."""
+    import pandas as pd
+    from qtpy.QtWidgets import QMessageBox
+    c = _load(w, tmp_path, monkeypatch)
+    c._qc_settings["spacing"] = None
+    c._qc_launch_spacing = {}
+    c._write_qc_extraction_context("B.tif")
+    c.state_manager.set_patch_spacing("B.tif", [2.0, 0.5, 0.5], "user")
+    c._qc_view_patch_name = "B.tif"
+    c._qc_features_df = pd.DataFrame({"label": [1, 2]})
+    logged, modal = [], []
+    monkeypatch.setattr(c, "_append_log", logged.append)
+    monkeypatch.setattr(QMessageBox, "exec_",
+                        lambda self: modal.append(self.text()) or 0)
+    assert c._check_qc_extraction_staleness("B.tif") == \
+        "spacing changed from voxel units to (2.0, 0.5, 0.5)"
+    c._maybe_show_qc_staleness_notification("B.tif")
+    stale = [m for m in logged if m.startswith("[QC-STALE]")]
+    assert len(stale) == 1 and "from voxel units" in stale[0]
+    assert modal and "from voxel units" in modal[0]
+
+
+def test_the_stale_notice_names_an_unknown_current_size_voxel_units(
+        w, tmp_path, monkeypatch):
+    """Features measured at QC Settings' 3 / 1 / 1, then no voxel size is
+    known any more: the check and the ``[QC-STALE]`` line say "to voxel
+    units", never "to (1.0, 1.0, 1.0)"."""
+    import pandas as pd
+    from qtpy.QtWidgets import QMessageBox
+    from napari_epicycle.fusion_reconstruction import _paths
+    from napari_epicycle.fusion_reconstruction._qc_extraction_context import (
+        read_extraction_context,
+    )
+    c = _load(w, tmp_path, monkeypatch)
+    c._qc_launch_spacing = {}
+    c._qc_settings["spacing"] = (3.0, 1.0, 1.0)
+    c._write_qc_extraction_context("B.tif")
+    ctx = read_extraction_context(_paths.qc_features_csv(
+        c.working_dir, "B", run_id=None))
+    assert ctx["spacing"] == [3.0, 1.0, 1.0]
+    assert ctx["spacing_source"] == "qc_settings"
+    c._qc_settings["spacing"] = None
+    assert c._patch_spacing("B.tif") is None
+    c._qc_view_patch_name = "B.tif"
+    c._qc_features_df = pd.DataFrame({"label": [1, 2]})
+    logged, modal = [], []
+    monkeypatch.setattr(c, "_append_log", logged.append)
+    monkeypatch.setattr(QMessageBox, "exec_",
+                        lambda self: modal.append(self.text()) or 0)
+    assert c._check_qc_extraction_staleness("B.tif") == \
+        "spacing changed from (3.0, 1.0, 1.0) to voxel units"
+    c._maybe_show_qc_staleness_notification("B.tif")
+    stale = [m for m in logged if m.startswith("[QC-STALE]")]
+    assert len(stale) == 1 and "to voxel units" in stale[0]
+    assert "(1.0, 1.0, 1.0)" not in stale[0]
+    assert modal and "to voxel units" in modal[0]
+    # both unknown: nothing to say
+    c._write_qc_extraction_context("B.tif")
+    assert c._check_qc_extraction_staleness("B.tif") is None
+
+# ======================================================= an assumed Z, marked
+
+def _step1_assumed(ws: Path, kind_a="raw", flag=True):
+    """A: a header value whose Z was assumed (flagged); B: a typed value."""
+    from napari_epicycle.data_preparation._paths import step1_state_path
+    state = {
+        "schema_version": 2,
+        "sources": [
+            {"source_id": "sa", "path": "D:/a.tif",
+             "voxel_size": [0.5, 0.5, 0.5], "voxel_size_source": "detected",
+             "voxel_z_from_xy": flag},
+            {"source_id": "sb", "path": "D:/b.tif",
+             "voxel_size": [0.5, 0.5, 0.5], "voxel_size_source": "user",
+             "voxel_z_from_xy": True},           # ignored on a typed value
+        ],
+        "patches": [
+            {"patch_name": "A", "relative_path": "patches/A.tif",
+             "sidecar_path": "patches/A.json", "source_id": "sa",
+             "source_kind": kind_a},
+            {"patch_name": "B", "relative_path": "patches/B.tif",
+             "sidecar_path": "patches/B.json", "source_id": "sb",
+             "source_kind": "raw"},
+        ],
+    }
+    path = step1_state_path(str(ws))
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_an_assumed_z_is_marked_on_step1_values_equal_to_the_row(
+        w, tmp_path, monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    _step1_assumed(tmp_path)
+    c.on_step_enter()
+    got = c._session_spacing(["A.tif", "B.tif"])
+    assert got["A.tif"] == {"zyx": [0.5, 0.5, 0.5], "source": "step1",
+                            "z_assumed": True}
+    assert "z_assumed" not in got["B.tif"]      # a typed value is not
+    # display only: nothing stored carries the mark
+    assert "z_assumed" not in c.state_manager.get_patch_spacing("A.tif")
+    raw = (tmp_path / "patch_spacing.json").read_text(encoding="utf-8")
+    assert "z_assumed" not in raw
+    recs = _records(w.loaded_patch_list)
+    assert recs["A.tif"][0]["line3"] == \
+        P.S3_ROW_SPACING_STEP1_Z_ASSUMED.format(z="0.50", y="0.50", x="0.50")
+    assert recs["A.tif"][0]["line3_warn"] is True
+    assert recs["A.tif"][1] == P.S3_ROW_SPACING_Z_ASSUMED_TIP
+    assert recs["B.tif"][0]["line3_warn"] is False
+
+
+def test_a_user_entry_is_never_marked(w, tmp_path, monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    _step1_assumed(tmp_path)
+    c.state_manager.set_patch_spacing("A.tif", [0.5, 0.5, 0.5], "user")
+    c.on_step_enter()
+    assert "z_assumed" not in c._session_spacing(["A.tif"])["A.tif"]
+
+
+def test_a_processed_patch_is_marked_only_when_its_store_equals_the_row(
+        w, tmp_path, monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    _step1_assumed(tmp_path, kind_a="processed")
+    c._step1_spacing_cache = None
+    # a worker read the store's own size (the main thread never does)
+    c.state_manager.set_patch_spacing("A.tif", [0.5, 0.5, 0.5], "step1")
+    assert c._session_spacing(["A.tif"])["A.tif"].get("z_assumed") is True
+    c.state_manager.set_patch_spacing("A.tif", [2.0, 0.5, 0.5], "step1")
+    assert "z_assumed" not in c._session_spacing(["A.tif"])["A.tif"]
+
+
+def test_a_cleared_flag_drops_the_mark(w, tmp_path, monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    _step1_assumed(tmp_path, flag=False)
+    c.on_step_enter()
+    assert "z_assumed" not in c._session_spacing(["A.tif"])["A.tif"]
+
+
+def test_the_set_is_computed_once_per_step1_state(w, tmp_path, monkeypatch):
+    from napari_epicycle.data_preparation import _state as S
+    c = _load(w, tmp_path, monkeypatch)
+    _step1_assumed(tmp_path)
+    c.on_step_enter()
+    calls = []
+    real = S.z_assumed_patch_values
+    monkeypatch.setattr(S, "z_assumed_patch_values",
+                        lambda st: (calls.append(1) or real(st)))
+    c._z_assumed_cache = None
+    for _ in range(5):
+        c._session_spacing(["A.tif", "B.tif"])
+    c._refresh_patch_list_colors()
+    assert len(calls) == 1
+    # a different Step 1 state key is computed again
+    c._z_assumed_cache = ("another state", {})
+    c._session_spacing(["A.tif"])
+    assert len(calls) == 2
+
+
+def test_the_header_count_does_not_count_an_assumed_z(w, tmp_path,
+                                                      monkeypatch):
+    c = _load(w, tmp_path, monkeypatch)
+    _step1_assumed(tmp_path)
+    c.on_step_enter()
+    got = {}
+    monkeypatch.setattr(c.ui, "set_session_header_counts",
+                        lambda n, cur, fin, none: got.update(none=none),
+                        raising=False)
+    c._refresh_session_header_counts()
+    assert got["none"] == 0

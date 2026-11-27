@@ -2,9 +2,9 @@
 extraction time so the controller can notify the user when their current
 settings have drifted from what produced the stored features.
 
-Background (2026-05-31, fix/qc-stale-notice): QC features include centroid
-columns in physical units (when spacing != (1,1,1)) and physical-unit area /
-volume / surface measurements.  Both depend on the spacing handed to
+Background (2026-05-31, fix/qc-stale-notice): QC features include area /
+volume / surface in physical units when a voxel size is known; the centroid
+stays in voxel indices.  The measurements depend on the spacing handed to
 ``regionprops_table`` at extraction time, and on the downsample factor that
 shaped the in-memory labels at extraction time.  If the user changes either
 after extraction and reloads, the navigator's auto-pan + the area / volume
@@ -12,10 +12,21 @@ columns silently reference old context — the autopan lands at the wrong
 position, and physical measurements have drifted.
 
 This module writes a small JSON sidecar next to the features CSV at
-extraction time -- since R7a one per patch, ``<patch>_extraction_context.json``
-(the shared ``extraction_context.json`` is read only for a patch with none), and provides a comparison helper for the
-controller to detect mismatch.  It is intentionally **read/write only — no UI,
+extraction time -- since R7a one per patch,
+``<patch>_extraction_context.json`` (the shared ``extraction_context.json``
+is read only for a patch with none), and provides a comparison helper for
+the controller to detect mismatch.  It is intentionally **read/write only — no UI,
 no controller logic** — so it stays trivially testable without Qt / napari.
+
+An unknown voxel size is written as unknown: ``"spacing": null`` (the
+features were measured in voxel units), never ``[1, 1, 1]`` -- a real 1 µm
+voxel and "nobody knows" must not read alike.  ``"spacing_source"`` beside it
+names where the spacing came from (``"unknown"`` when nothing is known,
+else the resolver's word: ``user`` / ``step1`` / ``file`` / ``qc_settings``).
+An entered QC Settings 1 / 1 / 1 is written as unknown, like its factory
+default; the Reshape context keeps (1, 1, 1) in memory.  Every reader goes through :func:`measured_zyx`, which takes ``null`` as
+voxel units (:data:`VOXEL_UNITS`).  A sidecar written before the word existed
+keeps its ``[1, 1, 1]`` and no ``spacing_source``; it reads as that list.
 
 The notification UX (modal dialog + persistent badge) lives in the controller.
 """
@@ -40,6 +51,14 @@ _FEATURES_CSV_SUFFIX = "_features.csv"
 _SPACING_REL_TOL = 1e-6
 _SPACING_ABS_TOL = 1e-9
 
+#: what a ``"spacing": null`` sidecar was measured in: one unit per voxel
+VOXEL_UNITS = (1.0, 1.0, 1.0)
+
+#: the keys of an extraction: written by :func:`write_extraction_context`
+#: only, never by a pairing field or :func:`update_extraction_context`
+_EXTRACTION_KEYS = ("spacing", "spacing_source", "downsample_factor",
+                    "extracted_at")
+
 
 def _legacy_sidecar_path(csv_path: Union[str, Path]) -> Path:
     """The shared ``extraction_context.json`` of the CSV's folder."""
@@ -63,9 +82,10 @@ def _sidecar_path(csv_path: Union[str, Path]) -> Path:
 def write_extraction_context(
     csv_path: Union[str, Path],
     *,
-    spacing: Sequence[float],
+    spacing: Optional[Sequence[float]],
     downsample_factor: int,
     pairing: Optional[Dict[str, Any]] = None,
+    spacing_source: Optional[str] = None,
 ) -> None:
     """Write the extraction context as a JSON sidecar next to ``csv_path``.
 
@@ -75,20 +95,30 @@ def write_extraction_context(
 
     Args:
         csv_path: path to the features CSV (sidecar goes next to it).
-        spacing: (s_z, s_y, s_x) per-voxel physical size at extraction time.
+        spacing: (s_z, s_y, s_x) per-voxel physical size at extraction
+            time, or ``None`` when no voxel size was known (the features
+            are in voxel units): written as ``"spacing": null``.
         downsample_factor: downsample factor of the labels at extraction time.
         pairing: the pairing check's fields of this extraction (the other
             run and its file, the floors, the patch file's size and mtime),
             added as top-level keys.  Recorded only: :func:`stale_reason`
-            never reads them.  The three keys above always win.
+            never reads them.  The keys of the extraction always win.
+        spacing_source: where ``spacing`` came from (``"unknown"`` when
+            nothing was known); written beside it, and left out when not
+            given.
     """
     path = _sidecar_path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: Dict[str, Any] = {}
     for key, value in dict(pairing or {}).items():
         payload[str(key)] = value
+    for key in _EXTRACTION_KEYS:
+        payload.pop(key, None)
+    payload["spacing"] = (None if spacing is None
+                          else [float(s) for s in spacing])
+    if spacing_source is not None:
+        payload["spacing_source"] = str(spacing_source)
     payload.update({
-        "spacing": [float(s) for s in spacing],
         "downsample_factor": int(downsample_factor),
         "extracted_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -102,9 +132,10 @@ def update_extraction_context(csv_path: Union[str, Path], **fields) -> bool:
 
     Only the patch's own ``<patch>_extraction_context.json`` is touched: a
     patch without one (never extracted) gets none, and the shared file of
-    an older workspace is never written.  The three keys of an extraction
-    (``spacing``, ``downsample_factor``, ``extracted_at``) cannot be set
-    here.  ``True`` when the sidecar was written.  Never raises.
+    an older workspace is never written.  The keys of an extraction
+    (``spacing``, ``spacing_source``, ``downsample_factor``,
+    ``extracted_at``) cannot be set here.  ``True`` when the sidecar was
+    written.  Never raises.
     """
     try:
         path = _sidecar_path(csv_path)
@@ -114,7 +145,7 @@ def update_extraction_context(csv_path: Union[str, Path], **fields) -> bool:
         if not isinstance(data, dict):
             return False
         for key, value in fields.items():
-            if key not in ("spacing", "downsample_factor", "extracted_at"):
+            if key not in _EXTRACTION_KEYS:
                 data[str(key)] = value
         from . import _step3_manifests as _sm
         _sm.write_json_atomic(path, data)
@@ -154,6 +185,27 @@ def read_extraction_context(
     return data
 
 
+def measured_zyx(ctx: Optional[Dict[str, Any]]) -> Optional[list]:
+    """The ``[z, y, x]`` a sidecar's features were measured with.
+
+    A three-number list -> that list (floats); ``"spacing": null`` -> voxel
+    units, a fresh ``[1.0, 1.0, 1.0]``; the key absent, or anything else ->
+    ``None`` (nothing can be said).  Never raises.
+    """
+    if not isinstance(ctx, dict) or "spacing" not in ctx:
+        return None
+    raw = ctx.get("spacing")
+    if raw is None:
+        return list(VOXEL_UNITS)
+    if not isinstance(raw, (list, tuple)):
+        return None
+    try:
+        out = [float(v) for v in raw]
+    except (TypeError, ValueError):
+        return None
+    return out if len(out) == 3 else None
+
+
 def _spacings_match(a: Sequence[float], b: Sequence[float]) -> bool:
     if len(a) != len(b):
         return False
@@ -166,21 +218,32 @@ def _spacings_match(a: Sequence[float], b: Sequence[float]) -> bool:
 def stale_reason(
     stored: Optional[Dict[str, Any]],
     *,
-    current_spacing: Sequence[float],
+    current_spacing: Optional[Sequence[float]],
     current_downsample: int,
 ) -> Optional[str]:
     """Compare a stored extraction context against the current state.
 
     Returns a short human-readable reason string when they differ, or ``None``
-    when they match (or when no comparison is possible — missing sidecar or
-    incomplete schema → not flagged, backward-compat).
+    when they match (or when no comparison is possible: no sidecar, no
+    ``spacing`` key, an unreadable spacing, or no ``downsample_factor`` ->
+    not flagged, backward-compat).
+
+    The stored spacing is read through :func:`measured_zyx`: ``null`` means
+    the features were measured in voxel units, so it is compared as
+    ``(1, 1, 1)`` -- a later voxel size flags the features stale, and the
+    downsample factor is compared as for any other sidecar.  A
+    ``current_spacing`` of ``None`` (no voxel size known now) is voxel units
+    too, named "voxel units" in the reason.
 
     The reason string is suitable for showing in the notification UI:
-    ``"spacing changed from (1.0, 1.0, 1.0) to (4.0, 0.25, 0.25)"`` etc.
+    ``"spacing changed from (1.0, 1.0, 1.0) to (4.0, 0.25, 0.25)"``, or
+    ``"spacing changed from voxel units to (4.0, 0.25, 0.25)"`` when the
+    stored spacing is ``null``, etc.
 
     Args:
         stored: dict from :func:`read_extraction_context`, or ``None``.
-        current_spacing: live `(s_z, s_y, s_x)` from QC settings.
+        current_spacing: the patch's `(s_z, s_y, s_x)` now, or ``None``
+            when none is known (voxel units).
         current_downsample: live downsample factor from the patch state.
 
     Returns:
@@ -189,20 +252,20 @@ def stale_reason(
     if not isinstance(stored, dict):
         return None
 
-    stored_spacing = stored.get("spacing")
+    stored_zyx = measured_zyx(stored)
     stored_factor = stored.get("downsample_factor")
 
     # Backward-compat: missing keys → can't compare reliably → don't flag.
-    if stored_spacing is None or stored_factor is None:
-        return None
-    if not isinstance(stored_spacing, (list, tuple)):
+    if stored_zyx is None or stored_factor is None:
         return None
 
-    if not _spacings_match(stored_spacing, current_spacing):
-        return (
-            f"spacing changed from {tuple(float(s) for s in stored_spacing)} "
-            f"to {tuple(float(s) for s in current_spacing)}"
-        )
+    now_zyx = (VOXEL_UNITS if current_spacing is None
+               else tuple(float(s) for s in current_spacing))
+    if not _spacings_match(stored_zyx, now_zyx):
+        was = ("voxel units" if stored.get("spacing") is None
+               else f"{tuple(stored_zyx)}")
+        now = "voxel units" if current_spacing is None else f"{now_zyx}"
+        return f"spacing changed from {was} to {now}"
 
     try:
         stored_factor_int = int(stored_factor)
@@ -220,6 +283,8 @@ def stale_reason(
 __all__ = [
     "EXTRACTION_CONTEXT_FILENAME",
     "PATCH_CONTEXT_SUFFIX",
+    "VOXEL_UNITS",
+    "measured_zyx",
     "write_extraction_context",
     "read_extraction_context",
     "stale_reason",

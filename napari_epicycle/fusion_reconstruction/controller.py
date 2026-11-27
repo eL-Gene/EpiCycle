@@ -52,6 +52,7 @@ from ..data_preparation._voxel_spacing import (  # one patch's voxel size (R2b)
     _rel_to,
     read_step1_state,
     resolve_stack_spacing,
+    same_spacing,
 )
 from ..ui_shell import _recon_settings_text as _rs_text
 from ..ui_shell._recon_presets import (
@@ -301,6 +302,9 @@ def _unwrap_proxy(obj, max_hops: int = 8):
 #: ("QThread: Destroyed while thread is still running").  Step 4's pattern.
 _LIVE_STEP3_THREADS: set = set()
 
+#: "the caller did not read the prediction manifest": a sentinel, since
+#: ``None`` is a read that found none
+_UNREAD = object()
 #: The signals _RefinementTrainingWorker / _ExtractionWorker declare, cut by
 #: shutdown() after it asks the worker to stop (a parity test holds them to
 #: the classes).
@@ -4010,6 +4014,9 @@ class FusionReconstructionController:
                          if s.get("run_id") == active else s
                          for s in summaries]
         self._run_picker_summaries = {s.get("run_id"): s for s in summaries}
+        # the workspace they were listed for: a same-slug run of another
+        # workspace must not lend its name
+        self._run_picker_summaries_ws = getattr(self, "working_dir", "")
         combo.blockSignals(True)
         try:
             combo.clear()
@@ -6528,6 +6535,11 @@ class FusionReconstructionController:
                 self._reapply_model_overlay()
             except Exception as exc:      # noqa: BLE001
                 print(f"[STEP3-SETTINGS] model overlay failed: {exc!r}")
+            try:
+                self._reseed_channels_after_pick()
+            except Exception as exc:      # noqa: BLE001
+                print(f"[STEP3-SETTINGS] channel seed after a pick "
+                      f"failed: {exc!r}")
 
     # ------------------------------------------------------------------
     # Model source wiring
@@ -6862,7 +6874,52 @@ class FusionReconstructionController:
             stored = getter()
         except Exception:      # noqa: BLE001 -- a row's decoration
             return {}
-        return {n: stored[n] for n in names if n in stored}
+        return self._mark_z_assumed(
+            {n: stored[n] for n in names if n in stored})
+
+    def _z_assumed_values(self) -> dict:
+        """Step 1's patches whose source records a header voxel size with
+        an assumed Z (``{normalized rel path: ([z, y, x], kind)}``), computed
+        ONCE per Step 1 state (the same key as its read cache)."""
+        state = self._step1_state_for_spacing()
+        cached = getattr(self, "_step1_spacing_cache", None)
+        key = cached[0] if cached is not None and state is not None else None
+        hit = getattr(self, "_z_assumed_cache", None)
+        if hit is not None and key is not None and hit[0] == key:
+            return hit[1]
+        try:
+            from ..data_preparation._state import z_assumed_patch_values
+            vals = z_assumed_patch_values(state) if state else {}
+        except Exception:      # noqa: BLE001 -- a row's decoration
+            vals = {}
+        self._z_assumed_cache = (key, vals)
+        return vals
+
+    def _mark_z_assumed(self, entries: dict) -> dict:
+        """A copy of each Step 1 entry whose value IS its source's assumed-Z
+        value, with ``"z_assumed": True`` -- for the rows' words only, never
+        stored.  A raw patch's stored value is its source's; a processed
+        patch's is its store's, marked only when the two are equal; a
+        ``user`` or ``file`` value is never marked."""
+        vals = self._z_assumed_values()
+        if not vals or not entries:
+            return entries
+        ws = getattr(self, "working_dir", "") or ""
+        if not ws:
+            return entries
+        from ..data_preparation._state import _norm_path
+        out = dict(entries)
+        for name, entry in entries.items():
+            if not isinstance(entry, dict) or entry.get("source") != "step1":
+                continue
+            try:
+                rel = _rel_to(self._patch_stack_path(name), ws)
+                hit = vals.get(_norm_path(rel)) if rel is not None else None
+                if hit and same_spacing(entry, {"zyx": hit[0]}):
+                    out[name] = dict(entry, z_assumed=True)
+            except Exception:      # noqa: BLE001 -- one row's decoration
+                continue
+        return out
 
     def _pr_unsized_patches(self, names) -> set:
         """The listed patches whose EFFECTIVE voxel size is none -- the
@@ -7258,8 +7315,11 @@ class FusionReconstructionController:
             slug = self.state_manager.get_active_run_id()
         except Exception:      # noqa: BLE001
             return ""
-        summary = (getattr(self, "_run_picker_summaries", None) or {}).get(
-            slug)
+        cached = getattr(self, "_run_picker_summaries", None) or {}
+        if (getattr(self, "_run_picker_summaries_ws", None)
+                != getattr(self, "working_dir", "")):
+            cached = {}      # listed for another workspace
+        summary = cached.get(slug)
         if summary is not None:
             return (summary.get("display_name") or "").strip() or slug
         return self._run_display_name_for(slug) or slug
@@ -8915,8 +8975,20 @@ class FusionReconstructionController:
         (a Step 2 model or a refined bundle); a Cellpose built-in records
         none, so "Channel to segment" starts blank (``None``) and the
         helper at 0.  The specks are EpiCycle's value for that model."""
-        from ..ui_shell._model_files import read_trained_channels
         sel = model_sel if isinstance(model_sel, dict) else {}
+        codes = self._trained_codes_per_view(sel)
+        c1, c2 = _s3ch.seed_codes(*codes)
+        values = dict(STEP4_PRESET_EPICYCLE)
+        values.update(model_overlay(sel.get("lateral_model_path")))
+        return c1, c2, int(values["post_small_obj_sb"])
+
+    @staticmethod
+    def _trained_codes_per_view(sel) -> list:
+        """``[lateral codes, axial codes]``: the channel codes each view's
+        model was trained on (its training config beside the weights), or
+        None for a view with no model, a built-in name or no config.  Small
+        JSON reads; never a weights file."""
+        from ..ui_shell._model_files import read_trained_channels
         codes = []
         for key in ("lateral_model_path", "axial_model_path"):
             path = sel.get(key)
@@ -8925,10 +8997,7 @@ class FusionReconstructionController:
             except (OSError, ValueError):
                 is_file = False
             codes.append(read_trained_channels(path) if is_file else None)
-        c1, c2 = _s3ch.seed_codes(*codes)
-        values = dict(STEP4_PRESET_EPICYCLE)
-        values.update(model_overlay(sel.get("lateral_model_path")))
-        return c1, c2, int(values["post_small_obj_sb"])
+        return codes
 
     @staticmethod
     def _channel_word(code, items) -> str:
@@ -9209,10 +9278,20 @@ class FusionReconstructionController:
         if get_c() is None:
             # the codes the restore showed: the run's own newest record
             # first (so the seed and the restore never disagree), else the
-            # boxes as they are
+            # boxes as they are -- unless they hold the model's seed nobody
+            # touched: that is not stored, so the run keeps following its
+            # model (a later pick re-seeds it)
             found = self._run_record_codes()
             if found is not None:
                 sm.set_run_channels(list(found[0]))
+                # defensive: the run now remembers, so the flag is never
+                # read again for it this session (kept for a memory that
+                # could be cleared later)
+                self._channels_seed_shown = False
+            elif getattr(self, "_channels_seed_shown", False):
+                print("[STEP3-SETTINGS] leaving a run whose channels are "
+                      "its model's untouched seed: channels not stored "
+                      "(other settings are)")
             else:
                 c1 = ui.chan1_combo.currentIndex()
                 sm.set_run_channels(
@@ -9243,6 +9322,11 @@ class FusionReconstructionController:
         except Exception as exc:      # noqa: BLE001
             print(f"[STEP3-SETTINGS] channel memory not written: {exc!r}")
             return
+        # the boxes now hold what the run remembers, not an untouched seed.
+        # Defensive: with a memory written, the outgoing store never reads
+        # the flag (it only looks while the memory is None), so no test can
+        # tell this clear from its absence; kept for a memory cleared later.
+        self._channels_seed_shown = False
         if not getattr(self, "_applying_preset", False):
             self._refresh_pr_foot_gates()
 
@@ -9260,24 +9344,41 @@ class FusionReconstructionController:
     def _apply_run_memory(self) -> None:
         """Put this run's remembered channels (for every Start from choice)
         and specks (only for Custom or no stored choice; a preset is the
-        truth otherwise) back into the boxes, as the program.  A run with
-        nothing remembered keeps the widgets."""
+        truth otherwise) back into the boxes, as the program.
+
+        A run with no channels remembered shows the codes its own newest
+        record asked for; with no record either, the channels its model was
+        trained on (:meth:`_seed_channels_from_model`, a new run's rule),
+        else a blank "Channel to segment".  Both are shown, NOT stored.  A
+        record's codes are stored by the first change or the first switch
+        away; the seed only by a change (by hand, or a bundle's channels
+        synced at a pick): left untouched it is not stored when the run is
+        left, so the run keeps following its model."""
         sm = self.state_manager
+        # set again by the seed below: the boxes hold an untouched seed.
+        # This clear is the one that matters: a run shown from its record
+        # must not inherit the previous run's flag (if its record goes
+        # while it is active, leaving it must store what it showed)
+        self._channels_seed_shown = False
         getter = getattr(sm, "get_run_channels", None)
         codes = getter() if callable(getter) else None
+        seed = False
         if codes is None and callable(getter):
             # a run made before runs remembered their channels: the codes
-            # its own newest record asked for, shown but NOT stored (the
-            # first change, or the first switch away, stores them)
+            # its own newest record asked for
             found = self._run_record_codes()
             if found is not None:
                 codes = list(found[0])
                 print(f"[STEP3-SETTINGS] run with no channel memory: "
                       f"{codes} from its newest {found[1]} record")
+            else:
+                seed = True
         specks = None
         if sm.stored_start_from() in (None, "custom"):
             getter = getattr(sm, "get_run_specks", None)
             specks = getter() if callable(getter) else None
+        if seed:
+            self._seed_channels_from_model()
         if codes is None and specks is None:
             return
         ui = self.ui
@@ -9296,15 +9397,123 @@ class FusionReconstructionController:
                 self._set_preset_value(ui.post_small_obj_sb, specks)
         finally:
             self._applying_preset = was
-        line = _pr_text.S3_LOG_RUN_MEMORY.format(
-            seg=self._channel_word(
-                None if ui.chan1_combo.currentIndex() < 0
-                else ui.chan1_combo.currentIndex(), _pr_text.S3_CHAN1_ITEMS),
-            helper=self._channel_word(ui.chan2_combo.currentIndex(),
-                                      _pr_text.S3_CHAN2_ITEMS),
-            n=int(ui.post_small_obj_sb.value()))
+        if codes is None:
+            # only the specks were remembered: the channels line of the
+            # seed already said where the channels come from
+            line = _pr_text.S3_LOG_RUN_SPECKS.format(
+                n=int(ui.post_small_obj_sb.value()))
+        else:
+            line = _pr_text.S3_LOG_RUN_MEMORY.format(
+                seg=self._channel_word(
+                    None if ui.chan1_combo.currentIndex() < 0
+                    else ui.chan1_combo.currentIndex(),
+                    _pr_text.S3_CHAN1_ITEMS),
+                helper=self._channel_word(ui.chan2_combo.currentIndex(),
+                                          _pr_text.S3_CHAN2_ITEMS),
+                n=int(ui.post_small_obj_sb.value()))
         print(f"[STEP3-SETTINGS] {line}")
         self._append_log(line)
+
+    def _seed_channels_from_model(self) -> bool:
+        """Fill the two channel boxes from the run's CURRENT model, as a new
+        run is seeded (:meth:`_new_run_seed`: the codes both views were
+        trained on; a Cellpose built-in, no model, or two views that
+        disagree leave "Channel to segment" blank and the helper at 0).
+        Written as the program; the caller keeps it from being remembered.
+        ``False`` (nothing written) when the panel has no model fields."""
+        ui = self.ui
+        lat = getattr(ui, "lateral_model_path", None)
+        ax = getattr(ui, "axial_model_path", None)
+        if lat is None or ax is None:
+            return False
+        sel = {"lateral_model_path": lat.text().strip() or None,
+               "axial_model_path": ax.text().strip() or None}
+        c1, c2, _specks = self._new_run_seed(sel)
+        was = getattr(self, "_applying_preset", False)
+        self._applying_preset = True
+        try:
+            if c1 is None:
+                ui.chan1_combo.setCurrentIndex(-1)
+            elif 0 <= c1 < ui.chan1_combo.count():
+                ui.chan1_combo.setCurrentIndex(c1)
+            if 0 <= c2 < ui.chan2_combo.count():
+                ui.chan2_combo.setCurrentIndex(c2)
+        finally:
+            self._applying_preset = was
+        self._channels_seed_shown = True
+        self._log_seed_channels(c1, c2, sel)
+        return True
+
+    def _log_seed_channels(self, c1, c2, sel=None) -> None:
+        """The log line of a seed from the run's model, by the run's
+        display name.  A blank "Channel to segment" says why: a view has no
+        model, the two views' models were trained on different channels,
+        or the model records none (a built-in)."""
+        sm = getattr(self, "state_manager", None)
+        getter = getattr(sm, "get_active_run_id", None)
+        slug = (getter() if callable(getter) else None) or "default"
+        try:
+            run = self._active_run_display_name() or slug
+        except Exception:      # noqa: BLE001
+            run = slug
+        head = _pr_text.S3_LOG_SEED_HEAD.format(run=run)
+        if c1 is None:
+            sel = sel if isinstance(sel, dict) else {}
+            paths = [sel.get("lateral_model_path"),
+                     sel.get("axial_model_path")]
+            views = {}
+            if not all(paths):
+                text = _pr_text.S3_LOG_SEED_NO_MODEL
+            else:
+                lat, ax = (_s3ch.valid_codes(c)
+                           for c in self._trained_codes_per_view(sel))
+                if lat is not None and ax is not None:
+                    text = _pr_text.S3_LOG_SEED_DISAGREE
+                elif lat is not None or ax is not None:
+                    text = _pr_text.S3_LOG_SEED_MIXED
+                    views = ({"with_view": "lateral",
+                              "without_view": "axial"}
+                             if lat is not None else
+                             {"with_view": "axial",
+                              "without_view": "lateral"})
+                else:
+                    text = _pr_text.S3_LOG_SEED_PICK
+            line = text.format(head=head, **views)
+        else:
+            line = _pr_text.S3_LOG_SEED_CHANNELS.format(
+                head=head,
+                seg=self._channel_word(c1, _pr_text.S3_CHAN1_ITEMS),
+                helper=self._channel_word(c2, _pr_text.S3_CHAN2_ITEMS))
+        print(f"[STEP3-SETTINGS] {line}")
+        self._append_log(line)
+
+    def _reseed_channels_after_pick(self) -> None:
+        """A model PICK while the run remembers no channels and has no
+        prediction or reconstruction record: the boxes follow the picked
+        model, shown only (stored only once a channel is changed).  Never during a run switch or a restore
+        (the restore seeds on its own), nor with no workspace."""
+        if (getattr(self, "_run_switch_in_flight", False)
+                or getattr(self, "_restoring_run_memory", False)
+                or not getattr(self, "working_dir", "")):
+            return
+        getter = getattr(getattr(self, "state_manager", None),
+                         "get_run_channels", None)
+        if not callable(getter) or getter() is not None:
+            return
+        # Cost: one read of every prediction and reconstruction manifest of
+        # the run (measured ~0.7 s cold at 300 patches), paid on a pick only
+        # while the run remembers no channels.  Predict writes no memory, so
+        # the scan keeps running on each pick until a hand change or a
+        # switch away with a record stores the channels.  Accepted.
+        if self._run_record_codes() is not None:
+            return
+        self._restoring_run_memory = True
+        try:
+            seeded = self._seed_channels_from_model()
+        finally:
+            self._restoring_run_memory = False
+        if seeded:
+            self._refresh_pr_foot_gates()
 
     def _run_record_codes(self, patch_name: str = ""):
         """``((c1, c2), "prediction" | "reconstruction")``: the channel
@@ -9442,14 +9651,19 @@ class FusionReconstructionController:
         really got -- the patch's prediction manifest's, when the cache has
         one -- and the cell width the user typed; otherwise today's
         settings, and the manifest says which (``seg_config_source``).
+        Its ``axes`` are the prediction manifest's, or null without one
+        (:meth:`_recon_recorded_axes`); ``axes_from`` says "prediction"
+        when they are.  The prediction manifest is read once for both.
         Neither changes what is computed: the 3D build reads the cache."""
         # Restore cached predictions
         cached_views = self._try_restore_prediction_cache(patch_name)
         if cached_views is None:
             raise RuntimeError(f"No prediction cache for {patch_name}")
 
+        raw = _mp.read_manifest(_s3m.prediction_manifest_path(
+            self._prediction_cache_dir(), patch_name))
         recorded, extra = self._recon_recorded_seg(
-            patch_name, seg_config, cell_width_um)
+            patch_name, seg_config, cell_width_um, raw=raw)
         return self.reconstruction_service.run_real(
             working_dir=working_dir,
             source_stack_path=stack_path,
@@ -9457,21 +9671,51 @@ class FusionReconstructionController:
             axial_model_path=axial_path,
             seg_config=recorded,
             recon_config=recon_config,
+            axes=self._recon_recorded_axes(raw),
             cached_views=cached_views,
             patch_name=patch_name,
             reconstructions_root=reconstructions_root,
             extra_manifest=extra,
         )
 
-    def _recon_recorded_seg(self, patch_name, seg_config, cell_width_um):
+    @staticmethod
+    def _recon_recorded_axes(raw) -> Optional[str]:
+        """The axes to record in one patch's reconstruction manifest, from
+        its prediction manifest *raw* as ``_model_provenance.read_manifest``
+        returns it (a dict, or ``None`` when the file is missing, unreadable
+        or not a JSON object).  A non-empty string or ``None``; reads
+        nothing itself.
+
+        The value is the axes Cellpose was handed when the patch was
+        predicted, as its prediction manifest records them -- the order
+        the cached views were cut with.  It is NOT a certified truth about
+        the file: Predict resolves it from the TIFF's own axes, else from
+        a size heuristic, else from a fallback order, and a guess there is
+        repeated here.  Without a prediction manifest, or with one that
+        records no axes, the record is ``None`` (null in the JSON), never a
+        default order and never a fresh guess from the file.  Nothing
+        computed reads it: the 3D build works from the cache."""
+        axes = raw.get("axes") if isinstance(raw, dict) else None
+        return axes if isinstance(axes, str) and axes else None
+
+    def _recon_recorded_seg(self, patch_name, seg_config, cell_width_um,
+                            raw=_UNREAD):
         """``(SegmentationConfig to record, extra manifest keys)`` for one
-        patch's Reconstruct (worker thread; reads one small JSON)."""
+        patch's Reconstruct (worker thread; reads one small JSON, or none
+        when the caller hands the prediction manifest in as *raw*).
+
+        ``axes_from: "prediction"`` is added when the prediction manifest
+        records the axes (:meth:`_recon_recorded_axes`), so a recorded order
+        can be told from the old constant ``"ZCYX"``; left out otherwise."""
         pm_path = _s3m.prediction_manifest_path(
             self._prediction_cache_dir(), patch_name)
-        # one read: the inference record and the model block
-        raw = _mp.read_manifest(pm_path)
+        # one read: the inference record, the model block and the axes
+        if raw is _UNREAD:
+            raw = _mp.read_manifest(pm_path)
         pm = raw if isinstance((raw or {}).get("seg_config"), dict) else None
         carried = self._recon_provenance_extra(raw, pm_path)
+        if self._recon_recorded_axes(raw) is not None:
+            carried["axes_from"] = "prediction"
         from_pm = _s3m.seg_config_from_record(
             (pm or {}).get("seg_config"), SegmentationConfig)
         if from_pm is not None:
@@ -13202,15 +13446,16 @@ class FusionReconstructionController:
             ``self._current_downsample_factor()`` for the loaded patch.
         ``spacing``
             The ``(z, y, x)`` voxel spacing as a tuple of floats.  SOURCE: the
-            controller's QC-settings dict ``self._qc_settings`` -- the same
-            place ``_write_qc_extraction_context`` reads it from, so the
-            Reshape engine measures walls in the same physical units the QC
-            features were extracted in.  ``_qc_settings["spacing"]`` is ``None``
-            until the user opens QC Settings (that is its factory default), in
-            which case we fall back to ``_qc_settings["spacing_values"]`` and,
-            failing that, to ``(1.0, 1.0, 1.0)``.  So on a workspace where the
-            user never touched QC Settings this value IS the default
-            ``(1.0, 1.0, 1.0)`` -- isotropic voxel units, not microns.
+            patch's own voxel size first (``_patch_own_spacing``: "Set
+            spacing…", Step 1's recorded voxel size or the file's tags) -- the
+            one its QC features are measured with -- else the controller's
+            QC-settings dict ``self._qc_settings`` (``"spacing"``, then
+            ``"spacing_values"``), else ``(1.0, 1.0, 1.0)``.  So on a patch
+            with no voxel size, where the user never touched QC Settings,
+            this value IS ``(1.0, 1.0, 1.0)`` -- isotropic voxel units, not
+            microns.  This in-memory value keeps ``(1, 1, 1)`` for unknown
+            (``spacing_source`` says so); the extraction-context sidecar
+            writes the same case as ``"spacing": null``.
         ``spacing_source``
             Where ``spacing`` came from: ``"patch"`` (the patch's own voxel
             size: "Set spacing…", Step 1's recorded voxel size or the file's
@@ -16462,14 +16707,18 @@ class FusionReconstructionController:
             return
         patch_stem = Path(patch_name).stem
         csv_path = _paths.qc_features_csv(self.working_dir, patch_stem, run_id=_active_run_path_id(self))
-        # R7: the spacing THIS patch's features were measured with
-        # (``(1, 1, 1)`` = voxel units), into its own sidecar (R7a)
-        spacing = tuple(self._spacing_zyx(
-            self._extraction_spacing_used(patch_name)) or (1.0, 1.0, 1.0))
+        # R7: the spacing THIS patch's features were measured with, into
+        # its own sidecar (R7a).  No voxel size known (features in voxel
+        # units) is written as ``"spacing": null`` + ``"unknown"`` -- never
+        # as (1, 1, 1), which a real 1 um voxel also is
+        used = self._extraction_spacing_used(patch_name)
+        zyx = self._spacing_zyx(used)
+        source = used.get("source") if zyx is not None else "unknown"
         downsample_factor = int(self._current_downsample_factor(patch_name))
         write_extraction_context(
             csv_path,
-            spacing=spacing,
+            spacing=zyx,
+            spacing_source=source,
             downsample_factor=downsample_factor,
             pairing=self._pairing_context_for(patch_name),
         )
@@ -16732,9 +16981,10 @@ class FusionReconstructionController:
             return None
         stored = read_extraction_context(csv_path)
         # R7: the PATCH's voxel size now (QC Settings' only as its
-        # fallback), against what its own sidecar recorded
-        current_spacing = tuple(self._spacing_zyx(self._patch_spacing(pn))
-                                or (1.0, 1.0, 1.0))
+        # fallback), against what its own sidecar recorded; None when no
+        # size is known (voxel units, named so in the reason)
+        now_zyx = self._spacing_zyx(self._patch_spacing(pn))
+        current_spacing = tuple(now_zyx) if now_zyx else None
         current_downsample = int(self._current_downsample_factor(pn))
         reason = stale_reason(
             stored,
@@ -22866,7 +23116,7 @@ class FusionReconstructionController:
             print(f"[STEP3-MR] extract hint failed: {exc!r}")
 
     def _refresh_refine_run_line(self) -> None:
-        """The "Run: ● {name}" line (run switch, workspace load)."""
+        """The "Step 3 run: ● {name}" line (run switch, workspace load)."""
         setter = getattr(self.ui, "set_refine_run_line", None)
         if not callable(setter):
             return
@@ -24371,8 +24621,30 @@ class FusionReconstructionController:
             self._append_log(
                 f"[CHANNEL-SYNC] WARN could not apply channels: {exc}"
             )
+            return
         finally:
             self._applying_preset = was_applying
+        # The sync is the user's pick: the run remembers these codes even
+        # when the boxes already showed them (no index change, so no
+        # signal stored them), so the pick's model seed never runs over
+        # them (it reads only the config named for each view's weights).
+        sm = getattr(self, "state_manager", None)
+        getter = getattr(sm, "get_run_channels", None)
+        try:
+            remembered = getter() if callable(getter) else None
+        except Exception:      # noqa: BLE001
+            remembered = None
+        if callable(getter) and remembered != self._box_codes():
+            self._remember_run_channels()
+
+    def _box_codes(self) -> list:
+        """The two boxes as a memory would store them (blank -> None)."""
+        try:
+            c1 = int(self.ui.chan1_combo.currentIndex())
+            c2 = int(self.ui.chan2_combo.currentIndex())
+        except Exception:      # noqa: BLE001
+            return []
+        return [None if c1 < 0 else c1, max(c2, 0)]
 
     def _read_bundle_manifest_normalized(self, bundle_dir):
         """Tier 2b: read a bundle's manifest as a normalized schema 2.0 dict.
@@ -27375,7 +27647,8 @@ class FusionReconstructionController:
     def _spacing_measured_zyx(self, patch_name: str) -> Optional[list]:
         """The ``[z, y, x]`` the patch's features were MEASURED with: the
         run's ``measured_spacing``, else the patch's own extraction-context
-        sidecar (never the shared legacy file), else the value every reader
+        sidecar (never the shared legacy file; its ``"spacing": null`` =
+        measured in voxel units, ``[1, 1, 1]``), else the value every reader
         takes now (``_patch_spacing``).  Never raises."""
         try:
             got = self._spacing_zyx(
@@ -27386,14 +27659,13 @@ class FusionReconstructionController:
             return got
         try:
             from ._qc_extraction_context import (
-                _sidecar_path, read_extraction_context,
+                _sidecar_path, measured_zyx, read_extraction_context,
             )
             csv = _paths.qc_features_csv(self.working_dir,
                                          Path(patch_name).stem,
                                          run_id=_active_run_path_id(self))
             if _sidecar_path(csv).is_file():
-                ctx = read_extraction_context(csv) or {}
-                got = self._spacing_zyx({"zyx": ctx.get("spacing")})
+                got = measured_zyx(read_extraction_context(csv))
         except Exception as exc:      # noqa: BLE001
             print(f"[STEP3-SPACING] {patch_name!r}: sidecar {exc!r}")
             got = None

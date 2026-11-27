@@ -402,9 +402,10 @@ def run_summary_rounds(round_by_view: Optional[Mapping[str, Any]],
             "next": str(nxt_n) if nxt_n is not None else T.RUN_SUMMARY_NONE,
             "last": str(last_n) if last_n is not None
             else T.RUN_SUMMARY_NONE,
-            "model": (T.RUN_SUMMARY_MODEL.format(run=run_id or "default",
-                                                 n=last_n)
-                      if last_n is not None else T.RUN_SUMMARY_NONE),
+            # no run, no model: never a made-up run name
+            "model": (T.RUN_SUMMARY_MODEL.format(run=run_id, n=last_n)
+                      if last_n is not None and run_id
+                      else T.RUN_SUMMARY_NONE),
         }
     return out
 

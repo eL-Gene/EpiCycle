@@ -359,7 +359,10 @@ class TestActiveRunIdPeek:
     active_run_id from the v3 state file BEFORE the main load.
     """
 
-    def test_peek_returns_default_when_no_state_file(self, tmp_path):
+    def test_peek_returns_no_run_when_no_state_file(self, tmp_path):
+        """A folder with no step2_state.json has no active run ("") -- not
+        the run "default" (the controller-level check of the same rule
+        loads a fresh folder and reads its active run id)."""
         ws = tmp_path / "empty"
         ws.mkdir()
         # Simulate the peek logic
@@ -372,9 +375,9 @@ class TestActiveRunIdPeek:
             except Exception:
                 pass
         assert peeked is None  # no file, no value
-        # Controller would default to DEFAULT_RUN_ID
-        active_run_id = peeked or p.DEFAULT_RUN_ID
-        assert active_run_id == "default"
+        # No run is active until one is made
+        active_run_id = peeked or ""
+        assert active_run_id == ""
 
     def test_peek_reads_explicit_active_run_id(self, tmp_path):
         ws = tmp_path / "ws"
@@ -405,8 +408,8 @@ class TestActiveRunIdPeek:
             pass
 
         assert peeked is None
-        # Falls back to default
-        assert (peeked or p.DEFAULT_RUN_ID) == "default"
+        # An unreadable file names no active run
+        assert (peeked or "") == ""
 
 
 # ============================================================================

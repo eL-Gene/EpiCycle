@@ -109,6 +109,7 @@ def add_segment_region(
     min_distance: int = 3,
     next_label: int,
     spacing=None,
+    cancel_event=None,
 ) -> np.ndarray:
     """Segment new label(s) from an image channel inside a box, clipped to gaps.
 
@@ -140,6 +141,12 @@ def add_segment_region(
         are numbered ``next_label, next_label + 1, ...``.
     spacing : sequence of float, optional
         Per-axis voxel spacing for the EDT (anisotropy-aware watershed).
+    cancel_event : threading.Event, optional
+        Polled BETWEEN the steps (the contrast, the threshold, the distance
+        map, its blur, the peaks, the flood, the size floor); once set,
+        ``ReshapeCancelled`` is raised at the next poll.  A step already
+        running (the distance map, the flood) is never cut short.  ``None``
+        polls nothing: the result is the one it always was.
 
     Returns
     -------
@@ -158,22 +165,26 @@ def add_segment_region(
     out = np.zeros(existing.shape, dtype=np.int32)
     if image.size == 0:
         return out
+    _poll_stop(cancel_event)
 
     # --- 1. optional CLAHE (requires [0,1]) ---
     proc = add_threshold_space(image, clahe=clahe, clahe_clip=clahe_clip)
     if clahe and not np.any(proc):  # constant image → nothing to enhance/segment
         return out
+    _poll_stop(cancel_event)
 
     # --- 2. threshold ---
     thr = _resolve_threshold(proc, threshold)
     if thr is None:
         return out
+    _poll_stop(cancel_event)
     binary = proc >= thr
 
     # --- 3. background-masked foreground (the clipping invariant) ---
     fg = binary & (existing == 0)
     if not np.any(fg):
         return out
+    _poll_stop(cancel_event)
 
     # --- 4. separate touching pieces ---
     from scipy.ndimage import distance_transform_edt
@@ -186,17 +197,20 @@ def add_segment_region(
         from scipy.ndimage import gaussian_filter
 
         edt = distance_transform_edt(fg, sampling=spacing).astype(np.float64)
+        _poll_stop(cancel_event)
         # Lightly smooth the EDT before peak detection so flat interior
         # plateaus collapse to a single maximum per blob — otherwise
         # peak_local_max returns many co-equal peaks across a plateau and the
         # watershed over-segments one cell into a dozen slivers.
         edt_smooth = gaussian_filter(edt, sigma=1.0)
+        _poll_stop(cancel_event)
         peaks = peak_local_max(
             edt_smooth,
             min_distance=max(1, int(min_distance)),
             exclude_border=False,
             labels=fg,
         )
+        _poll_stop(cancel_event)
         if len(peaks) >= 2:
             markers = np.zeros(fg.shape, dtype=np.int32)
             for i, coord in enumerate(peaks):
@@ -207,6 +221,7 @@ def add_segment_region(
             pieces, _ = cc_label(fg)
     else:
         pieces, _ = cc_label(fg)
+    _poll_stop(cancel_event)
 
     # --- 5 + 6. drop small pieces, relabel from next_label ---
     # One lookup-table pass (the pieces are numbered 1..K by the watershed or

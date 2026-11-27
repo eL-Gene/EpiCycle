@@ -41,13 +41,11 @@ back one Accept at a time.
    nuclei yourself, **Look for nuclei ▸ At the markers I place** and one
    click per nucleus; for Cells, where
    the markers come from (**Markers ▸ From**), which channel holds the
-   membrane, and — on a whole patch — the **Tissue outline** the new cells
-   stay inside. A whole patch needs **Objects from run ▸ …** or **Click
-   markers** on Cells (on a whole patch **From** lists only those; a run is
-   never picked for you, and Click markers picked on the box, or by default
-   on a one-channel patch, stay picked) and **Inside each cell** or **At the
-   markers I place** on Nuclei; until then **Preview** is grey and the first
-   line says which.
+   membrane, and the **Tissue outline** the new cells stay inside. Every
+   choice works the same on a box and on a whole patch; on Cells a whole
+   patch needs a source under **From** (a run is never picked for you; a
+   source picked on the box stays picked), and until then **Preview** is
+   grey and the first line says so.
 6. If objects are in the way, **Clear objects** (left of Preview) removes
    the ones mostly inside the box, or every object in the patch.
 7. Press **Preview**. Every new object appears in the list and on screen.
@@ -85,7 +83,7 @@ yet is hidden, not greyed: a setting appears once it means something.
   preset. On Nuclei, the **Brightness** card (and under it, with **Look for
   nuclei ▸ At the markers I place**, the **Markers** card), and — on a box,
   before a result, with **Anywhere in the box** or the markers — the
-  **Tissue outline** card, closed and set to **No outline (as before)**; on
+  **Tissue outline** card, closed and set to **No outline**; on
   Cells, once a box is placed, the **Markers** and **Walls** cards. Cards
   open one at a time.
 - **Result** — appears once a Preview has found something: the list of new
@@ -149,8 +147,10 @@ both presets **Advanced** waits for a box too.
 - **Whole patch** (beside Place box), and **Whole** on the row of sizes once
   a box is up, make the box the whole patch — see *The whole patch* below.
 - **S**, **M** and **L** make each side of the box about an eighth, a quarter
-  or a half of the patch's side. On the Cells preset the box is kept to at most 4 million voxels,
-  so L may come out smaller than half; on Nuclei there is no limit.
+  or a half of the patch's side. On the Cells preset they make a box of at
+  most 4 million voxels, so L may come out smaller than half on a large
+  patch; that is their size, not a limit — a box made larger with
+  **Numbers…** is kept. On Nuclei they are always the full fraction.
 - **Numbers…** opens a small window, *The box, in numbers*, with the box's
   centre and size on each axis as sliders.
 - **⌖** (Recenter — the word is in its tooltip) moves the box so its centre
@@ -175,7 +175,10 @@ both presets **Advanced** waits for a box too.
 The first line of the page tells you the box's size, for example
 *"Box 40 × 125 × 125 voxels (0.6 million) · 85 % of it is empty space"* on
 Nuclei. On Cells it also names the limit:
-*"Box 40 × 125 × 125 voxels (0.6 million; the limit for cells is 4 million) · 85 % of it is empty space"*.
+*"Box 40 × 125 × 125 voxels (0.6 million; the limit for cells is 100 million) · 85 % of it is empty space"*.
+The limit is the same for a box and a whole patch: Preview fills either up
+to 100 million voxels, and **Update as I click** updates either up to 20
+million.
 The empty share is worth a glance: a box that is mostly taken already has
 little room to fill.
 
@@ -193,17 +196,19 @@ wireframe.
 always makes the box the whole patch. Whether the page can fill it depends
 on what is picked, and **Preview** says so:
 
-- On **Nuclei** it works with **Look for nuclei ▸ Inside each cell of run ▸
-  …** and with **At the markers I place** (the markers are placed on the
-  whole patch as in a box). On **Anywhere in the box** Preview is grey and
-  the first line says "Anywhere in the box runs on boxes — pick Inside each
-  cell, or S, M or L." Anywhere's finder over a whole patch is one long
-  step that Stop cannot cut short.
-- On **Cells with a membrane stain** it needs **Markers ▸ Objects from run ▸
-  …** or **Click markers** (see *Cells: the whole patch* below). The
-  Markers card is on screen as soon as the box is, right under the box; on
-  a whole patch its **From** list holds the other runs of the patch and
-  Click markers.
+- Every feature behaves the same on a box and on a whole patch. On
+  **Nuclei** every **Look for nuclei** works there (the markers are placed
+  on the whole patch as in a box); **Anywhere in the box** finds the nuclei
+  over the whole patch, its **Tissue outline** card included. Its finder
+  has a few long steps (the distance map, the flood) that cannot be cut
+  short: **Stop** takes effect when the step running ends.
+- On **Cells with a membrane stain** it takes any marker source a box
+  takes — **Objects from run ▸ …**, **Nuclei masks from a channel** or
+  **Click markers** (see *Cells: the whole patch* below). The Markers card
+  is on screen as soon as the box is, right under the box.
+- The one difference: a whole patch is filled with a background marker and
+  its faces left open, because a patch edge is the end of the data and a
+  box edge cuts through tissue.
 
 With no box placed, the first line reminds you it is there:
 "Place a box over the space to fill, or press Whole patch."
@@ -242,9 +247,14 @@ With no box placed, the first line reminds you it is there:
   and fro during the fill itself, see below). A large patch says so in
   amber before you press Preview. On Nuclei it says *"This patch is 73.0
   million voxels; a Preview may take several minutes or longer. Stop acts
-  between steps."* (on Cells it gives a rough figure instead, see *How
-  long it takes* below). On Nuclei **Stop** takes effect between the
-  steps, and inside the long per-cell steps every 200 cells.
+  between steps."* — on **Anywhere in the box** with a rough figure
+  instead: *"This patch is 73.0 million voxels; a Preview may take under
+  a minute, longer on a slower computer. Stop acts between steps."* (on
+  Cells see *How long it takes* below). On Nuclei **Stop** takes effect
+  between the steps, and inside the long per-cell steps every 200 cells.
+  On a box or a patch over 20 million voxels the grey line after a Stop
+  adds *"Stop takes effect when this step ends."* while the step running
+  ends.
 - With **Update as I click** on, Nuclei ▸ **At the markers I place** on the
   whole patch needs no Preview: each click updates the objects (see
   **Update as I click** under Advanced below). The first update after a
@@ -266,22 +276,39 @@ With no box placed, the first line reminds you it is there:
 On **Cells with a membrane stain** the whole patch is filled **in one
 step**: every marker grows at once until the walls stop it, the way the fill
 of a box runs to its walls. Neighbouring cells meet at the membrane between
-them. Under Advanced, a line at the top says so: *"A whole patch is filled
-to the walls from every marker at once. Tissue far from every marker stays
-empty; to fill it, click markers there too."* **Grow by**,
-**Wall cost** and **Growth limit** are hidden on a whole patch (they do not
-apply to it); **New cells include the membrane at their edge** stays, and
-is honoured with **Update as I click** off. The Grow by you had on your
-last box is kept for the next box. The Advanced summary then reads
-*"filled to the walls · membrane included"* (or *"filled to the walls ·
-membrane left out"*). With **Update as I click** on and Membrane sheets or
+them. **Grow by** applies on a whole patch as on a box (see *How cells
+grow*), and the line at the top of Advanced says what fills the patch under
+your pick. With **Fill to the walls (as before)** it reads *"Filled from
+every marker at once; far tissue stays empty (click markers there). A patch
+edge is the end of the data; a box edge cuts through tissue."* That last
+sentence is the one way a whole patch differs from a box: the fill keeps
+the space far from every marker empty with a background marker and runs
+to the patch's faces. **Wall cost**
+and **Growth limit** are hidden (the fill does not use them); **New cells
+include the membrane at their edge** stays, and is honoured with **Update
+as I click** off. The Advanced summary then reads *"filled to the walls ·
+membrane included"* (or *"filled to the walls · membrane left out"*). With
+**Spread from each marker** the whole patch grows by Spread, with its Wall
+cost, Growth limit and membrane tick, and the line reads *"Spread from each
+marker grows every cell of the whole patch at once; each stops at a wall,
+where a neighbour got there first, or at its growth limit. Tissue no cell
+gets to stays empty."* The pick is one for boxes and the whole patch: what
+you pick on the whole patch is what your next box grows by. With **Update
+as I click** on, Fill to the walls and Membrane sheets or
 Intensity edges walls, a whole patch of up to 20 million voxels with Click
 markers is filled as you click the way a box is instead (see **Update as I
 click** under Advanced): the line at the top of Advanced then reads
 *"Filled as you click, the way a box is: tissue far from every marker
 fills too. To keep it empty, untick Update as I click and press
 Preview."*, the membrane tick is hidden (that fill does not use it), and
-the summary reads *"filled to the walls"*.
+the summary reads *"filled to the walls"*. When the quick update cannot
+take such a patch (see **Update as I click**), the line says so too:
+*"Filled on Preview, the way a box is: tissue far from every marker fills
+too. To keep it empty, untick Update as I click and press Preview."* With
+**Always update as I click** on, such a patch is filled a moment after
+your clicks instead, and the line reads *"Filled a moment after your
+clicks (Always update as I click is on), the way a box is: tissue far from
+every marker fills too."*
 
 **Tissue far from every marker stays empty.** Before the fill, the tool
 marks as background the space that lies far from every marker: how far
@@ -296,36 +323,38 @@ short — look for cells that came out too big or too short before you
 Accept. The empty space that is left is where a box with **Click markers**
 fills the cells the run missed.
 
-- On Cells the whole patch takes its markers from another run
-  (**Markers ▸ Objects from run ▸ …**) or from the markers you click
-  (**Click markers**): finding nuclei masks over a whole patch is one long
-  step that Stop cannot cut short. On a whole patch the **From** list holds
-  the other runs and Click markers. A run is never picked for you; Click
-  markers picked on the box, or by default on a one-channel patch, stay
-  picked. So the way to fill a whole patch with cells is: **Cells** →
-  **Whole patch** → **Markers ▸ From ▸ Objects from run ▸ …** (or **Click
-  markers**, then **Place markers** and a click in each cell) → **Preview**
-  → **Accept**.
-  Until one is picked, Preview is grey and the first line says "Pick a run
-  or Click markers under Markers ▸ From — a whole patch grows its cells
-  from those markers." On a patch with no other run the list holds the
-  grey *Objects from another run (no other run of this patch)* and Click
-  markers, and the first line says "This patch has no other run — pick
-  Click markers under Markers ▸ From, or press S, M or L for a box."
+- On Cells the whole patch takes its markers from any source a box takes:
+  another run (**Markers ▸ Objects from run ▸ …**), **Nuclei masks from a
+  channel**, or the markers you click (**Click markers**). A run is never
+  picked for you; a source picked on the box stays picked. So the way to
+  fill a whole patch with cells is: **Cells** → **Whole patch** →
+  **Markers ▸ From ▸** a source (with **Click markers**, then **Place
+  markers** and a click in each cell) → **Preview** → **Accept**.
+  With nothing picked, Preview is grey and the first line says "Pick a
+  run, Nuclei masks or Click markers under Markers ▸ From — a whole patch
+  grows its cells from those markers." On a patch with no other run the
+  list holds the grey *Objects from another run (no other run of this
+  patch)* too, and the first line says "This patch has no other run —
+  pick Nuclei masks or Click markers under Markers ▸ From."
+- With **Nuclei masks from a channel** the nuclei found over the whole
+  patch are kept for the next Preview of the patch, and found again only
+  when the labels, the Clears in force, the nuclei channel, its threshold,
+  the voxel size or the half size change. Every nucleus found is a marker,
+  as in a box; the line under the result counts the small ones on a box
+  and a whole patch alike, for example *"12 markers were under 10 µm³"*,
+  so you can judge them.
 - With Click markers, a marker far from every other one can make a large
   cell that reaches into the empty space around it (the background starts
   further from a marker whose neighbours are far away, see *Tissue far from
   every marker stays empty* above): click one marker in each cell of the
   area you want filled, not one here and there.
-- The source picked under **From** on the box is set aside, not lost (the
-  source only — for the click markers themselves see *The whole patch*
-  above): with Nuclei masks picked, **From** is blank on the whole patch,
-  and **S**, **M**, **L** or **Close box** bring that source back; if it is
-  no longer offered, the default source is picked instead. A run or Click
-  markers picked on the box, or on the whole patch, stay picked.
+- The source picked under **From** on the box stays picked on the whole
+  patch, and a source picked on the whole patch stays picked on the next
+  box (for the click markers themselves see *The whole patch* above).
 - The first line reads, for example, *"Whole patch 81 × 512 × 512 voxels
-  (21.2 million) · 64 % of it is empty space"*. There is no 4 million voxel
-  limit on a whole patch. While it is measured it reads *"Measuring the
+  (21.2 million) · 64 % of it is empty space"*. The size limits are a
+  box's: 100 million voxels for a Preview, 20 million to update as you
+  click. While it is measured it reads *"Measuring the
   patch…"*; while a preview runs, *"Working on the patch…"* and the grey
   line *"Reading the patch..."*; a Stop says *"Stopped. Nothing from this
   patch was added."*
@@ -338,12 +367,12 @@ fills the cells the run missed.
   the patch…"* until it is in).
 - The **Tissue outline** (under Walls) starts at *Outline of the objects
   you cleared* when a Clear is in force on this patch, else at *Shrink-wrap
-  around the stain* — unless you picked one yourself (see *The tissue
-  outline*).
-- The whole patch refuses at the never-set spacing, because where the
-  background starts is measured in microns: *"These settings are in µm, and
-  this patch's spacing is the 1.0 µm default — set its voxel size with Set
-  spacing… in the Session list first."*
+  around the stain*, as on a box — unless you picked one yourself (see
+  *The tissue outline*).
+- At the never-set spacing the whole patch runs as a box does, on the
+  default 1.0 µm, and the amber spacing line says so (see *The spacing
+  (Cells)*); when another amber line (a slow patch, a half-size session)
+  holds that place, the spacing line moves into Advanced.
 - **Stop.** While it runs, the bar counts the steps and the grey line names
   each one. Building the wall picture (*"Building the wall picture..."*) is
   one long step: the bar moves to and fro while it runs, and **Stop** acts
@@ -376,7 +405,9 @@ fills the cells the run missed.
   the memory), and kept for the next Previews on the same patch and
   run, after Close box or Done too. It is built again only when the wall
   channel, its preparation, the wall type or the spacing change, or after a
-  patch switch. A box keeps none: its wall picture is built at every
+  patch switch. A box of up to 20 million voxels keeps its own wall
+  picture the same way, for that box (moving or resizing the box builds it
+  again); a larger box keeps none: its wall picture is built at every
   Preview.
 - When the worker is done, drawing the result takes a visible moment on a
   whole patch; the first line says *"Showing the result…"* meanwhile, the
@@ -386,9 +417,10 @@ fills the cells the run missed.
   hidden on a whole patch: no face of it is a box edge, so nothing is
   unticked for touching one.
 - A **Numbers…** slider, or **S**, **M** or **L**, makes it an ordinary box
-  again; on Cells that box is then kept to the 4 million voxel limit, and
-  when it had to shrink the first line says *"The box is no longer the
-  whole patch; for cells it was shrunk to the 4 million voxel limit."*
+  again (S, M and L at their own size, see *Placing the box*); on Cells a
+  box over the 100 million voxel limit is shrunk to it, and then the first
+  line says *"The box is no longer the whole patch; for cells it was shrunk
+  to the 100 million voxel limit."*
   When markers were removed too, the first line names the markers instead
   (see *The whole patch* above).
 - The whole patch needs the numba package (part of EpiCycle's
@@ -476,10 +508,9 @@ the reason is in the log. Nothing was changed."*
 The histogram and Auto are measured in the background whenever the box, the
 channel or Local contrast changes, so they may take a moment to appear —
 until then **Auto** is grey and the card says *"Measuring the box for
-Auto…"*. They are measured for a box, or a whole patch with the markers:
-before a box is placed the card says *"Auto is measured once a box is
-placed."*, and on a whole patch that cannot be previewed the line is hidden
-(the first line says why Preview is grey). A box where every
+Auto…"*. They are measured for a box or a whole patch alike (on a whole
+patch from an even sample of it, so the measurement stays quick): before a
+box is placed the card says *"Auto is measured once a box is placed."* A box where every
 voxel has the same brightness says *"Nothing to separate in this box —
 every voxel has the same brightness."*; a measurement that fails leaves
 **Auto** grey and the usual help. While you have not touched the threshold it follows Auto after each
@@ -584,11 +615,11 @@ for the session.
 **Show what the tool sees** is grey here: *"The nuclei follow that run's
 cells; there is no wall picture to show."*
 
-**The spacing.** Every setting here is in microns, so this one refuses when
-the patch's spacing was never set (Step 3 then uses 1.0 µm as a stand-in).
-The first line says so, with a box placed or not yet: *"These settings are
-in µm, and this patch's spacing is the 1.0 µm default — set its voxel size
-with Set spacing… in the Session list first."* **Set spacing…** keeps a
+**The spacing.** Every setting here is in microns. When the patch's spacing
+was never set, Step 3 uses 1.0 µm as a stand-in and this runs on it anyway;
+the amber line under the first one says so (see *The spacing (Cells)*), and
+on voxels smaller than 1.0 µm every setting acts smaller than it says until
+you set the real size. **Set spacing…** keeps a
 voxel size for this patch — 1 / 1 / 1 too, when your voxels really are 1.0
 µm — and it works while a box is placed. A real voxel size recorded in Step
 1 or in the file counts as set as well. QC Features → Settings… counts
@@ -709,9 +740,9 @@ nucleus you want. Only the nuclei you click come back.
 - **A click that finds nothing.** A click whose whole ball misses the stain
   makes nothing. After the Preview its row in the list is dim and its
   tooltip says why: "At the last Preview this marker sat on stain below the
-  threshold, so it made nothing — move it onto the nucleus or lower the
-  threshold." A nucleus below **Smallest object**, or one that vanished
-  when smoothed, says "At the last Preview this marker's nucleus was below
+  threshold, so it made nothing — move it onto the nucleus or lower
+  Threshold under Brightness." A nucleus below **Smallest object**, or one
+  that vanished when smoothed, says "At the last Preview this marker's nucleus was below
   Smallest object or vanished when smoothed." While a result is on screen
   the list is hidden, so the line under the result counts them, for example
   "1 marker sat on stain below the threshold and made nothing". The marks
@@ -845,10 +876,9 @@ object and **Shift + click** adds another marker to the current one (see
 
 The source you pick stays picked for the next box or whole patch on this
 patch, after Close box, Done or Undo all; with a run picked, that run is
-read again when the box starts. A whole patch on Cells lists the other runs
-and Click markers: Nuclei masks picked on the box are set aside there and
-come back on the next box. It goes back to the default when you switch
-patch or run, or close the annotator.
+read again when the box starts. A whole patch on Cells lists the same
+sources as a box. It goes back to the default when you switch patch or run,
+or close the annotator.
 
 **The marker list.** Every object gets a row under Undo last and Remove
 all: *Object 412* and where its marker sits (z / y / x) — or, for an object
@@ -960,9 +990,13 @@ leaves that line off: Click markers are already picked there.
   voxels: *"Thin-faint ridges is slow on a whole patch: a Preview takes
   about 29 minutes here, most of it building the wall picture, and needs
   about 19 GB of memory. Membrane sheets is much faster."* On a box
-  of 2 million voxels or more it says *"Vessel ridges is slow on a box this
-  large: its wall picture is built again at every Preview. Membrane sheets
-  is much faster."*
+  of 2 million voxels or more it says so too. Up to 20 million voxels a box
+  keeps its wall picture like the whole patch, so the line shows until the
+  picture is kept: *"Vessel ridges is slow on a box this large: its wall
+  picture is built once, then kept for this box. Membrane sheets is much
+  faster."* Over 20 million voxels the picture is built at every Preview:
+  *"Vessel ridges is slow on a box this large: its wall picture is built
+  again at every Preview. Membrane sheets is much faster."*
 - **Tissue outline** — where new cells may grow; see *The tissue outline*
   below. A help line under it says what the pick does (it is hidden while a
   result is on screen).
@@ -977,9 +1011,10 @@ leaves that line off: Click markers are already picked there.
 
 ## How cells grow
 
-**Grow by**, under Advanced (Cells only), picks how each marker of a box
-becomes a cell. On a whole patch the row is hidden: the whole patch is
-filled to the walls in one step (see *Cells: the whole patch*).
+**Grow by**, under Advanced (Cells only), picks how each marker becomes a
+cell, in a box and on a whole patch alike (on a whole patch, Fill to the
+walls keeps tissue far from every marker empty; see *Cells: the whole
+patch*).
 
 The row's tooltip says it in short: *"Fill: the fill runs to the walls, the
 box edges and dark space, as before. Spread: each marker grows along its
@@ -997,7 +1032,7 @@ or merges neighbours."*
   a neighbour's space or out of the tissue, or when two neighbours come out
   merged into one object.
 
-With Spread picked on a box, three more rows appear:
+With Spread picked, three more rows appear:
 
 - **Wall cost** — *"How costly a bright membrane is to cross. Higher keeps
   cells inside their walls; too high and cells stop short. 0 ignores the
@@ -1037,11 +1072,14 @@ same and is not tried again.
 nothing to stop a cell in open background but its growth limit, and the
 Advanced help line says so: *"With no tissue outline and dark space not
 treated as outside, Spread grows each cell into open background until the
-growth limit stops it."* On a whole patch only the background stops a cell
-there, and the amber line under the first one says so: *"Dark space is not
+growth limit stops it."* On a whole patch filled to the walls only the
+background stops a cell there, and the amber line under the first one says
+so: *"Dark space is not
 treated as outside and there is no tissue outline, so cells grow a few µm
 into open background — tick it in Advanced, or pick a Tissue outline under
-Walls."*
+Walls."* On a whole patch under Spread that amber line gives the Spread
+sentence above instead (one line, not two that disagree), and the Advanced
+help line does not repeat it.
 
 ---
 
@@ -1059,16 +1097,21 @@ object you kept outside it is left as it is. Its three items:
   long as its objects are gone — also after the main Undo can no longer
   reach it (twenty edits later, or after Extract). Undo a Clear and its
   objects come back and leave the outline; when the last one comes back
-  while it is the pick, the pick falls back — to the shrink-wrap on a whole
-  patch, to No outline on a box — and the first line says so, for example
-  *"The objects you cleared are back, so there is no outline of them any
-  more — Tissue outline is now No outline (as before)."*
+  while it is the pick, the pick falls back to the shrink-wrap, on a box and
+  a whole patch alike, and the first line says so: *"The objects you cleared
+  are back, so there is no outline of them any more — Tissue outline is now
+  Shrink-wrap around the stain."*
 - **Shrink-wrap around the stain** — *"New cells stay inside a smooth
   outline around the stained tissue. Gaps narrower than Bridge gaps
   (Advanced) are closed over."* It is measured from every channel at once,
-  with **Dark below** deciding what counts as stain.
-- **No outline (as before)** — *"Only the box edges and dark space stop the
-  cells, as before."* The default on a box.
+  with **Dark below** deciding what counts as stain. The default on a box
+  and a whole patch alike, while no Clear is in force (with one, the
+  outline of the objects you cleared).
+- **No outline** — *"Only the box edges and dark space stop the cells."*
+  Pick it to grow cells the way boxes did before the outline: your pick is
+  kept for every box and the whole patch until you leave the tab (Accept
+  or Close box); the next session starts from the default again, like
+  every other control here.
 
 The outline is measured **once per patch**, in the background, over the
 whole patch — a box is always given its part of that one outline, so two
@@ -1135,12 +1178,10 @@ is the nuclear stain, pick Grow by ▸ Spread from each marker under Advanced
 and set Wall cost to 0 and Bridge gaps to 16 µm — walls read from nuclei
 squeeze cells down to their nuclei."* With Spread already picked it says
 only to set Wall cost to 0; without the shrink-wrap it does not name Bridge
-gaps (that row is not on the page then). On a whole patch, where Grow by and
-Wall cost are hidden, it sends you to a box: *"Only one channel. If it is
-the nuclear stain, walls read from nuclei squeeze cells down to their nuclei
-— press S, M or L for a box, then pick Grow by ▸ Spread from each marker and
-set Wall cost to 0 under Advanced."* Bridge gaps already starts at 16 µm
-there (10 µm with two channels or more), because one channel leaves wider
+gaps (that row is not on the page then). A whole patch says the same:
+Grow by, Wall cost and Bridge gaps are under Advanced there too. On a
+whole patch Bridge gaps already starts at 16 µm with one channel (10 µm
+with two channels or more), because one channel leaves wider
 dim gaps inside the tissue. Where Spread cannot run, the line is not shown.
 
 **Half size, on a Cells box too.** When the patch is open at half size and
@@ -1163,9 +1204,11 @@ On Nuclei the tissue outline is an option, **off by default**: nuclei come
 out exactly as before unless you pick one. Its card sits under the
 Brightness card (and under the Markers card when you place markers) with
 **Look for nuclei ▸ Anywhere in the box** or **At the markers I place**, on a
-box, before a result. It is not offered on **Inside each cell of …** (the
-cells there already keep each nucleus in) nor on a whole patch, and it is
-hidden while a result is on screen. It opens closed, its title saying the
+box or a whole patch, before a result. It is not offered on **Inside each
+cell of …** (the cells there already keep each nucleus in), and it is
+hidden while a result is on screen. With **Update as I click** on, the
+markers on a whole patch with an outline picked run the one-go way at each
+click (the quick way has no outline). It opens closed, its title saying the
 choice — *Tissue outline: none* — and, like the other cards, opening it
 closes the card that was open; on **Anywhere in the box** an open Tissue
 outline card folds the histogram (close it to see the histogram again).
@@ -1173,7 +1216,8 @@ outline card folds the histogram (close it to see the histogram again).
 The card has its own **Tissue outline** row with the same three items as on
 Cells, and its own **Show the tissue outline** tick: what you pick for
 Nuclei does not change Cells' pick, and the other way round. Its default is
-always **No outline (as before)** — it is never picked for you, and it goes
+always **No outline**, on a box and a whole patch alike — it is never picked
+for you, and it goes
 back to that when the session ends. What each item does is in its tooltip
 in the list:
 
@@ -1190,7 +1234,7 @@ in the list:
   field of nuclei is closed over into one piece and kept, but a nucleus on
   its own stays a small piece and is left out of the outline — so lone
   nuclei outside the crowd fall outside it.
-- **No outline (as before)** — *"Nothing is left out for lying outside the
+- **No outline** — *"Nothing is left out for lying outside the
   tissue, as before."*
 
 It is **one outline for both presets**: Nuclei and Cells ask for the same
@@ -1244,10 +1288,8 @@ Spacing is set — see *The spacing (Cells)*):
 
 - **Grow by**, and with Spread **Wall cost**, **Growth limit** and **New
   cells include the membrane at their edge** — see *How cells grow*. On a
-  whole patch the line *"A whole patch is filled to the walls from every
-  marker at once. Tissue far from every marker stays empty; to fill it,
-  click markers there too."* takes their place, with only
-  **New cells include the membrane at their edge** under it.
+  whole patch a line above them says what fills the patch under the Grow by
+  pick (see *Cells: the whole patch*).
 - **Shrink run objects** (shown with **Objects from run ▸ …**) — each object
   of the other run is shrunk by this before it becomes a marker, so
   neighbours do not touch. Objects too small to survive the shrinking are
@@ -1369,31 +1411,121 @@ microns, from Step 3's Spacing):
   tick on, Preview on a whole patch works the same way, and pressing it
   when the result already matches your markers does nothing. Turning the
   tick on or off can move a few voxels inside a nucleus you placed several
-  markers on (where two of them meet). In a Cells box of up to a million
+  markers on (where two of them meet). In a Cells box of up to 20 million
   voxels the cells are found again after every click; the first update of
   a box takes longest, because it also reads the walls and prepares the
-  box, and after it each click fills again only the part of the box it
-  changed; a Preview pressed when the result already matches your markers
-  and settings does nothing. Cells ▸ Click markers on a whole patch of up
-  to 20 million voxels is updated as you click too when the walls are
-  Membrane sheets or Intensity edges. It is then filled the way a box is:
+  box (on a large box it can take many seconds, and it cannot be stopped
+  once it runs), and after it each click fills again only the part of the
+  box it changed; a Preview pressed when the result already matches your
+  markers and settings does nothing. The box's edges count as outside, as
+  in a Preview (a box edge cuts through tissue). Cells ▸ Click markers on a
+  whole patch of up to 20 million voxels — the same limit — is updated as
+  you click too when the walls are Membrane sheets or Intensity edges. It
+  is then filled the way a box is:
   every marker fills to the walls, with no background marker, and **New
   cells include the membrane at their edge** is not applied. A cell at the
   edge of the patch fills to the edge. The first update prepares the patch
   once and takes longest: the grey line says *"Preparing the patch..."*
-  and then *"Building the wall picture..."* the first time, and a large
-  patch says so in amber (*"This patch is 18.0 million voxels; the first
-  update prepares it once and may take a while. Later clicks are
-  quick."*); later clicks are quick, and a Preview pressed when the result
-  already matches your markers does nothing. With the tick off, a Preview
+  and then *"Building the wall picture..."* the first time, and a patch of
+  more than 5 million voxels says so in amber until it is prepared (*"This
+  patch is 18.0 million voxels; the first update prepares it once and may
+  take a while. Later clicks are quick."*); later clicks are quick, and a
+  Preview pressed when the result already matches your markers does
+  nothing. With the tick off, a Preview
   fills it with a background marker instead, which keeps tissue far from
-  every marker empty — the two results can differ. With other walls, on a
-  larger patch, or on a patch the quick update cannot take, a whole patch
-  is not updated as you click (*"Press Preview to see the cells — this
-  patch is not updated as you click."*), nor is a box of more than a
-  million voxels (*"Press Preview to see the cells — this box is over 1
-  million voxels."*): the balls still appear as you click, and Preview
-  finds the cells.
+  every marker empty — the two results can differ. A box or a whole patch
+  of more than 20 million voxels is not updated as you click (*"Press
+  Preview to see the cells — this box is over 20 million voxels."*, or
+  *"Press Preview to see the cells — this patch is over 20 million
+  voxels."*), nor is a whole patch with other walls. Such a box, like such
+  a patch, also says in amber how long a Preview may take, since a Preview
+  fills it in one go: *"This box is 25.0 million voxels; a Preview may take
+  about a minute, longer on a slower computer. Stop acts between
+  steps."* (a rough figure from a timed box fill, by Grow by's pick). When the quick
+  update cannot take a click — flat spots in the walls, for example — a
+  box or a patch of up to a million voxels is filled whole instead (about
+  half a second), and the next click updates it again. Above a million
+  voxels that whole fill would take many seconds and could not be
+  stopped, so the click that finds out runs nothing, and so does a box
+  with walls other than Membrane sheets or Intensity edges, or with Grow
+  by on Spread from each marker (*"Press Preview to see the cells — this
+  box is not updated as you click."*, or *"Press Preview to see the cells
+  — this patch is not updated as you click."*). The flat spots can come
+  from the spacing: the tissue outline's smallest piece is a volume in
+  µm³, so at the default 1.0 µm, with the spacing never set, debris in the
+  dark around the tissue can count as tissue, and the region waits for
+  Preview where its true spacing might not. Then S1 says so instead:
+  *"Press Preview to see the cells — at the default 1.0 µm spacing this
+  box is not updated as you click; Set spacing… in the Session list may
+  change that."* (the same words for a patch). The balls still appear as
+  you click, and Preview finds the cells; once the settings, the walls or
+  the objects change, clicks update the cells again. The quick update is
+  itself made ready once per session, a few seconds after the first box
+  is placed: a click on a box or a patch of more than a million voxels
+  that comes before then waits — S1 says *"Preparing the fill — your
+  clicks will be drawn in a moment."*, the balls stay — and the cells
+  appear by themselves once it is ready, with every click placed
+  meanwhile. That wait is not the step aside above: no Preview is needed,
+  and a Preview pressed during it fills the region as usual and keeps
+  the clicks updating afterwards.
+  **The reason under the tick.** While a Cells click is not updated as
+  you click for any of these reasons, a short grey line directly under
+  **Update as I click** says why, in the words of the control that
+  changes it (the first line says the reason; this one names what lifts
+  it): *"Not live over
+  20 million — tick Always update as I click."*; *"Not live here: Wall type —
+  tick Always update as I click."* (walls other than Membrane sheets or
+  Intensity edges); *"Not live here: Grow by — tick Always update as I
+  click."* (Spread from each marker); *"Not live here: flat spots — tick
+  Always update as I click."*; *"Not live here: default spacing — Set
+  spacing… may help."* (the flat spots at the default 1.0 µm); *"Not live
+  here: the quick fill could not run — press Preview."* (it failed; the
+  console says why); and *"Preparing the fill…"* while the clicks wait.
+  The line is not there while your clicks are updated, with the tick off,
+  or while **Always update as I click** is on.
+- **Always update as I click** (Cells ▸ Click markers, shown only while
+  Update as I click is on; off by default, and off again every time napari
+  starts) — *"Runs the quick fill even where its flat spots could place a
+  few tied voxels differently from Preview, and where the quick fill cannot
+  run at all, redoes the region a moment after you stop clicking. That may
+  take minutes on a large region or a slow Wall type; the first line says
+  how long."* It
+  switches off the limits above, at two costs. **Flat spots:** where the
+  quick update would step aside for flat spots in the walls, it keeps
+  running instead. Where two cells grow into the same flat spot, a few
+  voxels there can go to the other cell than a Preview would give them; a
+  Preview pressed with the tick on still fills the region exactly (it does
+  not reuse the quick update's answer). **A slower update:** where
+  the quick update cannot run at all — walls other than Membrane sheets or
+  Intensity edges, Grow by on Spread from each marker, a box or a patch of
+  more than 20 million voxels, or a quick update that failed — the region
+  is filled whole, as a Preview fills it, about 0.7 s after your last
+  click. While it runs the first line says roughly how long it takes,
+  estimated from the region's size, its Wall type (Vessel ridges and
+  Thin-faint ridges build a slow wall picture, counted until it is kept
+  for the region) and Grow by: *"Updating the region — about a minute
+  here."* (a box of 4.2 million voxels with Vessel ridges took about a
+  minute), *"Updating the region — about 35 s here."*, or, under ten
+  seconds, *"Updating the region — this takes a few seconds here."* The
+  figure is rough, longer on a slower computer; the console prints how
+  long each update really took. Nothing on the page goes grey, **Stop**
+  stays live and stops it — and the result drawn for the earlier clicks
+  goes with it (press Preview, or click again, to fill the region).
+  A click or a setting changed while it runs makes that update stale: it
+  is cancelled (a fill to the walls is cut between its steps, Spread
+  between its tiles; the step in progress finishes first), and one more
+  update follows for everything placed meanwhile, reusing the wall picture
+  the cancelled update had built. A Preview pressed during or
+  after an update on the same markers and settings runs nothing — the
+  update is the Preview's own fill. None of the Press Preview lines above,
+  nor the line under the tick, appear while the tick is on; a region over
+  the Preview limit (100 million voxels) is not updated either way. The
+  quick update being made ready (*"Preparing the fill — your clicks will
+  be drawn in a moment."*) is still a short wait with the tick on: the
+  region is not filled whole meanwhile. Turning the tick on or off keeps
+  a box already prepared for the quick update, unless it was kept only
+  because of the tick (prepared despite flat spots, or the flat spots'
+  whole fill).
 
 ---
 
@@ -1437,8 +1569,9 @@ The bar tells you what kind of wait it is:
   itself, move to and fro.
 
 The preview runs in the background and the napari window stays usable. A
-Cells preview of a large box — near the 4-million-voxel limit — takes about
-12 to 20 seconds, which is why **Stop** exists. Stop throws the run away:
+Cells preview of a 4 million voxel box took about 12 to 20 seconds when it
+was measured; a larger box takes longer (up to the 100 million voxel
+limit), which is why **Stop** exists. Stop throws the run away:
 *"Stopped. Nothing from this box was added."* Nothing is written, and the
 box stays. While a preview runs, **Stop** is the one way out: **Close box**
 is grey until it has finished or stopped.
@@ -1661,9 +1794,11 @@ anyway** — nothing is refused and nothing is grey. An amber line under the
 first one says so: *"Spacing is the default 1.0 µm here — if your voxels are
 smaller, set their size with Set spacing… in the Session list, so the µm
 knobs mean what they say."* **Set spacing…** works while a box is placed,
-and keeps 1 / 1 / 1 too when your voxels really are 1.0 µm. On real voxels of about half a micron every micron setting then
-acts at about twice its size, and the fill leaks further into open space, so
-set it once. The line is not shown while a result is on screen; it comes
+and keeps 1 / 1 / 1 too when your voxels really are 1.0 µm. On real voxels of
+about half a micron every micron setting then acts at about half its size —
+the click balls, the gaps bridged and the reach into dark space are all
+smaller than the numbers say — and the fill can run further into open space,
+so set it once. The line is not shown while a result is on screen; it comes
 back when you set up the next Preview. With **Treat dark space as outside**
 unticked, the dark-space line takes its place and this one is in Advanced,
 under the Dark rows. Nuclei ▸ Anywhere in the box works in voxels and does
@@ -1671,11 +1806,11 @@ not need it. **Nuclei ▸ At the markers I place** does: its **Ball** is in
 microns, so it shows the same amber line before a result, and runs on the
 default anyway; on a whole patch over 20 million voxels the slow-patch line
 takes that place and the spacing line moves into Advanced. **Nuclei ▸
-Inside each cell and a Cells whole patch are
-different: they refuse at the default spacing** (see *Nuclei inside each
-cell of another run* and *Cells: the whole patch*), because all of their
-settings are in microns. On a Cells whole patch the amber spacing line is
-not shown: the first line says it.
+Inside each cell** and a **Cells whole patch** do the same: all of their
+settings are in microns, they run on the default, and the amber spacing line
+shows as on a box — in Advanced when another amber line (a slow patch, a
+half-size session) holds its place. Nothing in Add refuses because the
+spacing was never set.
 
 ---
 
@@ -1685,10 +1820,10 @@ The first line of the page always says why **Preview** is grey, and says it
 in amber — so does every refusal (a click that landed on an object, a box
 the batch is still working on). The common reasons:
 
-- **The box is over the limit (Cells).** *"This box is 5.2 million voxels;
-  the limit for cells is 4 million. Shrink it with Numbers… or pick S, M or
-  L."* Switching from Nuclei to Cells never resizes your box, so a large
-  Nuclei box can arrive here.
+- **The box is over the limit (Cells).** *"This box is 120.0 million
+  voxels; the limit for cells is 100 million. Shrink it with Numbers… or
+  pick S, M or L."* Switching from Nuclei to Cells never resizes your box,
+  so a large Nuclei box can arrive here.
 - **A channel is missing.** *"Pick the channel the nuclei are bright in, under
   Brightness."*, *"Pick the membrane channel under Walls."*, *"Pick the nuclei
   channel under Markers."* — or *"The nuclei and wall channels must be
@@ -1731,31 +1866,26 @@ the batch is still working on). The common reasons:
   does not start on top of an open Reshape, Refine, interpolation preview or
   merge, because rejecting that edit later would paste its old snapshot over
   the new object. Accept or reject it, then press Place box again.
-- **Inside each cell.** *"These settings are in µm, and this patch's spacing
-  is the 1.0 µm default — set its voxel size with Set spacing… in the
-  Session list first."* (only when the spacing was never set — see *The spacing*
-  above); *"That run has no cell in this box — move the box or pick another
+- **Inside each cell.** *"That run has no cell in this box — move the box or pick another
   run."* (on the whole patch: *"That run has no cell in this patch — pick
   another run."*); *"This channel cannot be used to find nuclei — the reason
   is under Look for nuclei."*; *"That run cannot be used on this patch — the reason is
   under Look for nuclei."* (the reason is in the card, where the help line
   was).
-- **Cells on a whole patch.** The spacing (above), and where the numba
+- **Cells on a whole patch.** Where the numba
   package is missing: *"Cells fills a whole patch only with the numba
   package, which is missing from this install. Use boxes."*; a patch over
   the size limit: *"This patch is 150.0 million voxels; a whole patch can
-  be filled up to 100.0 million. Press S, M or L for a box."*; with neither
-  a run nor Click markers picked under Markers: *"Pick a run or Click
-  markers under Markers ▸ From — a whole patch grows its cells from those
-  markers."*, or on a patch with no other run *"This patch has no other run
-  — pick Click markers under Markers ▸ From, or press S, M or L for a
-  box."*; while an earlier
+  be filled up to 100 million. Press S, M or L for a box."* (Nuclei ▸
+  Anywhere in the box on a whole patch has the same limit and says the
+  same); with nothing picked under Markers ▸ From: *"Pick a run, Nuclei
+  masks or Click markers under Markers ▸ From — a whole patch grows its
+  cells from those markers."*, or on a patch with no other run *"This patch
+  has no other run — pick Nuclei masks or Click markers under Markers ▸
+  From."*; while an earlier
   preview still finishes in the
   background: "An earlier preview is still finishing in the background.
   Wait for it to end, then press Preview again."
-- **Nuclei ▸ Anywhere in the box on a whole patch.** *"Anywhere in the box
-  runs on boxes — pick Inside each cell, or S, M or L."* (**At the markers
-  I place** works on a whole patch.)
 - **The tissue outline is still being measured.** *"Measuring the tissue
   outline…"* — Preview waits for it (see *The tissue outline*).
 - **Clear objects while something runs.** While a preview runs, while the
@@ -1767,9 +1897,11 @@ the batch is still working on). The common reasons:
 And after a Preview:
 
 - *"Nothing found — lower the threshold or grow the box."* (Nuclei.)
-- *"No marker sits on stain above the threshold — lower the threshold, or
-  move the markers onto the nuclei."* and *"Every marker now sits inside a
-  kept object — remove them and click in empty space."* (Nuclei ▸ At the
+- *"No marker sits on stain above the threshold — lower Threshold, or
+  move the markers onto the nuclei."* (the **Threshold** row of the
+  Brightness card; **Auto** puts it back at the automatic split) and
+  *"Every marker now sits inside a kept object — remove them and click in
+  empty space."* (Nuclei ▸ At the
   markers I place; each marker's row says why it made nothing, too.)
 - *"No nucleus was found inside that run's cells — check the channel, and
   Nucleus radius under Advanced."* and *"Nuclei were found, but every one
@@ -1853,8 +1985,9 @@ round: with any edit open, **Switch** and Add's own **Place box** and
 - Closing the annotator asks before it drops unaccepted work (except the
   title-bar ×, above).
 - *Connectivity* and the *Signal* choice are gone from Advanced.
-- Cells no longer refuses when Step 3's Spacing was never set: it runs on the
-  default 1.0 µm and says so in amber (see *The spacing (Cells)*).
+- Nothing in Add refuses when Step 3's Spacing was never set: Cells (a box
+  or the whole patch) and Nuclei ▸ Inside each cell run on the default
+  1.0 µm and say so in amber (see *The spacing (Cells)*).
 - On a Cells whole patch **Markers ▸ From** lists the other runs and Click
   markers, and the pick you had on the box comes back with the box; Place
   markers stays as it was. Preview greys before the

@@ -2461,7 +2461,10 @@ class EpiCycleWorkflowShell(QWidget):
         if shared and step_path and not self._same_path(shared, step_path):
             tooltip = f"This step: {step_path}\nShared workspace: {shared}"
         for index, (label, strip) in enumerate(zip(labels, strips)):
-            label.set_strip(*strip, tooltip=(tooltip if index == 0 else ""))
+            # the advisory's longer words, when its line has no room for them
+            label.set_strip(*strip, tooltip=(
+                tooltip if index == 0
+                else _workspace_facts.advisory_tooltip(strip[0])))
         for label in labels[len(strips):]:
             label.clear_strip()
 

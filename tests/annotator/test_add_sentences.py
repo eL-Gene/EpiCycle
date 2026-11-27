@@ -25,16 +25,18 @@ def test_box_clicks(n, want):
 
 def test_box_lines_and_millions():
     assert AP.box_line((100, 100, 100), preset="cells", empty_share=0.42) == (
-        "Box 100 × 100 × 100 voxels (1.0 million; the limit for cells is 4 "
+        "Box 100 × 100 × 100 voxels (1.0 million; the limit for cells is 100 "
         "million) · 42 % of it is empty space")
     assert AP.box_line((10, 10, 10), preset="nuclei", empty_share=1.0) == (
         "Box 10 × 10 × 10 voxels (0.1 million) · 100 % of it is empty space")
     # at or under the Cells limit {m} rounds DOWN; above it, UP -- a box
     # over the limit never reads as the limit (B2 fix pass LOW)
     assert AP.millions(3_999_999) == "3.9"
-    assert AP.millions(4_999_999) == "5.0"
-    assert AP.over_limit_line((200, 200, 200)).startswith(
-        "This box is 8.0 million voxels; the limit for cells is 4 million.")
+    assert AP.millions(99_999_999) == "99.9"
+    assert AP.millions(100_000_001) == "100.1"
+    assert AP.over_limit_line((500, 500, 500)).startswith(
+        "This box is 125.0 million voxels; the limit for cells is 100 "
+        "million.")
 
 
 @pytest.mark.parametrize("n,want", [
@@ -250,7 +252,7 @@ def test_the_inside_sentences_name_no_engine_word():
         "ADD_HELP_TWO", "ADD_WHOLE", "ADD_HELP_WHOLE", "ADD_S1_PATCH",
         "ADD_NOTE_PATCH_SLOW", "ADD_NOTE_HALFSIZE", "ADD_S1_NEEDS",
         "ADD_AMBER_BOX", "ADD_S1_GATHERING", "ADD_S1_IDLE",
-        "ADD_AMBER_ONE_CHANNEL_WHOLE", "ADD_HELP_GROWTH_LIMIT",
+        "ADD_AMBER_ONE_CHANNEL", "ADD_HELP_GROWTH_LIMIT",
         "ADD_S1_WHOLE_TOO_BIG", "ADD_SUM_ADVANCED_FILL",
         "ADD_S1_PARKED_REFUSED", "ADD_S1_WHOLE",
         "ADD_S1_RUN_NO_MARKERS", "ADD_NOTE_RIDGES"))]
@@ -277,12 +279,10 @@ def test_no_sentence_has_a_stray_brace():
 
 # --------------------------------------------------------------------------- #
 # live-shot fix F1 -- the spacing sentence names where it is really set
-# (the two refusals retired, the amber note took their place)
+# (every spacing refusal retired, the amber note took their place)
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("const", ["ADD_NOTE_DEFAULT_SPACING",
-                                   "ADD_NOTE_DEFAULT_SPACING_BOXED",
-                                   "ADD_S1_NEEDS_SPACING",
-                                   "ADD_S1_NEEDS_SPACING_BOXED"])
+                                   "ADD_NOTE_DEFAULT_SPACING_BOXED"])
 def test_the_voxel_sentences_point_at_set_spacing(const):
     """The sentences send the user to Set spacing… on the Session list: it
     keeps a voxel size per patch (1 / 1 / 1 too, which an OK of QC Settings
@@ -426,9 +426,11 @@ def test_the_whole_patch_fill_sentences_word_for_word():
     """A Cells whole patch fills to the walls with a background marker: its
     words, and the growth words that changed with it."""
     assert AP.ADD_HELP_WHOLE_FILL == (
-        "A whole patch is filled to the walls from every marker at once. "
-        "Tissue far from every marker stays empty; to fill it, click markers "
-        "there too.")
+        "Filled from every marker at once; far tissue stays empty (click "
+        "markers there). A patch edge is the end of the data; a box edge "
+        "cuts through tissue.")
+    # ... the one way a whole patch differs from a box, said with its reason
+    assert AP.ADD_HELP_WHOLE_FILL.endswith(AP.ADD_HELP_WHOLE_FILL_WHY)
     # the same slot on a whole patch filled as you click
     assert AP.ADD_HELP_WHOLE_FILL_LIVE == (
         "Filled as you click, the way a box is: tissue far from every marker "
@@ -444,7 +446,7 @@ def test_the_whole_patch_fill_sentences_word_for_word():
         "click.")
     assert AP.ADD_S1_WHOLE_TOO_BIG == (
         "This patch is {m} million voxels; a whole patch can be filled up to "
-        "{k} million. Press S, M or L for a box.")
+        "{k}. Press S, M or L for a box.")
     # a Preview while an earlier one still finishes in the background (its
     # thread could not be waited for): Stop is grey then, so not named
     assert AP.ADD_S1_PARKED_REFUSED == (
@@ -454,11 +456,13 @@ def test_the_whole_patch_fill_sentences_word_for_word():
     assert AP.ADD_SUM_ADVANCED_FILL == "filled to the walls · membrane included"
     assert AP.ADD_SUM_ADVANCED_FILL_NO_MEMBRANE == (
         "filled to the walls · membrane left out")
-    assert AP.ADD_AMBER_ONE_CHANNEL_WHOLE == (
-        "Only one channel. If it is the nuclear stain, walls read from nuclei "
-        "squeeze cells down to their nuclei — press S, M or L for a box, then "
-        "pick Grow by ▸ Spread from each marker and set Wall cost to 0 under "
-        "Advanced.")
+    # Grow by and Wall cost are on a whole patch now: its one-channel note
+    # names them there, as on a box (no detour through a box)
+    assert not hasattr(AP, "ADD_AMBER_ONE_CHANNEL_WHOLE")
+    assert AP.one_channel_note(spread=False, shrink=False, whole=True) == (
+        "Only one channel. If it is the nuclear stain, pick Grow by ▸ Spread "
+        "from each marker under Advanced and set Wall cost to 0 — walls read "
+        "from nuclei squeeze cells down to their nuclei.")
     assert AP.ADD_HELP_GROWTH_LIMIT == (
         "How far a cell may spread: a budget, not a distance. Plain cytoplasm "
         "uses it up about 6 µm from the marker; a bright membrane costs "
@@ -494,6 +498,7 @@ def test_the_whole_patch_fill_sentences_word_for_word():
     for v in (AP.ADD_HELP_WHOLE_FILL, AP.ADD_HELP_WHOLE_FILL_LIVE,
               AP.ADD_S1_WHOLE_TOO_BIG,
               AP.ADD_SUM_ADVANCED_FILL, AP.ADD_SUM_ADVANCED_FILL_NO_MEMBRANE,
-              AP.ADD_AMBER_ONE_CHANNEL_WHOLE, AP.ADD_WHOLE_TIP,
+              AP.one_channel_note(spread=False, shrink=False, whole=True),
+              AP.ADD_WHOLE_TIP,
               AP.ADD_S1_PARKED_REFUSED):
         assert "reach" not in v and "µm" not in v, v

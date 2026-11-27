@@ -263,6 +263,9 @@ def add_run_to_state_json(
 
     ws = Path(workspace)
     state_path = _step2_paths.state_json_path(ws)
+    # A folder with no run list yet: its first run is always the active one
+    # (the envelope must never name an active run that does not exist).
+    first_list = not state_path.is_file()
 
     # Load existing v3 or create a fresh envelope
     v3 = _load_v3_or_empty(state_path)
@@ -291,7 +294,7 @@ def add_run_to_state_json(
             )
             apply_overrides_to_run_state(runs[slug], overrides)
 
-    if activate:
+    if activate or first_list:
         v3["active_run_id"] = slug
 
     _atomic_write_json(state_path, v3)
@@ -329,6 +332,17 @@ def set_active_run_in_state_json(
             f"run {slug!r} not in step2_state.json (known: {sorted((runs or {}).keys())})"
         )
     v3["active_run_id"] = slug
+    _atomic_write_json(state_path, v3)
+    return v3
+
+
+def clear_active_run_in_state_json(workspace: Path | str) -> Dict[str, Any]:
+    """Set ``active_run_id = ""`` (no run active) in step2_state.json; every
+    run stays listed.  Used when the switch to a run just made could not be
+    finished, so the run list and Step 2 agree that no run is active."""
+    state_path = _step2_paths.state_json_path(Path(workspace))
+    v3 = _load_v3_or_empty(state_path)
+    v3["active_run_id"] = ""
     _atomic_write_json(state_path, v3)
     return v3
 
@@ -1419,20 +1433,89 @@ def apply_overrides_to_run_state(
         # is the worse failure mode, so we drop it instead.
 
 
+class Step2StateUnreadableError(RuntimeError):
+    """``step2_state.json`` exists but cannot be read as a run list.
+
+    Raised instead of starting an empty run list: writing an empty one over
+    the unreadable file would lose every run's records.  The unreadable file
+    stays where it is, and a byte copy is set aside beside it first.
+    """
+
+
+def _copy_aside(state_path: Path) -> Optional[Path]:
+    """Copy ``state_path`` to ``<name>.corrupt-<ts>`` (best effort).
+
+    One copy per content: when a copy with the same bytes is already beside
+    the file it is returned and no new one is made (every refused attempt
+    would otherwise add one).
+    """
+    return copy_unreadable_state_aside(state_path)
+
+
+def copy_unreadable_state_aside(state_path: Path) -> Optional[Path]:
+    """Set a byte copy of an unreadable ``step2_state.json`` aside, once.
+
+    Returns the copy (an existing identical one, or a new
+    ``<name>.corrupt-<ts>``), or None when the file is gone or the copy
+    failed.  The file itself is never moved or changed.
+    """
+    try:
+        state_path = Path(state_path)
+        data = state_path.read_bytes()
+        for old in sorted(state_path.parent.glob(f"{state_path.name}.corrupt-*")):
+            try:
+                if old.is_file() and old.read_bytes() == data:
+                    return old
+            except OSError:
+                continue
+    except OSError:
+        return None
+    try:
+        import shutil
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        dst = state_path.with_name(f"{state_path.name}.corrupt-{ts}")
+        shutil.copy2(str(state_path), str(dst))
+        return dst
+    except Exception:
+        return None
+
+
 def _load_v3_or_empty(state_path: Path) -> Dict[str, Any]:
-    """Load v3 from disk, or return a minimal empty v3 envelope."""
+    """Load v3 from disk, or return a minimal empty v3 envelope.
+
+    The empty envelope is returned only when there is no file.  A file that
+    cannot be read, is not a JSON object, or whose ``runs`` is not a table
+    raises ``Step2StateUnreadableError`` after a copy is set aside; it is
+    never replaced by an empty run list.
+    """
     if state_path.is_file():
         try:
             with open(state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                # Ensure required keys exist (defensive against partial files)
-                data.setdefault("schema_version", 3)
-                data.setdefault("runs", {})
-                data.setdefault("active_run_id", _step2_paths.DEFAULT_RUN_ID)
-                return data
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
+            # The same rule as the controller's: a run list must HAVE a
+            # ``runs`` table (a file without one is not a run list).
+            ok = isinstance(data, dict) and isinstance(data.get("runs"), dict)
+            error = None if ok else ValueError("not a run list")
+        except OSError:
+            # A file that could not be OPENED just now (a lock held by a
+            # backup, a sync tool or a virus scanner) is not a damaged one:
+            # it is never copied aside; the caller's write fails and is
+            # tried again.
+            raise
+        except (json.JSONDecodeError, ValueError) as exc:
+            data, error = None, exc
+        if error is not None:
+            copy = _copy_aside(state_path)
+            raise Step2StateUnreadableError(
+                f"{state_path} could not be read ({type(error).__name__}: "
+                f"{error}); it was left as it is"
+                + (f" and copied to {copy}" if copy else "")
+            )
+        # Ensure required keys exist (defensive against partial files)
+        data.setdefault("schema_version", 3)
+        data.setdefault("runs", {})
+        data.setdefault("active_run_id", _step2_paths.DEFAULT_RUN_ID)
+        return data
     return {
         "schema_version": 3,
         "active_run_id": _step2_paths.DEFAULT_RUN_ID,

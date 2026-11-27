@@ -899,6 +899,371 @@ class TestLoadColumn:
         widget.voxel_z_spin.setValue(3.5)
         assert "hand" in widget.voxel_source_label.text()
 
+    def test_voxel_source_type_follows_the_label(self, widget):
+        """The type the export stores is the type the panel shows."""
+        assert widget.voxel_source_type() == "unknown"
+        widget.apply_voxel_size(2.0, 0.5, 0.5, source="detected")
+        assert widget.voxel_source_type() == "detected"
+        widget.voxel_z_spin.setValue(3.5)                 # a hand edit
+        assert widget.voxel_source_type() == "user"
+        widget.apply_voxel_size(3.5, 0.5, 0.5, source="user")
+        assert widget.voxel_source_type() == "user"
+        widget.set_detected_voxel_size(2.0, 0.5, 0.5)
+        widget.voxel_reset_button.click()                 # back to the header
+        assert widget.voxel_source_type() == "detected"
+        widget.set_detected_voxel_size(1.0, 1.0, 1.0)
+        widget.voxel_reset_button.click()
+        assert widget.voxel_source_type() == "unknown"
+
+    def test_z_assumed_from_xy_is_said(self, widget):
+        widget.set_detected_voxel_size(0.5, 0.5, 0.5)
+        widget.apply_voxel_size(0.5, 0.5, 0.5, source="detected")
+        widget.set_voxel_z_assumed(True)
+        assert widget.voxel_source_label.text() == (
+            "detected from file (Z assumed = XY)")
+        # it belongs to the detected baseline: a reset keeps it ...
+        widget.voxel_z_spin.setValue(2.0)
+        widget.voxel_reset_button.click()
+        assert "Z assumed" in widget.voxel_source_label.text()
+        # ... a user value never shows it, and a new baseline clears it
+        widget.apply_voxel_size(2.0, 0.5, 0.5, source="user")
+        assert "Z assumed" not in widget.voxel_source_label.text()
+        widget.set_detected_voxel_size(2.0, 0.5, 0.5)
+        widget.apply_voxel_size(2.0, 0.5, 0.5, source="detected")
+        assert widget.voxel_source_label.text() == "detected from file"
+
+    def test_recorded_value_notes(self, widget):
+        """A recorded detected value says when the file cannot be read now,
+        or what the file says now; the type stays "detected"."""
+        widget.set_detected_voxel_size(2.0, 0.5, 0.5)
+        widget.apply_voxel_size(2.0, 0.5, 0.5, source="detected")
+        widget.set_voxel_detected_note("recorded")
+        assert widget.voxel_source_label.text() == "recorded for this source"
+        assert widget.voxel_source_type() == "detected"
+        widget.set_voxel_detected_note((1.0, 0.2, 0.2))
+        text = widget.voxel_source_label.text()
+        assert text == ("detected from file · file now says "
+                        "1/0.2/0.2 µm, ↺ to use it")
+        assert "\n" not in text and widget.voxel_source_label.toolTip()
+        assert widget.voxel_source_type() == "detected"
+        # a hand edit or a new baseline drops the note
+        widget.voxel_z_spin.setValue(3.0)
+        assert "file now says" not in widget.voxel_source_label.text()
+        assert widget.voxel_source_label.toolTip() == ""
+        widget.set_detected_voxel_size(2.0, 0.5, 0.5)
+        widget.apply_voxel_size(2.0, 0.5, 0.5, source="detected")
+        assert widget.voxel_source_label.text() == "detected from file"
+
+    def test_recorded_value_notes_say_z_assumed(self, widget):
+        """A recorded value whose Z was assumed says so beside its note, and
+        the tooltip says how to keep a Z as yours."""
+        widget.set_detected_voxel_size(0.2, 0.2, 0.2)
+        widget.apply_voxel_size(0.2, 0.2, 0.2, source="detected")
+        widget.set_voxel_z_assumed(True)
+        widget.set_voxel_detected_note("recorded")
+        assert widget.voxel_source_label.text() == (
+            "Z assumed · recorded for this source")
+        assert "press Enter in the Z box" in \
+            widget.voxel_source_label.toolTip()
+        widget.set_voxel_detected_note((1.0, 0.2, 0.2))
+        # the mark belongs to the recorded value, so it comes first, before
+        # what the file says now
+        assert widget.voxel_source_label.text() == (
+            "Z assumed · file now says 1/0.2/0.2 µm, ↺ to use it")
+        widget.set_voxel_detected_note(None)
+        assert widget.voxel_source_label.text() == (
+            "detected from file (Z assumed = XY)")
+        assert widget.voxel_source_label.toolTip() == (
+            "Z was set equal to the pixel size. Type the Z step, or press "
+            "Enter in the Z box to confirm it.")
+
+    def test_over_the_ceiling_note(self, widget):
+        widget.set_detected_voxel_size(352.8, 352.8, 352.8)
+        widget.apply_voxel_size(352.8, 352.8, 352.8, source="detected")
+        widget.set_voxel_z_assumed(True)
+        widget.set_voxel_over_ceiling(True)
+        # one sentence: no "(Z assumed = XY)" for a value that is not kept
+        assert widget.voxel_source_label.text() == (
+            "read from file: a pixel size over 50 µm, likely print "
+            "resolution — not recorded; type the real values")
+        # nothing is kept, so there is no Z to confirm
+        assert widget.voxel_source_label.toolTip() == ""
+        widget.set_detected_voxel_size(2.0, 0.5, 0.5)       # a new baseline
+        widget.apply_voxel_size(2.0, 0.5, 0.5, source="detected")
+        assert widget.voxel_source_label.text() == "detected from file"
+
+    def _flagged(self, widget, monkeypatch):
+        calls = {"confirmed": 0, "edited": 0}
+        monkeypatch.setattr(
+            widget.controller, "on_voxel_z_confirmed",
+            lambda: calls.__setitem__("confirmed", calls["confirmed"] + 1),
+            raising=False)
+        monkeypatch.setattr(
+            widget.controller, "on_voxel_edited",
+            lambda: calls.__setitem__("edited", calls["edited"] + 1),
+            raising=False)
+        widget.set_detected_voxel_size(0.2, 0.2, 0.2)
+        widget.apply_voxel_size(0.2, 0.2, 0.2, source="detected")
+        widget.set_voxel_z_assumed(True)
+        return calls
+
+    def test_confirming_an_assumed_z_with_the_same_number(
+            self, widget, monkeypatch):
+        """A key on the Z spin, no change of number, then editingFinished:
+        the assumed Z is confirmed as the user's."""
+        from qtpy.QtCore import QEvent
+        from qtpy.QtGui import QKeyEvent
+        calls = self._flagged(widget, monkeypatch)
+        widget.eventFilter(widget.voxel_z_spin, QKeyEvent(
+            QEvent.KeyPress, Qt.Key_Up, Qt.NoModifier))
+        widget.voxel_z_spin.editingFinished.emit()
+        assert calls == {"confirmed": 1, "edited": 0}
+        assert widget.voxel_source_type() == "user"
+        assert "Z assumed" not in widget.voxel_source_label.text()
+
+    def test_enter_on_an_unchanged_z_confirms_it(self, widget, monkeypatch):
+        """Enter re-reads the spin's text (Qt then reports the value as
+        changed): with the number unchanged it is a confirm, said as any
+        saved value of yours."""
+        from qtpy.QtTest import QTest
+        calls = self._flagged(widget, monkeypatch)
+        QTest.keyClick(widget.voxel_z_spin, Qt.Key_Return)
+        assert calls == {"confirmed": 1, "edited": 0}
+        assert widget.voxel_source_type() == "user"
+        assert widget.voxel_source_label.text() == (
+            "your value · ↺ to restore detected")
+
+    def test_tabbing_through_the_z_box_does_not_confirm(
+            self, widget, monkeypatch, app):
+        """A real spin box with real focus: Tab into Z, Tab out -- no
+        confirm; then Enter in it -- a confirm."""
+        from qtpy.QtTest import QTest
+        from qtpy.QtWidgets import QApplication
+        calls = self._flagged(widget, monkeypatch)
+        widget.show()
+        widget.activateWindow()
+        app.processEvents()
+        z = widget.voxel_z_spin
+        widget.voxel_y_spin.setFocus()
+        app.processEvents()
+        QTest.keyClick(QApplication.focusWidget() or widget.voxel_y_spin,
+                       Qt.Key_Backtab)                  # back into Z
+        app.processEvents()
+        if QApplication.focusWidget() is not z:
+            z.setFocus()
+            app.processEvents()
+        assert QApplication.focusWidget() is z
+        QTest.keyClick(z, Qt.Key_Tab)                   # out of Z
+        app.processEvents()
+        assert QApplication.focusWidget() is not z
+        assert calls == {"confirmed": 0, "edited": 0}
+        assert widget.voxel_source_type() == "detected"
+        z.setFocus()
+        app.processEvents()
+        QTest.keyClick(z, Qt.Key_Return)
+        assert calls == {"confirmed": 1, "edited": 0}
+
+    @pytest.mark.parametrize("key", ["Key_Tab", "Key_Backtab", "Key_Shift",
+                                     "Key_Control", "Key_Alt"])
+    def test_a_key_that_does_not_act_on_z_is_no_touch(self, widget, key):
+        from qtpy.QtCore import QEvent
+        from qtpy.QtGui import QKeyEvent
+        widget.eventFilter(widget.voxel_z_spin, QKeyEvent(
+            QEvent.KeyPress, getattr(Qt, key), Qt.NoModifier))
+        assert widget._z_touched is False
+
+    @pytest.mark.parametrize("key", ["Key_Return", "Key_Enter", "Key_5",
+                                     "Key_Backspace", "Key_Up", "Key_Period"])
+    def test_a_key_that_acts_on_z_is_a_touch(self, widget, key):
+        from qtpy.QtCore import QEvent
+        from qtpy.QtGui import QKeyEvent
+        widget.eventFilter(widget.voxel_z_spin, QKeyEvent(
+            QEvent.KeyPress, getattr(Qt, key), Qt.NoModifier))
+        assert widget._z_touched is True
+
+    def test_imagejs_default_depth_is_said_in_the_tooltip(self, widget):
+        widget.set_detected_voxel_size(1.0, 0.2, 0.2)
+        widget.apply_voxel_size(1.0, 0.2, 0.2, source="detected")
+        widget.set_voxel_z_assumed(True)          # Z not measured by the file
+        widget.set_voxel_z_default_depth(True, unit="um")
+        assert widget.voxel_source_label.text() == (
+            "detected from file (Z assumed)")
+        assert widget.voxel_source_label.toolTip() == (
+            "The file records no slice spacing, so Z is ImageJ's default of "
+            "1 µm. If your slices are a different distance apart, type the "
+            "Z step; if 1 µm is right, press Enter in the Z box to confirm "
+            "it.")
+        # it survives the recorded-value notes
+        widget.set_voxel_detected_note("recorded")
+        assert "ImageJ's default of 1 µm" in \
+            widget.voxel_source_label.toolTip()
+        widget.set_voxel_detected_note((2.0, 0.2, 0.2))
+        assert "ImageJ's default of 1 µm" in \
+            widget.voxel_source_label.toolTip()
+        widget.set_detected_voxel_size(2.0, 0.2, 0.2)     # a new baseline
+        widget.apply_voxel_size(2.0, 0.2, 0.2, source="detected")
+        assert widget.voxel_source_label.toolTip() == ""
+
+    def test_imagejs_default_depth_names_the_files_unit(self, widget):
+        widget.set_detected_voxel_size(1000.0, 200.0, 200.0)   # a mm file
+        widget.apply_voxel_size(1000.0, 200.0, 200.0, source="detected")
+        widget.set_voxel_z_assumed(True)
+        widget.set_voxel_z_default_depth(True, unit="mm")
+        assert "ImageJ's default of 1 mm." in \
+            widget.voxel_source_label.toolTip()
+        widget.set_voxel_z_default_depth(True)                 # no unit known
+        assert "ImageJ's default of 1 unit." in \
+            widget.voxel_source_label.toolTip()
+
+    def test_a_z_filled_from_xy_keeps_its_own_words(self, widget):
+        widget.set_detected_voxel_size(0.2, 0.2, 0.2)
+        widget.apply_voxel_size(0.2, 0.2, 0.2, source="detected")
+        widget.set_voxel_z_assumed(True)
+        assert widget.voxel_source_label.text() == (
+            "detected from file (Z assumed = XY)")
+
+    def test_the_files_new_value_with_an_assumed_z(self, widget):
+        widget.set_detected_voxel_size(0.2, 0.2, 0.2)
+        widget.apply_voxel_size(0.2, 0.2, 0.2, source="detected")
+        widget.set_voxel_z_assumed(True)
+        widget.set_voxel_detected_note((0.3, 0.3, 0.3), z_assumed=True)
+        assert widget.voxel_source_label.text() == (
+            "Z assumed · file now says 0.3 × 0.3 µm (Z assumed), ↺ to use it")
+
+    def test_enter_over_the_ceiling_saves_nothing(self, widget, monkeypatch):
+        from qtpy.QtTest import QTest
+        calls = self._flagged(widget, monkeypatch)
+        # the boxes keep the unknown default; the line says why
+        widget.set_detected_voxel_size(1.0, 1.0, 1.0)
+        widget.apply_voxel_size(1.0, 1.0, 1.0, source="unknown")
+        widget.set_voxel_over_ceiling(True)
+        assert widget.voxel_source_label.text().startswith(
+            "read from file: a pixel size over 50")
+        assert "#d4a843" in widget.voxel_source_label.styleSheet()
+        QTest.keyClick(widget.voxel_z_spin, Qt.Key_Return)
+        QTest.keyClick(widget.voxel_y_spin, Qt.Key_Return)
+        assert calls == {"confirmed": 0, "edited": 0}
+        assert widget.voxel_source_type() == "unknown"
+        assert widget.voxel_source_label.text().startswith(
+            "read from file: a pixel size over 50")
+        # a real change is still saved, and then the line is the user's
+        widget.voxel_z_spin.setValue(2.0)
+        widget.voxel_z_spin.editingFinished.emit()
+        assert calls["edited"] == 1
+        assert "over 50" not in widget.voxel_source_label.text()
+
+    def test_the_headers_exact_print_value_typed_in_is_saved(
+            self, widget, monkeypatch):
+        """The boxes never held the header's value, so typing it in is an
+        edit like any other (it is yours)."""
+        calls = self._flagged(widget, monkeypatch)
+        widget.set_detected_voxel_size(1.0, 1.0, 1.0)
+        widget.apply_voxel_size(1.0, 1.0, 1.0, source="unknown")
+        widget.set_voxel_over_ceiling(True)
+        widget.voxel_y_spin.setValue(352.778)
+        widget.voxel_y_spin.editingFinished.emit()
+        assert calls["edited"] == 1
+
+    def test_a_recorded_value_whose_file_now_gives_a_print_dpi(self, widget):
+        widget.set_detected_voxel_size(2.0, 0.5, 0.5)
+        widget.apply_voxel_size(2.0, 0.5, 0.5, source="detected")
+        widget.set_voxel_over_ceiling(True)
+        widget.set_voxel_detected_note("recorded")
+        assert widget.voxel_source_label.text() == (
+            "recorded for this source · the file now says a pixel size over "
+            "50 µm, likely print resolution")
+        assert "#d4a843" in widget.voxel_source_label.styleSheet()
+
+    def test_a_z_step_out_of_range_is_said(self, widget):
+        widget.set_detected_voxel_size(1.0, 1.0, 1.0)
+        widget.apply_voxel_size(1.0, 1.0, 1.0, source="unknown")
+        widget.set_voxel_z_out_of_range(5000.0)
+        assert widget.voxel_source_label.text() == (
+            "the file's Z step (5000 µm) is out of range — type the values")
+        assert "#d4a843" in widget.voxel_source_label.styleSheet()
+        widget.set_voxel_z_out_of_range(None)
+        assert widget.voxel_source_label.text().startswith("— unknown")
+
+    def test_a_typed_value_over_the_ceiling_says_so_and_is_kept(
+            self, widget, monkeypatch):
+        calls = self._flagged(widget, monkeypatch)
+        widget.set_detected_voxel_size(1.0, 1.0, 1.0)
+        widget.apply_voxel_size(2.0, 352.8, 352.8, source="user")
+        widget.set_voxel_over_ceiling(True)
+        assert widget.voxel_source_label.text() == (
+            "your value is over 50 µm — likely a print resolution; type the "
+            "real values")
+        assert "#d4a843" in widget.voxel_source_label.styleSheet()
+        # Enter on it is an ordinary save of your value, never relabelled
+        # as read from the file
+        from qtpy.QtTest import QTest
+        QTest.keyClick(widget.voxel_z_spin, Qt.Key_Return)
+        assert widget.voxel_source_type() == "user"
+        assert not widget.voxel_source_label.text().startswith(
+            ("detected from file", "read from file"))
+
+    def test_a_value_typed_back_after_a_save_is_saved(self, widget,
+                                                      monkeypatch):
+        """After a saved edit, the spins' saved values are the reference: a
+        value typed back to the header's is a change, and it is saved."""
+        calls = self._flagged(widget, monkeypatch)
+        widget.set_detected_voxel_size(352.8, 352.8, 352.8)
+        widget.apply_voxel_size(352.8, 352.8, 352.8, source="detected")
+        widget.set_voxel_over_ceiling(True)
+        widget.voxel_z_spin.setValue(2.0)
+        widget.voxel_z_spin.editingFinished.emit()
+        widget.voxel_z_spin.setValue(352.8)
+        widget.voxel_z_spin.editingFinished.emit()
+        assert calls["edited"] == 2
+
+    def test_a_focus_out_alone_does_not_confirm(self, widget, monkeypatch):
+        calls = self._flagged(widget, monkeypatch)
+        widget.voxel_z_spin.editingFinished.emit()           # tabbed through
+        assert calls == {"confirmed": 0, "edited": 0}
+        assert widget.voxel_source_type() == "detected"
+
+    def test_a_restore_clears_an_earlier_touch(self, widget, monkeypatch):
+        from qtpy.QtCore import QEvent
+        from qtpy.QtGui import QKeyEvent
+        calls = self._flagged(widget, monkeypatch)
+        widget.eventFilter(widget.voxel_z_spin, QKeyEvent(
+            QEvent.KeyPress, Qt.Key_Up, Qt.NoModifier))
+        assert widget._z_touched is True
+        widget.apply_voxel_size(0.2, 0.2, 0.2, source="detected")  # restore
+        widget.set_voxel_z_assumed(True)
+        widget.voxel_z_spin.editingFinished.emit()
+        assert calls["confirmed"] == 0
+
+    def test_a_changed_z_goes_the_edit_path(self, widget, monkeypatch):
+        calls = self._flagged(widget, monkeypatch)
+        widget.voxel_z_spin.setValue(1.5)                    # dirty
+        widget.voxel_z_spin.editingFinished.emit()
+        assert calls == {"confirmed": 0, "edited": 1}
+
+    def test_no_confirm_without_an_assumed_z(self, widget, monkeypatch):
+        from qtpy.QtCore import QEvent
+        from qtpy.QtGui import QKeyEvent
+        calls = self._flagged(widget, monkeypatch)
+        widget.set_voxel_z_assumed(False)
+        widget.eventFilter(widget.voxel_z_spin, QKeyEvent(
+            QEvent.KeyPress, Qt.Key_Up, Qt.NoModifier))
+        widget.voxel_z_spin.editingFinished.emit()
+        assert calls == {"confirmed": 0, "edited": 0}
+        assert widget.voxel_source_type() == "detected"
+
+    def test_voxel_subtitle_says_what_the_spacing_does(self, widget):
+        """It scales the viewer and is recorded with each patch; the old
+        subtitle said the opposite of both."""
+        from qtpy.QtWidgets import QLabel
+        texts = [lb.text() for lb in widget.findChildren(QLabel)]
+        assert not any("never applied to the viewer" in t for t in texts)
+        sub = [t for t in texts if t.startswith("Physical spacing")]
+        assert len(sub) == 1
+        assert "viewer" in sub[0] and "each patch you extract" in sub[0]
+
+    def test_voxel_help_button_is_wired(self, widget):
+        assert "step1_load_voxel.md" in widget._help_guides
+
     def test_aspect_note_reports_anisotropy(self, widget):
         widget.voxel_z_spin.setValue(2.0)
         assert "coarser" in widget.voxel_aspect_label.text()

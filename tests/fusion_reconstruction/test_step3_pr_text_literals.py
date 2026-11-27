@@ -117,6 +117,10 @@ SCOPE = {
         "_memory_writes_blocked", "_remember_run_channels",
         "_remember_run_specks", "_apply_run_memory",
         "_restore_start_from_choice", "_one_channel_patches",
+        # a run with nothing remembered or recorded: seeded from its model
+        "_seed_channels_from_model", "_log_seed_channels",
+        "_reseed_channels_after_pick", "_trained_codes_per_view",
+        "_seed_outgoing_run_memory",
         # the Patches rows' eye, the row menu and the prediction window
         "_pr_has_made_by", "_on_pr_eye", "_prediction_refusal",
         "_live_prediction_windows", "_on_show_prediction",

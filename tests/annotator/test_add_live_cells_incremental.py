@@ -9,7 +9,9 @@ let go when that key changes, at Accept, a Clear, Close box, a patch
 switch, the end of the session and when "Update as I click" goes off.  A
 Spread pick or a ridge wall never hands it; a run that cannot use it (not
 compiled yet, flat spots, a failure) is the full run, unchanged on the
-page.  One console line per run says how it ran.
+page -- on a live click only on a box at or under
+``ADD_LIVE_FULL_RUN_MAX_VOXELS``, as the fixture's is (over it the click
+is refused instead).  One console line per run says how it ran.
 """
 
 from __future__ import annotations

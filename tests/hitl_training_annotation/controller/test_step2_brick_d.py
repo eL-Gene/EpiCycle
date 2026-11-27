@@ -96,6 +96,9 @@ def _make_predict_ctrl(*, manager=None):
         "patch1_XY_40", np.zeros((2, 8, 8), dtype=np.uint16),
     )
     ctrl._adjust_channels_for_input = lambda stack: None
+    # past the run gate: these tests drive Predict itself, not the
+    # question a folder with no run asks first
+    ctrl._require_run = lambda _action: True
     ctrl._confirm_resegment = lambda label: True
     ctrl._can_show_modal = lambda: True
 
@@ -986,6 +989,9 @@ def _arm_import_ctrl(monkeypatch, tmp_path):
     ctrl._get_run_display_name = lambda rid: rid
     ctrl._begin_busy_calls = []
     monkeypatch.setattr(_step2_paths, "is_new_layout_state", lambda ws: True)
+    # past the run gate: these tests drive the import's failure reports,
+    # not the question a folder with no run asks first
+    ctrl._require_run = lambda _action: True
 
     shown = []
     ctrl._show_modal_error = lambda t, h, d="": shown.append((t, h, d))
@@ -1155,6 +1161,10 @@ def test_busy_is_reached_from_the_run_switch(monkeypatch, tmp_path):
     ctrl.viewer = _FakeViewer()
     ctrl.working_dir = str(tmp_path)
     ctrl.active_run_id = "default"
+    # the target run has its folder and is in the run list (a switch to a
+    # run with no folder is refused before the busy state)
+    _run_management.create_run_on_disk(tmp_path, "other", display_name="other")
+    _run_management.add_run_to_state_json(tmp_path, "other")
     ctrl._run_switch_in_flight = False
     ctrl._get_run_display_name = lambda rid: rid
     ctrl._flush_pending_state_timers = lambda: None

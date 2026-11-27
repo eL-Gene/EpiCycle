@@ -125,12 +125,9 @@ def test_another_patch_or_run_puts_markers_back_to_the_default(
         else:
             hh.ctx["run_id"] = "another"
         _start(hh, start)
-        if start == "whole":
-            # a Cells whole patch lists only runs and never picks one: the
-            # combo is blank, and the default comes back with the box
-            assert widget.get_add_marker_source() == ("labels", None)
-        else:
-            assert widget.get_add_marker_source() == DEFAULT
+        # the default comes back on a box and a whole patch alike (a whole
+        # patch lists every source a box does)
+        assert widget.get_add_marker_source() == DEFAULT
         assert "add_marker_source_combo" not in widget._add_touched
         assert getattr(hh, "_add_guide_worker", None) is None
         assert hh._add_run_state is None

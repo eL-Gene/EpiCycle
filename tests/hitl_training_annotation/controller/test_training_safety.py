@@ -113,6 +113,12 @@ def _make_ctrl_for_train_model(tmp_path, staged_items=None, working_dir_exists=T
 
     if working_dir_exists:
         ctrl.working_dir = str(tmp_path)
+        # The folder has the active run: Train asks for a run before any of
+        # the gates these tests drive.
+        from napari_epicycle.hitl_training_annotation import (
+            _run_management as RM)
+        RM.create_run_on_disk(tmp_path, "default", display_name="default")
+        RM.add_run_to_state_json(tmp_path, "default", activate=True)
     else:
         ctrl.working_dir = str(tmp_path / "does_not_exist")
 

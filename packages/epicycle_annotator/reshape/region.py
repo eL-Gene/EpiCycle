@@ -114,7 +114,7 @@ from .engine import (
 from .notes import MessageSink
 from .preproc import safe_otsu
 from .solvers import solve
-from .spec import REGION_SEEDS, ReshapeResult, ReshapeSpec
+from .spec import ADD_BOX_BUDGET, REGION_SEEDS, ReshapeResult, ReshapeSpec
 
 __all__ = [
     "ADD_ENGINE_NO_MARKERS",
@@ -184,8 +184,10 @@ BACKGROUND_NN_SHARE = 0.75
 #: step off and about 70 with it on (besides the caller's own inputs: about
 #: 6 GB and 7 GB at this ceiling), and its watershed cannot be stopped once
 #: it runs (the watershed step alone took about two minutes at 73 million
-#: voxels; the whole Preview takes longer).
-WHOLE_FILL_MAX_VOXELS = 100_000_000
+#: voxels; the whole Preview takes longer).  It is the box budget's number
+#: (``spec.ADD_BOX_BUDGET``): a box and the whole patch share one size rule,
+#: so the two cannot drift apart.
+WHOLE_FILL_MAX_VOXELS = ADD_BOX_BUDGET
 
 #: Voxels per z-slab, halo included, when the background seed is measured;
 #: the distance map holds about 49 bytes per voxel of a slab.  A slab is
@@ -252,7 +254,7 @@ def too_big_whole_sentence(limit):
 
 #: The refusal at the default budget (``spec.ADD_BOX_BUDGET``); B2 imports
 #: it by name.  A refusal under any other budget is ``too_big_sentence``.
-ADD_ENGINE_TOO_BIG = too_big_sentence(4_000_000)
+ADD_ENGINE_TOO_BIG = too_big_sentence(ADD_BOX_BUDGET)
 ADD_ENGINE_NO_MARKERS = (
     "No marker was left to grow from — every marker fell in dark space, "
     "over kept objects, or was too small to use. (Nothing was changed.)"
@@ -1608,6 +1610,7 @@ def reshape_empty_region(labels, images, spec, *, roi, dark_channels=None,
                            propagate_cancel=fill)
     out = ReshapeResult(vox_volume=float(np.prod(spacing)), roi=roi,
                         dark_threshold=dark_threshold)
+    elev = None
     try:
         # ---- 1. budget --------------------------------------------------- #
         step("add_box")
@@ -1710,5 +1713,12 @@ def reshape_empty_region(labels, images, spec, *, roi, dark_channels=None,
         out.status = "refused"
         out.refusal_reason = refusal.reason
         sink.emit(refusal.message)
+    except ReshapeCancelled as cancel:
+        # a Stop (or a superseded run) after the walls were built: the
+        # picture rides on the exception, so a caller that keeps a region's
+        # walls need not build them again for the run that follows
+        if elev is not None and getattr(cancel, "elevation", None) is None:
+            cancel.elevation = elev
+        raise
     out.messages = list(sink.messages)
     return out

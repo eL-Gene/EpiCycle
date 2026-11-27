@@ -248,6 +248,65 @@ class TestPersistRecordsAcquisitionMetadata:
             _persist(ws, axes="ZCYX")  # no source_axes -> falls back to axes
             assert load_state(ws)["sources"][0]["source_axes"] == "ZCYX"
 
+    def test_voxel_size_source_type_reaches_the_registry(self):
+        """The spins' type travels with the value: a header value is stored
+        "detected", an edited one "user"."""
+        with tempfile.TemporaryDirectory() as ws:
+            _persist(ws, voxel_size=[2.0, 0.5, 0.5],
+                     voxel_size_source="detected")
+            assert load_state(ws)["sources"][0]["voxel_size_source"] == "detected"
+        with tempfile.TemporaryDirectory() as ws:
+            _persist(ws, voxel_size=[2.0, 0.5, 0.5], voxel_size_source="user")
+            assert load_state(ws)["sources"][0]["voxel_size_source"] == "user"
+
+
+class TestExportFillsUnsetSourceVoxel:
+    """The measured case: a source whose row was created before its first
+    extract (here an alias edit, which writes no voxel size) kept no spacing
+    at extract, so Steps 3 and 4 read the never-set 1/1/1 fallback."""
+
+    def test_alias_edit_then_extract_records_the_detected_spacing(self):
+        from napari_epicycle.data_preparation._state import (
+            save_state, upsert_source,
+        )
+        from napari_epicycle.data_preparation._voxel_spacing import (
+            read_step1_state, resolve_stack_spacing,
+        )
+        with tempfile.TemporaryDirectory() as ws:
+            st = load_state(ws)
+            upsert_source(st, path="D:/data/kidney", display_name="my kidney")
+            save_state(ws, st)
+            assert load_state(ws)["sources"][0].get("voxel_size") is None
+
+            res = _persist(ws, voxel_size=[2.0, 0.5, 0.5],
+                           voxel_size_source="detected")
+            src = load_state(ws)["sources"]
+            assert len(src) == 1
+            assert src[0]["voxel_size"] == [2.0, 0.5, 0.5]
+            assert src[0]["voxel_size_source"] == "detected"
+            assert src[0]["display_name"] == "my kidney"   # first-wins kept
+
+            # What Steps 3 and 4 now read for that patch (no file opened).
+            got = resolve_stack_spacing(
+                None, read_step1_state(ws), res["tiff_path"], ws,
+                read_file=False)
+            assert got == {"zyx": [2.0, 0.5, 0.5], "source": "step1"}
+
+    def test_set_voxel_survives_a_later_extract(self):
+        from napari_epicycle.data_preparation._state import (
+            save_state, upsert_source,
+        )
+        with tempfile.TemporaryDirectory() as ws:
+            st = load_state(ws)
+            upsert_source(st, path="D:/data/kidney", voxel_size=[3.0, 0.2, 0.2],
+                          voxel_size_source="user")
+            save_state(ws, st)
+            _persist(ws, voxel_size=[2.0, 0.5, 0.5],
+                     voxel_size_source="detected")
+            src = load_state(ws)["sources"][0]
+            assert src["voxel_size"] == [3.0, 0.2, 0.2]
+            assert src["voxel_size_source"] == "user"
+
 
 # --------------------------------------------------------------------------- #
 # ④ Z-crop TRIM — the pure, recoverable crop_patch_in_place writer

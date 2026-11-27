@@ -210,12 +210,15 @@ _REGION_KEYS = {
     "dark_clearance_um": 2.0,
     "core_erode_um": 1.0,
     "click_radius_um": 2.0,
-    "box_budget": 4_000_000,
+    "box_budget": 100_000_000,
 }
 
 
-def test_the_add_box_budget_is_four_million_voxels():
-    assert ADD_BOX_BUDGET == 4_000_000
+def test_the_add_box_budget_is_the_whole_patch_ceiling():
+    from packages.epicycle_annotator.reshape import region as R
+
+    assert ADD_BOX_BUDGET == 100_000_000
+    assert ADD_BOX_BUDGET == R.WHOLE_FILL_MAX_VOXELS
 
 
 @pytest.mark.parametrize("key,value", sorted(_REGION_KEYS.items()))

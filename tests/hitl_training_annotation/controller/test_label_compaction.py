@@ -131,7 +131,7 @@ def test_persist_compacts_mask_before_write():
     # (async background writer for the debounce path, synchronous atomic write
     # otherwise) rather than a direct `imwrite`.  Intent unchanged: compact_mask
     # is what lands on disk.
-    assert "_emit(mask_path, compact_mask)" in src
+    assert "_emit(mask_path, compact_mask," in src
 
 
 def test_persist_is_disk_only_does_not_mutate_volume_or_data_masks():

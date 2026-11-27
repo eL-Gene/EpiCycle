@@ -922,13 +922,14 @@ def test_the_new_words_word_for_word():
         "Whole patch {z} × {y} × {x} voxels · {n} objects marked")
     assert AP.ADD_S1_PATCH_CLICKS_ONE == (
         "Whole patch {z} × {y} × {x} voxels · 1 object marked")
+    # both name the Threshold row of the Brightness card by its word
     assert AP.ADD_S1_MARKERS_NONE_ON_STAIN == (
-        "No marker sits on stain above the threshold — lower the threshold, "
-        "or move the markers onto the nuclei.")
+        "No marker sits on stain above the threshold — lower Threshold, or "
+        "move the markers onto the nuclei.")
     assert AP.ADD_MARKER_DIM_TIP == (
         "At the last Preview this marker sat on stain below the threshold, "
-        "so it made nothing — move it onto the nucleus or lower the "
-        "threshold.")
+        "so it made nothing — move it onto the nucleus or lower Threshold "
+        "under Brightness.")
     assert AP.ADD_MARKER_SMALL_TIP == (
         "At the last Preview this marker's nucleus was below Smallest object "
         "or vanished when smoothed.")
@@ -1049,7 +1050,9 @@ def test_a_whole_patch_takes_markers_and_is_measured():
     assert AP.measuring_stage(s, reader="info") == "add_info_patch"
     assert AP.whole_measures_nothing("nuclei", None,
                                      AP.LOOK_MARKERS) is False
-    # Anywhere on a whole patch keeps its own sentence
+    # Anywhere on a whole patch runs as the markers do: no sentence of its
+    # own, and the patch is measured
     assert AP.preview_block(_state(whole_patch=True,
-                                   look_for=AP.LOOK_ANYWHERE)) == (
-        AP.ADD_S1_WHOLE_ANYWHERE)
+                                   look_for=AP.LOOK_ANYWHERE)) is None
+    assert AP.whole_measures_nothing("nuclei", None,
+                                     AP.LOOK_ANYWHERE) is False

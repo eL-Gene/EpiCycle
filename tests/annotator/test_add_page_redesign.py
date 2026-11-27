@@ -85,14 +85,18 @@ def test_the_retired_names_are_gone():
 
 def test_a_whole_patch_that_cannot_be_filled_greys_preview_and_says_why():
     base = {"has_box": True, "whole_patch": True, "box_shape": (60, 900, 900)}
-    # Cells needs Markers ▸ Objects from run or Click markers: pick one, or
-    # (no other run on this patch) Click markers or a box
-    src = AP.SOURCE_NUCLEI
+    # Cells with a blank From (a run, none picked): pick one, or (no other
+    # run on this patch) the nuclei masks or Click markers
+    src = AP.SOURCE_RUN
     assert AP.preview_block(dict(base, preset="cells", source=src,
                                  has_other_run=True)) == (
         AP.ADD_S1_WHOLE_PICK_RUN)
     assert AP.preview_block(dict(base, preset="cells", source=src)) == (
         AP.ADD_S1_WHOLE_NO_RUN)
+    # the nuclei masks are not refused for the source: the next row speaks
+    assert AP.preview_block(dict(base, preset="cells",
+                                 source=AP.SOURCE_NUCLEI)) == (
+        AP.ADD_S1_PICK_WALL_CHANNEL)
     # Click markers are not refused for the source: the next row speaks
     # (no Walls channel in this state)
     for other in (True, False):
@@ -100,14 +104,12 @@ def test_a_whole_patch_that_cannot_be_filled_greys_preview_and_says_why():
                                     source=AP.SOURCE_CLICKS,
                                     has_other_run=other, n_clicks=2))
         assert why == AP.ADD_S1_PICK_WALL_CHANNEL
-    # Nuclei ▸ Anywhere runs on boxes
-    assert AP.ADD_S1_WHOLE_ANYWHERE == (
-        "Anywhere in the box runs on boxes — pick Inside each cell, or S, M "
-        "or L.")
+    # Nuclei ▸ Anywhere runs on a whole patch as on a box (under the limit)
+    assert not hasattr(AP, "ADD_S1_WHOLE_ANYWHERE")
     assert AP.preview_block(dict(base, preset="nuclei", channel="nuc",
-                                 look_for=AP.LOOK_ANYWHERE)) == (
-        AP.ADD_S1_WHOLE_ANYWHERE)
-    # ... and not on an ordinary box
+                                 look_for=AP.LOOK_ANYWHERE,
+                                 empty_share=0.5)) is None
+    # ... and on an ordinary box
     assert AP.preview_block(dict(base, whole_patch=False, preset="nuclei",
                                  channel="nuc", box_shape=(10, 10, 10),
                                  look_for=AP.LOOK_ANYWHERE,
@@ -146,25 +148,24 @@ def test_whole_on_cells_with_click_markers_waits_for_a_marker(h):
     assert h.adv.last("status_text") == AP.ADD_S1_NO_MARKERS
 
 
-def test_whole_on_cells_with_nuclei_masks_makes_the_patch_and_refuses(h):
-    """Nuclei masks cannot fill a whole patch, and this harness lists no
-    other run of the patch: Click markers or a box is the way."""
+def test_whole_on_cells_with_nuclei_masks_makes_the_patch_and_measures(h):
+    """Nuclei masks fill a whole patch as a box: the patch is made and
+    measured (no whole-patch refusal)."""
     h.adv.preset = "cells"
     h.adv.source = ("nuclei_masks", None)
     h._start_add_whole()
     assert h._add_running and h._add_whole_patch
     assert h._add_roi == _whole_roi(h)
-    assert h.adv.last("preview_enabled") is False
-    assert h.adv.last("status_text") == AP.ADD_S1_WHOLE_NO_RUN
+    assert h.adv.last("status_text") not in (AP.ADD_S1_WHOLE_NO_RUN,
+                                             AP.ADD_S1_WHOLE_PICK_RUN)
 
 
-def test_whole_on_anywhere_makes_the_patch_and_preview_refuses(h):
+def test_whole_on_anywhere_makes_the_patch_and_measures_it(h):
     h.adv.look = (AP.LOOK_ANYWHERE, None)
     h._start_add_whole()
     assert h._add_running and h._add_whole_patch
     assert h._add_roi == _whole_roi(h)
-    assert h.adv.last("preview_enabled") is False
-    assert h.adv.last("status_text") == AP.ADD_S1_WHOLE_ANYWHERE
+    assert h.adv.last("status_text") == AP.ADD_S1_MEASURING_PATCH
 
 
 def test_whole_where_spread_cannot_run_makes_the_patch_and_says_why(
@@ -187,11 +188,16 @@ def test_another_marker_source_keeps_the_whole_patch(h):
     box = h._add_box
     # the start lists the patch's runs (none in this harness): one more
     h._add_run_sources = {"cells": object()}
-    h.adv.source = ("nuclei_masks", None)
+    h.adv.source = ("labels", None)          # the blank From
     h._on_add_source_changed(h.adv.source)
     assert h._add_whole_patch and h._add_box == box
     assert h.adv.last("status_text") == AP.ADD_S1_WHOLE_PICK_RUN
     assert h.adv.last("preview_enabled") is False
+    # the nuclei masks keep the whole patch, and it is measured
+    h.adv.source = ("nuclei_masks", None)
+    h._on_add_source_changed(h.adv.source)
+    assert h._add_whole_patch and h._add_box == box
+    assert h.adv.last("status_text") != AP.ADD_S1_WHOLE_PICK_RUN
     # Click markers keep the whole patch too, and ask for a marker
     h.adv.source = ("paint", None)
     h._on_add_source_changed(h.adv.source)
@@ -209,7 +215,7 @@ def test_anywhere_keeps_the_whole_patch(h):
     h.adv.look = (AP.LOOK_ANYWHERE, None)
     h._on_add_look_for_changed(h.adv.look)
     assert h._add_whole_patch and h._add_box == box
-    assert h.adv.last("status_text") == AP.ADD_S1_WHOLE_ANYWHERE
+    assert h.adv.last("status_text") == AP.ADD_S1_MEASURING_PATCH
 
 
 @pytest.mark.parametrize("preset", ["cells", "nuclei"])
@@ -637,21 +643,28 @@ def test_a_clear_before_the_first_accept_blocks_nothing(fakes):
     assert h.adv.last("footer_text") == AP.ADD_FOOT_BOX_CLEARED
 
 
-def test_the_whole_patch_on_anywhere_reads_no_brightness_crop(h):
-    """Preview is refused there anyway: no float copy of the whole patch on
-    the main thread at every box-info request."""
+def test_the_whole_patch_on_anywhere_reads_the_layer_not_a_crop(h):
+    """Anywhere on a whole patch measures its brightness from the layer's
+    own array, read on the worker: no float copy of the whole patch on the
+    main thread at every box-info request."""
     h.adv.look = (AP.LOOK_ANYWHERE, None)
     h._start_add_whole()
     kw = h._add_gather_info()
-    assert kw["image_roi"] is None
+    layer = h._refine_channel_source("nuc")
+    assert kw["image_roi"] is layer
     h._set_add_box_size_fraction(0.25)          # a box: the crop is read
-    assert h._add_gather_info()["image_roi"] is not None
+    crop = h._add_gather_info()["image_roi"]
+    assert crop is not None and crop is not layer
 
 
-def test_a_cells_whole_patch_without_a_run_reads_no_nuclei(h):
+def test_a_cells_whole_patch_with_nuclei_masks_reads_the_layer(h):
     h.adv.preset = "cells"
     h.adv.source = ("nuclei_masks", None)
     h._start_add_whole()
+    assert h._add_gather_info()["nuclei_source"] is (
+        h._refine_channel_source("nuc"))
+    # a blank From measures nothing
+    h.adv.source = ("labels", None)
     assert "nuclei_source" not in h._add_gather_info()
 
 

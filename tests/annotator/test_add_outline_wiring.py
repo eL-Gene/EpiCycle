@@ -372,7 +372,8 @@ def test_the_outline_items_read_by_index_and_the_cleared_one_waits(widget):
             AP.ADD_OUTLINE_CLEARED_GREY, AP.ADD_OUTLINE_SHRINK,
             AP.ADD_OUTLINE_NONE]
         assert not _item(c, 0).isEnabled()
-        assert widget.get_add_outline() == AP.OUTLINE_NONE
+        # the default on a box as on a whole patch: the shrink-wrap
+        assert widget.get_add_outline() == AP.OUTLINE_SHRINK
         widget.update_add_ui_state(cleared_in_force=True)
         assert c.itemText(0) == AP.ADD_OUTLINE_CLEARED
         assert _item(c, 0).isEnabled()
@@ -401,6 +402,7 @@ def test_the_outline_help_hides_over_candidates(widget):
 def test_show_the_outline_needs_an_outline_and_says_where(widget):
     _cells_page(widget)
     try:
+        widget.add_outline_combo.setCurrentIndex(2)   # the user's "none"
         assert widget.add_show_outline_cb.isHidden()
         widget.add_outline_combo.setCurrentIndex(1)
         assert not widget.add_show_outline_cb.isHidden()
@@ -422,6 +424,7 @@ def test_spread_and_bridge_rows_follow_their_choices(widget):
     _cells_page(widget)
     widget._add_advanced_toggle.setChecked(True)
     try:
+        widget.add_outline_combo.setCurrentIndex(2)   # the user's "none"
         assert widget._add_spread_adv.isHidden()
         assert widget._add_bridge_row.isHidden()
         widget.add_grow_combo.setCurrentIndex(1)
@@ -442,6 +445,7 @@ def test_the_dark_rows_under_an_outline(widget):
     _cells_page(widget)
     widget._add_advanced_toggle.setChecked(True)
     try:
+        widget.add_outline_combo.setCurrentIndex(2)   # the user's "none"
         widget.add_dark_outside_cb.setChecked(False)
         assert not widget.add_dark_factor_sb.isEnabled()
         assert not widget.add_dark_off_note.isHidden()
@@ -466,15 +470,16 @@ def test_the_dark_rows_under_an_outline(widget):
         _undo_page(widget)
 
 
-def test_a_whole_patch_hides_grow_by_and_keeps_the_box_pick(widget):
+def test_a_whole_patch_shows_grow_by_and_keeps_the_box_pick(widget):
     _cells_page(widget)
     try:
         g = widget.add_grow_combo
         assert widget.get_add_grow() == AP.GROW_FLOOD
         widget.update_add_ui_state(whole_patch=True)
-        # the whole patch fills to the walls whatever Grow by says: the row
-        # is hidden and the box's pick is kept for the next box
-        assert widget._add_grow_row.isHidden()
+        # Grow by is the user's pick on a whole patch too: the row shows,
+        # both items pickable, and the pick is one for the next box
+        assert not widget._add_grow_row.isHidden()
+        assert _item(g, 1).isEnabled()
         assert g.itemText(0) == AP.ADD_GROW_FLOOD
         assert _item(g, 0).isEnabled()
         assert widget.get_add_grow() == AP.GROW_FLOOD
@@ -490,7 +495,9 @@ def test_a_whole_patch_hides_grow_by_and_keeps_the_box_pick(widget):
         assert not widget._add_grow_row.isHidden()
         assert g.itemText(0) == AP.ADD_GROW_FLOOD and _item(g, 0).isEnabled()
         assert widget.get_add_grow() == AP.GROW_FLOOD, "the earlier pick"
-        assert widget.get_add_outline() == AP.OUTLINE_NONE
+        # one default for every region: the cleared outline stays (a
+        # Clear is still in force)
+        assert widget.get_add_outline() == AP.OUTLINE_CLEARED
     finally:
         _undo_page(widget)
 
@@ -541,7 +548,7 @@ def test_the_cells_keys_ride_on_cells_only(widget):
     _cells_page(widget)
     try:
         p = widget.get_add_params()
-        assert p["growth"] == "flood" and p["outline"] == "none"
+        assert p["growth"] == "flood" and p["outline"] == "shrink"
         assert p["wall_cost"] == 40.0 and p["growth_limit"] == 28.0
         assert p["include_membrane"] is True and p["bridge_um"] == 10.0
     finally:
@@ -962,10 +969,10 @@ def test_the_cleared_choice_falls_back_when_its_clears_are_undone(h):
     assert h.adv.params["outline"] == "cleared"
     live.clear()                         # the Clear was undone
     h._add_refresh_ui()
-    # chosen by default on a box: back to "No outline (as before)"
-    assert h.adv.params["outline"] == "none"
+    # chosen by default on a box: back to the default, the shrink-wrap
+    assert h.adv.params["outline"] == "shrink"
     assert h.adv.last("status_text") == AP.ADD_S1_OUTLINE_CLEARED_GONE.format(
-        choice=AP.ADD_OUTLINE_NONE)
+        choice=AP.ADD_OUTLINE_SHRINK)
     assert h.adv.last("cleared_in_force") is False
     # on a whole patch the user had left at its default: the shrink-wrap
     h._start_add_whole()
@@ -1056,9 +1063,9 @@ def test_the_cleared_outline_on_an_evicted_clear_stays_and_says_nothing(h):
     h.sync_manager.shared_labels["L"][2, 3, 3] = 7
     h._add_clear_kept = {}
     h._add_refresh_ui()
-    assert h.adv.params["outline"] == "none"
+    assert h.adv.params["outline"] == "shrink"
     assert h.adv.last("status_text") == AP.ADD_S1_OUTLINE_CLEARED_GONE.format(
-        choice=AP.ADD_OUTLINE_NONE)
+        choice=AP.ADD_OUTLINE_SHRINK)
 
 
 def test_the_amber_slot_on_cells_in_its_order(h, monkeypatch):

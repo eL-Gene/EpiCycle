@@ -26,6 +26,7 @@ non-dict JSON → a fresh empty state).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -303,6 +304,212 @@ def _classify_voxel_source(voxel_size: Optional[Any]) -> str:
     return "user"
 
 
+#: The voxel spins' range in µm (``ui._make_voxel_spin``): a value outside it
+#: could never have come from the panel, so the export never records it.
+VOXEL_MIN_UM = 0.001
+VOXEL_MAX_UM = 1000.0
+
+
+def _typed_voxel_source(voxel_size: Optional[Any],
+                        hint: Optional[str] = None) -> str:
+    """The type to store with *voxel_size*: ``"unknown"`` for a missing or
+    1/1/1 value whatever *hint* says; otherwise *hint* when it is
+    ``"user"`` or ``"detected"`` (what the panel showed: the value was typed,
+    or read from the file's header); otherwise the value-based
+    :func:`_classify_voxel_source` (``"user"``).  Never raises."""
+    if _classify_voxel_source(voxel_size) == "unknown":
+        return "unknown"
+    if hint in ("user", "detected"):
+        return hint
+    return "user"
+
+
+def _fillable_voxel(voxel_size: Optional[Any]) -> Optional[List[float]]:
+    """``[z, y, x]`` floats when *voxel_size* is a real spacing the export may
+    record on a row that has none -- three finite values, each within the
+    spins' range, not the 1/1/1 placeholder -- else ``None``.  Never raises."""
+    if voxel_size is None or isinstance(voxel_size, (str, bytes)):
+        return None
+    try:
+        vals = [float(v) for v in voxel_size]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) != 3:
+        return None
+    if not all(math.isfinite(v) and VOXEL_MIN_UM <= v <= VOXEL_MAX_UM
+               for v in vals):
+        return None
+    if _classify_voxel_source(vals) == "unknown":
+        return None
+    return vals
+
+
+#: A header XY pixel size above this (µm) is never recorded as
+#: ``"detected"``: a print-resolution header read as centimetres (72 dpi is
+#: 352.8 µm) would otherwise pass as a microscope voxel size.  A typed value
+#: has no such ceiling (the spins' range holds).
+DETECTED_MAX_XY_UM = 50.0
+
+
+def detected_over_ceiling(voxel_size: Any) -> bool:
+    """True when *voxel_size* (``[z, y, x]``) has a Y or X above
+    :data:`DETECTED_MAX_XY_UM`.  Never raises (False when unreadable)."""
+    try:
+        vals = [float(v) for v in voxel_size]
+    except (TypeError, ValueError):
+        return False
+    return len(vals) == 3 and (vals[1] > DETECTED_MAX_XY_UM
+                               or vals[2] > DETECTED_MAX_XY_UM)
+
+
+def detected_recordable(voxel_size: Any) -> bool:
+    """THE rule every writer that types a value ``"detected"`` follows: a
+    real spacing -- three finite values within the spins' range, not the
+    1/1/1 placeholder (:func:`_fillable_voxel`) -- whose XY is not over the
+    print-resolution ceiling.  A value that fails it is never stored as
+    ``"detected"``.  Never raises."""
+    return (_fillable_voxel(voxel_size) is not None
+            and not detected_over_ceiling(voxel_size))
+
+
+def drop_unrecordable_detected(state: Dict[str, Any], path: str,
+                               recorded_zyx: Any, decimals: int = 3) -> bool:
+    """Clear a ``"detected"`` row whose value the ceiling rule refuses (an
+    older version typed a baked print resolution "detected"): the value is
+    dropped, the type becomes ``"unknown"`` and the Z-assumed flag goes.
+    Acts only while the row still holds *recorded_zyx*.  Never creates a
+    row; returns True when it wrote.  Never raises."""
+    row = _source_row_by_path(state, path)
+    if row is None or row.get("voxel_size_source") != "detected":
+        return False
+    if detected_recordable(row.get("voxel_size")):
+        return False
+    if not _same_rounded(row.get("voxel_size") or (), recorded_zyx or (),
+                         decimals):
+        return False
+    row["voxel_size"] = None
+    row["voxel_size_source"] = "unknown"
+    row.pop("voxel_z_from_xy", None)
+    return True
+
+
+def voxel_z_assumed(row: Optional[Dict[str, Any]]) -> bool:
+    """True when *row* records a header voxel size whose Z was not measured
+    by the file (filled in from the XY pixel size, or ImageJ's default
+    depth).
+
+    The ``voxel_z_from_xy`` flag counts only on a ``"detected"`` row (a typed
+    value is the user's, whatever Z it holds); an absent or non-bool flag is
+    False.  Never raises."""
+    if not isinstance(row, dict):
+        return False
+    return (row.get("voxel_size_source") == "detected"
+            and row.get("voxel_z_from_xy") is True)
+
+
+def _source_row_by_path(state: Any, path: Any) -> Optional[Dict[str, Any]]:
+    """The source row whose path matches *path* (normalized), else None.
+    Never creates one; never raises."""
+    try:
+        target = _norm_path(path)
+        for src in state.get("sources", []):
+            if isinstance(src, dict) and _norm_path(
+                    src.get("path", "")) == target:
+                return src
+    except Exception:                        # noqa: BLE001
+        return None
+    return None
+
+
+def _same_rounded(a: Any, b: Any, decimals: int) -> bool:
+    """Two ``(z, y, x)`` agree at *decimals* (the voxel spins' precision)."""
+    try:
+        aa = [round(float(v), int(decimals)) for v in a]
+        bb = [round(float(v), int(decimals)) for v in b]
+    except (TypeError, ValueError):
+        return False
+    return len(aa) == 3 and aa == bb
+
+
+def fill_unset_voxel(state: Dict[str, Any], path: str, voxel_size: Any,
+                     voxel_size_source: str = "detected",
+                     voxel_z_from_xy: Optional[bool] = None) -> bool:
+    """Record a header voxel size on *path*'s EXISTING row when that row has
+    none (``None`` or the 1/1/1 placeholder).  Returns True when it wrote.
+
+    Never creates a row (a source nobody worked with keeps no row), never
+    replaces a set value (typed or recorded), and records only a real value
+    (:func:`_fillable_voxel`).  A ``"detected"`` value is written with its
+    ``voxel_z_from_xy`` as an explicit bool (False when not given).  Pure on
+    *state*; never raises."""
+    row = _source_row_by_path(state, path)
+    if row is None:
+        return False
+    if _classify_voxel_source(row.get("voxel_size")) != "unknown":
+        return False
+    fill = _fillable_voxel(voxel_size)
+    if fill is None:
+        return False
+    typed = _typed_voxel_source(fill, voxel_size_source)
+    if typed == "detected" and not detected_recordable(fill):
+        return False
+    row["voxel_size"] = fill
+    row["voxel_size_source"] = typed
+    if typed == "detected":
+        row["voxel_z_from_xy"] = bool(voxel_z_from_xy)
+    return True
+
+
+def set_voxel_flag_if_value(state: Dict[str, Any], path: str,
+                            recorded_zyx: Any, flag: Any,
+                            decimals: int = 3) -> bool:
+    """Write ``voxel_z_from_xy = bool(flag)`` on *path*'s EXISTING
+    ``"detected"`` row while its value still equals *recorded_zyx* at
+    *decimals*.  Returns True when the stored flag changed.
+
+    For rows recorded before the flag existed: the flag is added only to the
+    value it describes; a value changed meanwhile (typed, ↺, another file) is
+    left alone.  The value itself is never touched.  Never creates a row;
+    never raises."""
+    row = _source_row_by_path(state, path)
+    if row is None or row.get("voxel_size_source") != "detected":
+        return False
+    if not _same_rounded(row.get("voxel_size") or (), recorded_zyx or (),
+                         decimals):
+        return False
+    new = bool(flag)
+    if row.get("voxel_z_from_xy") is new:
+        return False
+    row["voxel_z_from_xy"] = new
+    return True
+
+
+def check_user_row_header(state: Dict[str, Any], path: str, user_zyx: Any,
+                          header_zyx: Any, header_z_from_xy: Any,
+                          decimals: int = 3) -> bool:
+    """The one-time header check of a ``"user"`` row (rows written before the
+    header value was typed ``"detected"`` hold a header value typed
+    ``"user"``).  Returns True when it wrote.
+
+    Acts only while *path*'s EXISTING row is still ``"user"`` with
+    *user_zyx* (at *decimals*).  When *header_zyx* equals it, the row is
+    retyped ``"detected"`` with ``voxel_z_from_xy`` as an explicit bool;
+    either way ``voxel_header_checked`` is set, so the header is never read
+    again for that row.  Never creates a row; never raises."""
+    row = _source_row_by_path(state, path)
+    if row is None or row.get("voxel_size_source") != "user":
+        return False
+    if not _same_rounded(row.get("voxel_size") or (), user_zyx or (),
+                         decimals):
+        return False
+    if header_zyx is not None and detected_recordable(header_zyx) and \
+            _same_rounded(row.get("voxel_size"), header_zyx, decimals):
+        row["voxel_size_source"] = "detected"
+        row["voxel_z_from_xy"] = bool(header_z_from_xy)
+    row["voxel_header_checked"] = True
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Mutators (pure on the passed-in state dict)
 # ---------------------------------------------------------------------------
@@ -315,6 +522,8 @@ def register_source(
     voxel_size: Optional[Any] = None,
     timestamp: Optional[str] = None,
     prefix: Optional[str] = None,
+    voxel_size_source: Optional[str] = None,
+    voxel_z_from_xy: Optional[bool] = None,
 ) -> str:
     """Record the source dataset *path* (dedup by normalized path).
 
@@ -332,6 +541,29 @@ def register_source(
     :func:`upsert_source`) already recorded.  TRUE last-wins is reserved for the
     explicit edit signals, which route through :func:`upsert_source`.
 
+    **One exception, the unset voxel size:** a row that has NO real voxel size
+    (``None`` or the 1/1/1 placeholder -- e.g. a row an alias, recipe or
+    axis-order edit created before the first extract, or a Prepare whose store
+    spacing was 1/1/1) takes the incoming *voxel_size* on a revisit when that
+    value is real (see :func:`_fillable_voxel`), with its type.  Without it the
+    spacing shown in the panel at extract was dropped and Steps 3 and 4 read
+    the never-set fallback.  A real value already on the row is never
+    overwritten.  A ``"detected"`` value whose XY is over
+    :data:`DETECTED_MAX_XY_UM` (a print resolution) is never recorded, on a
+    new row or an unset one.
+
+    *voxel_size_source* (optional) is the type the panel showed for the value
+    (``"detected"`` = read from the file's header, ``"user"`` = typed); it is
+    stored as given for a real value and ignored for a 1/1/1 / missing one
+    (always ``"unknown"``).  When it is not given the type is
+    :func:`_classify_voxel_source` of the value, as before.
+
+    *voxel_z_from_xy* (optional) says the Z was not measured by the file
+    (filled in from the XY pixel size, or ImageJ's default depth).  Whenever a
+    value is stored typed ``"detected"`` (a new row or the unset fill) the
+    flag is written as a bool, False when not given; a typed value carries
+    none.
+
     ``axes`` is the source's REAL on-disk order; it is stored under the schema-
     v2 ``source_axes`` field (the anti-"axes lie" home).
 
@@ -345,7 +577,26 @@ def register_source(
         if _norm_path(src.get("path", "")) == target:
             if prefix:
                 src["prefix"] = prefix  # last-wins; badge tracks current naming
+            # Fill-if-unset: the export may record a spacing on a row that has
+            # none; it never replaces one (first-wins for a set value).
+            if _classify_voxel_source(src.get("voxel_size")) == "unknown":
+                fill = _fillable_voxel(voxel_size)
+                if (fill is not None
+                        and _typed_voxel_source(fill, voxel_size_source)
+                        == "detected" and not detected_recordable(fill)):
+                    fill = None          # a print DPI, not a voxel size
+                if fill is not None:
+                    src["voxel_size"] = fill
+                    src["voxel_size_source"] = _typed_voxel_source(
+                        fill, voxel_size_source)
+                    if src["voxel_size_source"] == "detected":
+                        src["voxel_z_from_xy"] = bool(voxel_z_from_xy)
+                    elif src["voxel_size_source"] == "user":
+                        src["voxel_header_checked"] = True
             return src.get("source_id", "")  # tolerate a hand-edited source missing the id
+    if (_typed_voxel_source(voxel_size, voxel_size_source) == "detected"
+            and not detected_recordable(voxel_size)):
+        voxel_size = None                # a print DPI, not a voxel size
     source_id = _next_source_id(state["sources"])
     entry = {
         "source_id": source_id,
@@ -354,11 +605,17 @@ def register_source(
         "source_axes": axes,
         "voxel_size": voxel_size,
         # Honest typing: a 1/1/1 export is "unknown", never "user" (a raw
-        # isotropic default must not masquerade as an entered spacing).
-        "voxel_size_source": _classify_voxel_source(voxel_size),
+        # isotropic default must not masquerade as an entered spacing); a real
+        # value keeps the type the panel showed ("detected" / "user").
+        "voxel_size_source": _typed_voxel_source(voxel_size, voxel_size_source),
         "origin": ["exported"],
         "added_at": timestamp or _now(),
     }
+    if entry["voxel_size_source"] == "detected":
+        entry["voxel_z_from_xy"] = bool(voxel_z_from_xy)
+    elif entry["voxel_size_source"] == "user":
+        # a typed value is the user's: the one-time header check skips it
+        entry["voxel_header_checked"] = True
     if prefix:
         entry["prefix"] = prefix
     state["sources"].append(entry)
@@ -738,7 +995,65 @@ def all_patches(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     is still tolerant of a hand-built state missing the ``patches`` key or
     holding stray non-dicts (never raises)."""
     rows = state.get("patches", []) if isinstance(state, dict) else []
+    if not isinstance(rows, list):
+        return []
     return [p for p in rows if isinstance(p, dict)]
+
+
+def z_assumed_patch_values(state: Dict[str, Any]) -> Dict[str, Any]:
+    """``{normalized relative path: ([z, y, x], source_kind)}`` for every
+    patch whose SOURCE row records a header voxel size with an assumed Z
+    (:func:`voxel_z_assumed`); the value is the row's.  Keys are normalized
+    with :func:`_norm_path` on the forward-slash relative path.  Never
+    raises (an unreadable state gives ``{}``)."""
+    out: Dict[str, Any] = {}
+    try:
+        srcs = state.get("sources", []) if isinstance(state, dict) else []
+        flagged = {}
+        for s in srcs if isinstance(srcs, list) else []:
+            if isinstance(s, dict) and voxel_z_assumed(s):
+                try:
+                    vals = [float(v) for v in s.get("voxel_size") or ()]
+                except (TypeError, ValueError):
+                    continue
+                if len(vals) == 3 and s.get("source_id"):
+                    flagged[s["source_id"]] = vals
+        if not flagged:
+            return out
+        for p in all_patches(state):
+            sid = p.get("source_id")
+            rp = p.get("relative_path")
+            if sid in flagged and rp:
+                key = _norm_path(str(rp).replace("\\", "/"))
+                out[key] = (list(flagged[sid]),
+                            str(p.get("source_kind") or "raw"))
+    except Exception:                        # noqa: BLE001 -- never raise
+        return {}
+    return out
+
+
+def z_assumed_patch_paths(state: Dict[str, Any],
+                          resolved_zyx_by_rel: Optional[Dict[str, Any]] = None,
+                          decimals: int = 3) -> frozenset:
+    """Normalized relative paths of the patches whose voxel size has an
+    assumed Z: a RAW patch of a flagged source row always; a PROCESSED patch
+    only when its resolved (store) size in *resolved_zyx_by_rel* equals the
+    row's at *decimals* (a store resampled or given its own size is not the
+    row's assumption).  Never raises."""
+    try:
+        resolved = {}
+        for k, v in (resolved_zyx_by_rel or {}).items():
+            resolved[_norm_path(str(k).replace("\\", "/"))] = v
+        out = set()
+        for key, (zyx, kind) in z_assumed_patch_values(state).items():
+            if kind != "processed":
+                out.add(key)
+            elif key in resolved and _same_rounded(resolved[key], zyx,
+                                                   decimals):
+                out.add(key)
+        return frozenset(out)
+    except Exception:                        # noqa: BLE001
+        return frozenset()
 
 
 def voxel_size_for_patch_path(
@@ -786,7 +1101,12 @@ def voxel_size_for_patch_path(
             if ptr and ptr.get("path"):
                 store = str(ptr["path"])
         elif src is not None and _classify_voxel_source(
-                src.get("voxel_size")) == "user":
+                src.get("voxel_size")) == "user" and (
+                    src.get("voxel_size_source") != "detected"
+                    or detected_recordable(src.get("voxel_size"))):
+            # an older version's "detected" print resolution is not served
+            # (the patch measures in voxels until a real value is typed); a
+            # typed value is served as it is
             vals = [float(v) for v in src.get("voxel_size")]
             if len(vals) == 3 and all(v > 0 for v in vals):
                 voxel = vals

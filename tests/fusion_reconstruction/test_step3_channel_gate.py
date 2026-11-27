@@ -171,6 +171,34 @@ def test_a_blank_box_greys_predict_with_a_two_channel_patch(w, tmp_path,
     assert w.predict_selected_btn.isEnabled()
 
 
+def test_a_blank_seed_greys_predict_with_the_pick_sentence(w, tmp_path,
+                                                         monkeypatch):
+    """A workspace's first run on a Cellpose built-in: nothing remembered
+    or recorded, so the open leaves "Channel to segment" blank (the model
+    records no channels) -- never the build defaults -- and a ticked
+    two-channel patch greys Predict with the pick sentence."""
+    from napari_epicycle.fusion_reconstruction import _paths
+    (tmp_path / _paths.STEP3_STATE_FILENAME).write_text(json.dumps({
+        "schema_version": 3, "active_run_id": "default",
+        "runs": {"default": {"patches": {}, "start_from": "epicycle"}}}),
+        encoding="utf-8")
+    w.chan1_combo.setCurrentIndex(2)                 # the build defaults
+    w.chan2_combo.setCurrentIndex(1)
+    w.lateral_model_path.setText("cyto3")
+    w.axial_model_path.setText("cyto3")
+    c = w.controller
+    c.working_dir = str(tmp_path)
+    c.state_manager.active_run_id = "default"
+    c.state_manager.load(str(tmp_path))
+    c._restore_start_from()
+    assert w.chan1_combo.currentIndex() == -1
+    assert w.chan2_combo.currentIndex() == 0
+    _tick(c, monkeypatch, [TWO])
+    assert _foot(w, c) == P.S3_GATE_PICK_CHANNEL
+    assert not w.predict_selected_btn.isEnabled()
+    assert c.state_manager.get_run_channels() is None
+
+
 def test_the_gate_order_model_first_then_the_channel(w, tmp_path,
                                                      monkeypatch):
     """With nothing ticked the tick sentence wins: the pick is asked for
@@ -378,7 +406,9 @@ def test_the_reconstruct_fallback_records_a_blank_box_as_none(w, tmp_path):
     recorded, extra = c._recon_recorded_seg("P1.tif", seg, 0.0)
     assert recorded.channels is None
     assert extra["seg_config_source"] == "settings"
+    # the open seeded the helper from the model (none: 0); set both boxes
     w.chan1_combo.setCurrentIndex(2)
+    w.chan2_combo.setCurrentIndex(1)
     recorded, _ = c._recon_recorded_seg("P1.tif", c._collect_seg_config(),
                                         0.0)
     assert list(recorded.channels) == [2, 1]

@@ -675,6 +675,7 @@ def is_mixed_layout(workspace: _WS) -> bool:
 def load_step2_state_flat(
     workspace: _WS,
     active_run_id: str = DEFAULT_RUN_ID,
+    raise_os_errors: bool = False,
 ):
     """Load Step 2 state as a flat dict (controller-compatible shape).
 
@@ -706,7 +707,13 @@ def load_step2_state_flat(
         try:
             with open(v3_path, "r", encoding="utf-8") as f:
                 v3 = json.load(f)
-        except (OSError, json.JSONDecodeError, ValueError):
+        except OSError:
+            # a file that could not be OPENED (a lock) is not a missing one:
+            # a caller that must not load "nothing" asks to hear it
+            if raise_os_errors:
+                raise
+            v3 = None
+        except (json.JSONDecodeError, ValueError):
             v3 = None
         if isinstance(v3, dict):
             return _unwrap_v3_state(v3, active_run_id)

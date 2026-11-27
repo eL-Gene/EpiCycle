@@ -8,7 +8,7 @@ from pathlib import Path as _Path
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QTimer, QEvent
 from qtpy.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -180,6 +180,45 @@ _ROW_TRASH_STYLE = (
 #: disagree, which made the slider⇄spinbox pair lossy above 2048 and left the
 #: two size models without a shared upper bound.
 _GEOM_MAX = 4096
+
+#: The voxel label's words for a header value whose Z the file did not give.
+VOXEL_Z_ASSUMED_WORD = " · Z assumed"
+VOXEL_Z_ASSUMED_TIP = ("Z was set equal to the pixel size. Type the Z step, "
+                       "or press Enter in the Z box to confirm it.")
+#: the whole label line for a header value over the print-resolution ceiling
+#: (shown, never recorded)
+VOXEL_OVER_CEILING_NOTE = ("read from file: a pixel size over 50 \u00b5m, likely "
+                           "print resolution \u2014 not recorded; type the real "
+                           "values")
+#: the same line for a value you typed (kept, it is yours)
+VOXEL_USER_OVER_CEILING_NOTE = ("your value is over 50 \u00b5m \u2014 likely a "
+                                "print resolution; type the real values")
+#: a recorded value whose file now gives a print resolution (\u21ba would
+#: refuse it, so it is not offered)
+VOXEL_FILE_NOW_OVER_NOTE = ("recorded for this source \u00b7 the file now says "
+                            "a pixel size over 50 \u00b5m, likely print "
+                            "resolution")
+#: a header whose XY is fine but whose Z step is out of the boxes' range
+VOXEL_Z_OUT_OF_RANGE_NOTE = ("the file's Z step ({z} \u00b5m) is out of range "
+                             "\u2014 type the values")
+#: the voxel label's look: dim, or amber for the over-50 \u00b5m line
+_VOXEL_LABEL_AMBER_STYLE = "font-size: 10px; color: #d4a843;"
+#: the label's tooltip when Z is ImageJ's default depth (a stack saved by
+#: ImageJ with no slice spacing); {depth} is "1 \u00b5m", or "1 unit" for a
+#: file in another unit
+VOXEL_Z_DEFAULT_DEPTH_TIP = (
+    "The file records no slice spacing, so Z is ImageJ's default of {depth}. "
+    "If your slices are a different distance apart, type the Z step; if "
+    "{depth} is right, press Enter in the Z box to confirm it.")
+#: the keys that act on the Z box's number (a Tab, Backtab or a modifier key
+#: alone only moves on, so it never confirms an assumed Z)
+_Z_ACTING_KEYS = frozenset((
+    Qt.Key_Return, Qt.Key_Enter, Qt.Key_Backspace, Qt.Key_Delete,
+    Qt.Key_Up, Qt.Key_Down, Qt.Key_PageUp, Qt.Key_PageDown,
+    Qt.Key_Period, Qt.Key_Comma,
+    Qt.Key_0, Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5, Qt.Key_6,
+    Qt.Key_7, Qt.Key_8, Qt.Key_9,
+))
 
 #: ②'s per-channel card strip scrolls inside a themed Box-List FRAME, so the
 #: QScrollArea itself must be TRANSPARENT + borderless and let the frame draw
@@ -2392,9 +2431,9 @@ class DataPreparationWidget(QWidget):
             "Voxel size", "step1_load_voxel.md"))
 
         _vdesc = QLabel(
-            "Physical spacing. It defines the units every box and resample "
-            "step uses. It is never applied to the viewer; recording it with "
-            "each patch needs the spacing reader."
+            "Physical spacing of one pixel. It scales the image in the viewer, "
+            "sets the units of every box and resample step, and is recorded "
+            "with each patch you extract."
         )
         _vdesc.setWordWrap(True)
         _vdesc.setStyleSheet(FLOW_SUBTITLE_STYLE)
@@ -2405,6 +2444,33 @@ class DataPreparationWidget(QWidget):
         # `read_voxel_spacing()` exists \u2014 NOT the mockup's illustrative 2/1/1,
         # which would have the panel claim it detected a spacing it never read.
         self._detected_voxel_size = (1.0, 1.0, 1.0)
+        # The type the panel shows ("detected" / "user" / "unknown"), read by
+        # the export so a header spacing is stored as detected, a typed one as
+        # the user's.  And whether the detected baseline's Z was filled from
+        # its XY size (the header had no Z), which the label says out loud.
+        self._voxel_source_type = "unknown"
+        self._detected_z_assumed = False
+        # A note on a RECORDED detected value: None, "recorded" (the file
+        # gives no spacing now) or the (z, y, x) the file says now.
+        self._detected_note = None
+        # The header's XY size is over the print-resolution ceiling, so it is
+        # shown but never recorded as detected.
+        self._detected_over_ceiling = False
+        # The header's Z step when it is out of the boxes' range (XY fine).
+        self._detected_z_out_of_range = None
+        # The header's Z is ImageJ's default depth of 1 unit.
+        self._detected_z_default_depth = False
+        self._detected_z_default_unit = None
+        # Whether the file's NEW value (a "file now says" note) has an
+        # assumed Z of its own.
+        self._detected_note_z_assumed = False
+        # The (z, y, x) the spins were last filled with (a restore or ↺): an
+        # Enter that leaves them unchanged confirms, it is not an edit.
+        self._restored_voxel = None
+        # A key or wheel event reached the Z spin since the last restore: an
+        # `editingFinished` then CONFIRMS an assumed Z even with the same
+        # number (a plain focus-out, e.g. tabbing through, does not).
+        self._z_touched = False
         vz, vy, vx = self._detected_voxel_size
         self.voxel_z_spin = self._make_voxel_spin(vz)
         self.voxel_y_spin = self._make_voxel_spin(vy)
@@ -2513,11 +2579,8 @@ class DataPreparationWidget(QWidget):
         return spin
 
     def _update_voxel_aspect(self, *_args) -> None:
-        """State the anisotropy in words.
-
-        Step 1 never writes `layer.scale`, so the canvas cannot
-        show that Z is coarser than XY.  Saying it here is the cheap half of
-        what the test-region preview does properly.
+        """State the anisotropy in words, next to the numbers (the viewer's
+        scale shows it too, once a source is loaded).
         """
         z = self.voxel_z_spin.value()
         xy = min(self.voxel_y_spin.value(), self.voxel_x_spin.value())
@@ -2535,7 +2598,14 @@ class DataPreparationWidget(QWidget):
     def _mark_voxel_edited(self, *_args) -> None:
         # A genuine user edit (valueChanged) \u2014 mark dirty so
         # `_on_voxel_editing_finished` persists it, and flip the provenance label.
+        if not getattr(self, "_voxel_dirty", False):
+            # the type the label showed before this edit (a no-op Enter puts
+            # it back)
+            self._type_before_edit = self._voxel_source_type
         self._voxel_dirty = True
+        self._voxel_source_type = "user"
+        self.voxel_source_label.setToolTip("")
+        self.voxel_source_label.setStyleSheet(DIM_LABEL_STYLE)
         self.voxel_source_label.setText("edited by hand \u00b7 \u21ba to restore detected")
 
     def _on_voxel_editing_finished(self, *_args) -> None:
@@ -2548,9 +2618,125 @@ class DataPreparationWidget(QWidget):
         if not getattr(self, "_voxel_dirty", False):
             return
         self._voxel_dirty = False
+        before = getattr(self, "_type_before_edit", None)
+        if (self._detected_over_ceiling and before != "user"
+                and self._spins_unchanged()):
+            # Enter on the unchanged default next to a print-resolution
+            # header: nothing to save, and the line keeps saying why.
+            self._set_voxel_source_label(before or "unknown")
+            return
         cb = getattr(self.controller, "on_voxel_edited", None)
         if cb is not None:
             cb()
+        self._remember_spins()
+        # a typed value is saved: the header's print resolution is no longer
+        # what the boxes show
+        self._detected_over_ceiling = False
+
+    def _remember_spins(self) -> None:
+        """The spins' values now count as the last ones filled or saved."""
+        self._restored_voxel = (self.voxel_z_spin.value(),
+                                self.voxel_y_spin.value(),
+                                self.voxel_x_spin.value())
+
+    def _spins_unchanged(self) -> bool:
+        """True when the three spins still hold the values they were last
+        filled with (Qt reports Enter as a change even then)."""
+        last = getattr(self, "_restored_voxel", None)
+        if last is None:
+            return False
+        try:
+            d = int(self.voxel_z_spin.decimals())
+            now = (self.voxel_z_spin.value(), self.voxel_y_spin.value(),
+                   self.voxel_x_spin.value())
+            return all(round(float(a), d) == round(float(b), d)
+                       for a, b in zip(now, last))
+        except Exception:   # noqa: BLE001
+            return False
+
+    def _on_voxel_z_editing_finished(self, *_args) -> None:
+        """The Z spin's ``editingFinished``: a real edit is saved as for any
+        spin; with no change of number, a Z the panel says was ASSUMED is
+        confirmed as the user's -- only after a key that acts on the Z box
+        (Enter, a digit, an arrow...) or a wheel turn, so tabbing through or
+        a focus-out never confirms it."""
+        touched = getattr(self, "_z_touched", False)
+        self._z_touched = False
+        dirty = getattr(self, "_voxel_dirty", False)
+        # over the ceiling nothing is kept, so there is no Z to confirm
+        assumed = (self._detected_z_assumed
+                   and not self._detected_over_ceiling
+                   and (self._voxel_source_type == "detected" or dirty))
+        if dirty and not (touched and assumed and self._spins_unchanged()):
+            self._on_voxel_editing_finished()
+            return
+        if not (touched and assumed):
+            return
+        self._voxel_dirty = False
+        self._detected_z_assumed = False
+        self._set_voxel_source_label("user")
+        cb = getattr(self.controller, "on_voxel_z_confirmed", None)
+        if cb is not None:
+            cb()
+        self._remember_spins()
+
+    def eventFilter(self, obj, event):   # noqa: N802 -- Qt override
+        """Notes a key that acts on the Z box, or a wheel turn on it
+        (``_z_touched``)."""
+        try:
+            if obj is getattr(self, "voxel_z_spin", None):
+                kind = event.type()
+                if kind == QEvent.Wheel or (
+                        kind == QEvent.KeyPress
+                        and event.key() in _Z_ACTING_KEYS):
+                    self._z_touched = True
+        except Exception:   # noqa: BLE001 -- a filter never breaks input
+            pass
+        return super().eventFilter(obj, event)
+
+    def _default_depth_tip(self) -> str:
+        """The ImageJ default-depth sentence, in the file's unit: "1 \u00b5m"
+        when Z came out as 1 \u00b5m, else "1" and the unit the file names
+        ("1 unit" when it names none)."""
+        if not self._detected_z_default_depth:
+            return ""
+        try:
+            z = float(self._detected_voxel_size[0])
+        except (TypeError, ValueError, IndexError):
+            z = 0.0
+        unit = str(self._detected_z_default_unit or "").strip()
+        if abs(z - 1.0) < 1e-9:
+            depth = "1 \u00b5m"
+        else:
+            depth = f"1 {unit}" if unit else "1 unit"
+        return VOXEL_Z_DEFAULT_DEPTH_TIP.format(depth=depth)
+
+    def set_voxel_z_default_depth(self, default, unit=None) -> None:
+        """Mark the header's Z as ImageJ's default depth of 1 *unit* (the
+        file records no slice spacing); the label and its tooltip say so."""
+        self._detected_z_default_depth = bool(default)
+        self._detected_z_default_unit = unit if default else None
+        if self._voxel_source_type == "detected":
+            self._set_voxel_source_label("detected")
+
+    def set_voxel_z_out_of_range(self, z) -> None:
+        """Say that the file's Z step (*z* \u00b5m) is out of the boxes'
+        range, so nothing was taken from the file; ``None`` clears it."""
+        try:
+            self._detected_z_out_of_range = (None if z is None
+                                             else float(z))
+        except (TypeError, ValueError):
+            self._detected_z_out_of_range = None
+        if self._voxel_source_type == "unknown":
+            self._set_voxel_source_label("unknown")
+
+    def set_voxel_over_ceiling(self, over) -> None:
+        """Say that the header's XY size was not recorded and not shown: over
+        the print-resolution ceiling (likely a print DPI read as a pixel
+        size), so the spins keep the unknown default."""
+        self._detected_over_ceiling = bool(over)
+        if self._voxel_source_type in ("detected", "unknown", "user"):
+            self._set_voxel_source_label(self._voxel_source_type)
 
     def set_detected_voxel_size(self, z, y, x) -> None:
         """Set the DETECTED baseline the ``\u21ba`` reset restores \u2014
@@ -2559,6 +2745,48 @@ class DataPreparationWidget(QWidget):
             self._detected_voxel_size = (float(z), float(y), float(x))
         except (TypeError, ValueError):
             self._detected_voxel_size = (1.0, 1.0, 1.0)
+        # A new baseline: whether ITS Z was assumed, and how it compares with
+        # the file, are told afterwards (`set_voxel_z_assumed`,
+        # `set_voxel_detected_note`).
+        self._detected_z_assumed = False
+        self._detected_note = None
+        self._detected_over_ceiling = False
+        self._detected_z_out_of_range = None
+        self._detected_z_default_depth = False
+        self._detected_z_default_unit = None
+        self._detected_note_z_assumed = False
+        self._z_touched = False
+
+    def set_voxel_z_assumed(self, assumed) -> None:
+        """Mark the detected baseline as having a Z filled from its XY size
+        (the file's header recorded no Z spacing).  The "detected" label then
+        says so; a typed or unknown value is unaffected."""
+        self._detected_z_assumed = bool(assumed)
+        if self._voxel_source_type == "detected":
+            self._set_voxel_source_label("detected")
+
+    def set_voxel_detected_note(self, note, z_assumed=False) -> None:
+        """A note on a RECORDED detected value: ``None``; ``"recorded"`` when
+        the file gives no spacing now (moved, or no tags), so the value shown
+        is the one recorded for this source; or the ``(z, y, x)`` the file
+        says now, when that differs from the recorded value (↺ takes it).
+        *z_assumed*: the file's new value has no measured Z of its own."""
+        self._detected_note_z_assumed = bool(z_assumed)
+        if note is not None and note != "recorded":
+            try:
+                note = tuple(float(v) for v in note)
+                if len(note) != 3:
+                    note = None
+            except (TypeError, ValueError):
+                note = None
+        self._detected_note = note
+        if self._voxel_source_type == "detected":
+            self._set_voxel_source_label("detected")
+
+    def voxel_source_type(self) -> str:
+        """``"detected"`` (read from the file), ``"user"`` (typed or restored
+        as the user's) or ``"unknown"`` -- the type the label shows."""
+        return self._voxel_source_type
 
     def apply_voxel_size(self, z, y, x, source="detected") -> None:
         """Push a resolved voxel into the spins + set the honest provenance label.
@@ -2573,17 +2801,97 @@ class DataPreparationWidget(QWidget):
                 pass
             spin.blockSignals(False)
         self._voxel_dirty = False
+        self._z_touched = False
+        self._remember_spins()
         self._set_voxel_source_label(source)
         self._update_voxel_aspect()
 
     def _set_voxel_source_label(self, source) -> None:
         """Honest voxel provenance line (``user`` / ``detected`` / ``unknown``)."""
+        self.voxel_source_label.setToolTip("")
+        z_out = getattr(self, "_detected_z_out_of_range", None)
+        over_line = (self._detected_over_ceiling and (
+            source in ("user", "unknown")
+            or (source == "detected" and self._detected_note == "recorded"))
+        ) or (z_out is not None and source == "unknown")
+        self.voxel_source_label.setStyleSheet(
+            _VOXEL_LABEL_AMBER_STYLE if over_line else DIM_LABEL_STYLE)
         if source == "user":
-            self.voxel_source_label.setText("your value \u00b7 \u21ba to restore detected")
+            self._voxel_source_type = "user"
+            self.voxel_source_label.setText(
+                VOXEL_USER_OVER_CEILING_NOTE if self._detected_over_ceiling
+                else "your value \u00b7 \u21ba to restore detected")
         elif source == "detected":
-            self.voxel_source_label.setText("detected from file")
+            self._voxel_source_type = "detected"
+            note = self._detected_note
+            assumed = self._detected_z_assumed
+            over = self._detected_over_ceiling
+            # Over the ceiling the value is not kept at all, so there is no
+            # Z to confirm: the line says to type the real values instead.
+            default = self._detected_z_default_depth
+            # an ImageJ default depth has its own sentence (not "= XY")
+            z_tip = (VOXEL_Z_ASSUMED_TIP if assumed and not over
+                     and not default else "")
+            z_first = (VOXEL_Z_ASSUMED_WORD.strip(" \u00b7") + " \u00b7 "
+                       if assumed else "")
+            extra = " ".join(t for t in (z_tip, self._default_depth_tip())
+                             if t)
+            if note == "recorded" and over:
+                self.voxel_source_label.setText(
+                    z_first + VOXEL_FILE_NOW_OVER_NOTE)
+                self.voxel_source_label.setToolTip(
+                    "These values were read from the image file earlier and "
+                    "are the ones recorded for this source. The file now "
+                    "records a print resolution, not a voxel size, so it is "
+                    "not offered." + (" " + extra if extra else ""))
+            elif note == "recorded":
+                self.voxel_source_label.setText(
+                    z_first + "recorded for this source")
+                self.voxel_source_label.setToolTip(
+                    "The image file gives no voxel size now (it was moved or "
+                    "has no spacing tags), so this is the value recorded for "
+                    "this source when it was read from the file."
+                    + (" " + extra if extra else ""))
+            elif isinstance(note, tuple):
+                # Compact numbers, no spaces around the slashes, to keep the
+                # line short (the label wraps on a narrow panel).
+                if self._detected_note_z_assumed:
+                    # the file's new Z is filled in too: say only what it
+                    # measures, and that its Z is assumed
+                    now = (f"{note[1]:.4g} \u00d7 {note[2]:.4g} \u00b5m "
+                           "(Z assumed)")
+                else:
+                    now = "/".join(f"{v:.4g}" for v in note) + " \u00b5m"
+                self.voxel_source_label.setText(
+                    (z_first or "detected from file \u00b7 ")
+                    + f"file now says {now}, \u21ba to use it")
+                self.voxel_source_label.setToolTip(
+                    "These values were read from the image file earlier and "
+                    "are the ones recorded for this source (later steps use "
+                    "them). The file now records a different voxel size; "
+                    "\u21ba replaces the recorded values with the file's."
+                    + (" " + extra if extra else ""))
+            elif over:
+                self.voxel_source_label.setText(VOXEL_OVER_CEILING_NOTE)
+            else:
+                if assumed and default:
+                    text = "detected from file (Z assumed)"
+                elif assumed:
+                    text = "detected from file (Z assumed = XY)"
+                else:
+                    text = "detected from file"
+                self.voxel_source_label.setText(text)
+                self.voxel_source_label.setToolTip(extra)
         else:
-            self.voxel_source_label.setText("\u2014 unknown (1 \u00b5m assumed)")
+            self._voxel_source_type = "unknown"
+            # a header that gives a print DPI is shown as no usable header
+            if self._detected_over_ceiling:
+                text = VOXEL_OVER_CEILING_NOTE
+            elif z_out is not None:
+                text = VOXEL_Z_OUT_OF_RANGE_NOTE.format(z=f"{z_out:g}")
+            else:
+                text = "\u2014 unknown (1 \u00b5m assumed)"
+            self.voxel_source_label.setText(text)
 
     def _reset_voxel_to_detected(self) -> None:
         z, y, x = self._detected_voxel_size
@@ -2593,6 +2901,8 @@ class DataPreparationWidget(QWidget):
             spin.setValue(value)
             spin.blockSignals(False)
         self._voxel_dirty = False
+        self._z_touched = False
+        self._remember_spins()
         # Honest label: a real detected baseline says "detected", a 1/1/1 baseline
         # is "unknown" (never silently presented as a detected spacing).
         is_unit = all(abs(float(v) - 1.0) < 1e-9 for v in (z, y, x))
@@ -5668,8 +5978,13 @@ class DataPreparationWidget(QWidget):
             spin.valueChanged.connect(self._update_voxel_aspect)
             spin.valueChanged.connect(self._mark_voxel_edited)
             # editingFinished (focus-out / Enter) — the SAVE signal:
-            # NOT per-keystroke valueChanged.  Gated on `_voxel_dirty`.
-            spin.editingFinished.connect(self._on_voxel_editing_finished)
+            # NOT per-keystroke valueChanged.  Gated on `_voxel_dirty`; the
+            # Z spin also confirms an assumed Z (`_on_voxel_z_editing_finished`).
+            if spin is self.voxel_z_spin:
+                spin.editingFinished.connect(self._on_voxel_z_editing_finished)
+            else:
+                spin.editingFinished.connect(self._on_voxel_editing_finished)
+        self.voxel_z_spin.installEventFilter(self)
         # Reset restores the DETECTED baseline (widget-side) AND persists the
         # cleared override (controller-side).  Connection order matters: the
         # widget reset runs FIRST (pushes the current baseline into the spins),

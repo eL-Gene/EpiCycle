@@ -1,12 +1,15 @@
 """Update as I click: Cells ▸ Click markers, on a box.
 
-A Cells box at or under ``ADD_LIVE_CELLS_MAX_VOXELS`` runs as you click,
-with the Nuclei rules: one run in flight, a change meanwhile marks it dirty
-and exactly one more run follows -- never a cancel (a watershed that has
-started cannot stop).  The box's wall picture is kept per box and wall
-settings, so every click after the first skips its build.  Over the limit,
-and on a whole patch, the balls still appear but the cells wait for
-Preview, and S1 says so.
+A Cells box at or under ``ADD_LIVE_CELLS_MAX_VOXELS`` (the whole patch's
+live limit too) runs as you click, with the Nuclei rules: one run in
+flight, a change meanwhile marks it dirty and exactly one more run follows
+-- never a cancel (a watershed that has started cannot stop).  The box's
+wall picture is kept per box and wall settings, so every click after the
+first skips its build.  Over the limit, and on a whole patch the click
+fill does not take, the balls still appear but the cells wait for Preview,
+and S1 says so.  The fixture's box is far under
+``ADD_LIVE_FULL_RUN_MAX_VOXELS``: a click the click fill cannot take (its
+walls have flat spots; the flood may not be compiled) runs the full fill.
 """
 
 from __future__ import annotations
@@ -119,17 +122,19 @@ def _box_key(hh):
 # the constants
 # --------------------------------------------------------------------------- #
 def test_the_cells_gate_and_its_sentence():
-    assert AP.ADD_LIVE_CELLS_MAX_VOXELS == 1_000_000
+    assert AP.ADD_LIVE_CELLS_MAX_VOXELS == 20_000_000
+    assert AP.ADD_LIVE_FULL_RUN_MAX_VOXELS == 1_000_000
     assert AP.ADD_S1_LIVE_OVER_GATE_BOX == (
         "Press Preview to see the cells — this box is over {n} voxels.")
     # the limit in millions, as the other Cells size lines say it
     assert AP.voxel_limit_words(1_000_000) == "1 million"
-    assert AP.voxel_limit_words(4_000_000) == "4 million"
+    assert AP.voxel_limit_words(20_000_000) == "20 million"
+    assert AP.voxel_limit_words(100_000_000) == "100 million"
     assert AP.voxel_limit_words(1_500_000) == "1.5 million"
     assert AP.voxel_limit_words(1000) == "1,000"
     assert AP.ADD_S1_LIVE_OVER_GATE_BOX.format(
         n=AP.voxel_limit_words(AP.ADD_LIVE_CELLS_MAX_VOXELS)) == (
-        "Press Preview to see the cells — this box is over 1 million "
+        "Press Preview to see the cells — this box is over 20 million "
         "voxels.")
 
 
@@ -268,6 +273,8 @@ def _same(a, b):
 
 
 def test_a_live_run_gathers_what_a_manual_preview_gathers(lc):
+    """... but for the live flag, which (over the full-run size) refuses a
+    click the click fill steps aside from."""
     seen = _spy_launch(lc)
     _click_and_draw(lc, CELL_A)
     assert lc._add_marker_click(CELL_B)
@@ -278,6 +285,8 @@ def test_a_live_run_gathers_what_a_manual_preview_gathers(lc):
     manual_kw, why = lc._add_gather_preview(live=False)
     assert why is None, why
     live_kw = {k: v for k, v in live_kw.items() if k != "cancel_event"}
+    assert live_kw["params"].pop("live") is True
+    assert "live" not in manual_kw["params"]
     assert live_kw.keys() == manual_kw.keys()
     bad = [k for k in live_kw if not _same(live_kw[k], manual_kw[k])]
     assert bad == []
@@ -516,7 +525,7 @@ def test_a_whole_patch_preview_refuses_a_click_busy(lc):
 def _state(**kw):
     s = {"has_patch": True, "has_box": True, "preset": "cells",
          "source": AP.SOURCE_CLICKS, "wall_channel": "mem",
-         "box_shape": (100, 100, 101), "whole_patch": False, "n_clicks": 1,
+         "box_shape": (200, 100, 1001), "whole_patch": False, "n_clicks": 1,
          "n_ticked": 1, "place_markers_on": True, "live_on": True,
          "empty_share": 1.0}
     s.update(kw)
@@ -524,16 +533,19 @@ def _state(**kw):
 
 
 def test_row_13_5_over_the_gate_and_on_a_whole_patch():
-    over = AP.ADD_S1_LIVE_OVER_GATE_BOX.format(n="1 million")
+    over = AP.ADD_S1_LIVE_OVER_GATE_BOX.format(n="20 million")
     assert AP.s1_sentence(_state()) == over
     assert AP.preview_block(_state()) is None   # Preview is the way
     assert AP.s1_kind(_state()) == "ready"
-    whole = _state(whole_patch=True)
+    whole = _state(whole_patch=True, box_shape=(20, 30, 30))
     assert AP.s1_sentence(whole) == AP.ADD_S1_LIVE_OVER_GATE_PATCH
     assert AP.s1_kind(whole) == "ready"
+    big_whole = _state(whole_patch=True)
+    assert AP.s1_sentence(big_whole) == (
+        AP.ADD_S1_LIVE_OVER_GATE_PATCH_SIZE.format(n="20 million"))
     gate = (AP.ADD_S1_LIVE_OVER_GATE_PATCH, over)
     # at the gate, the tick off, another source: the ready line
-    for other in (_state(box_shape=(100, 100, 100)), _state(live_on=False),
+    for other in (_state(box_shape=(200, 100, 1000)), _state(live_on=False),
                   _state(source="labels", n_run_markers=3,
                          run_id="r2")):
         assert AP.s1_sentence(other) not in gate

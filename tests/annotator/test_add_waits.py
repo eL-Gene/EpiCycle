@@ -995,11 +995,27 @@ def test_ridge_notes_on_a_box(monkeypatch):
     assert n < AP.ADD_RIDGE_BOX_VOXELS
     assert h._add_derive_note_text() == ""
     monkeypatch.setattr(AP, "ADD_RIDGE_BOX_VOXELS", n)
-    assert h._add_derive_note_text() == AP.ADD_NOTE_RIDGES_BOX.format(
-        kind="Vessel ridges")
-    # a kept whole-patch picture changes nothing on a box: it is built
-    # again at every Preview there
+    # at or under the keep limit: built once, then kept for the box --
+    # said until it is kept
+    assert n <= AP.ADD_LIVE_CELLS_MAX_VOXELS
+    once = AP.ADD_NOTE_RIDGES_BOX_ONCE.format(kind="Vessel ridges")
+    assert h._add_derive_note_text() == once
+    # a kept whole-patch picture changes nothing on a box (another key)
     h._add_elev_cache = {"key": h._add_elev_key(), "elev": np.zeros(1)}
+    assert h._add_derive_note_text() == once
+    # the box's own picture kept for this key: no note
+    h._add_box_elev_cache = {"key": h._add_box_elev_key(),
+                             "elev": np.zeros(1)}
+    assert h._add_derive_note_text() == ""
+    # kept for another wall type: the note again
+    _ridge(h, "meijering")
+    assert h._add_derive_note_text() == AP.ADD_NOTE_RIDGES_BOX_ONCE.format(
+        kind="Thin-faint ridges")
+    _ridge(h, "frangi")
+    # over the keep limit (the size the box's cache keys on): built again
+    # at every Preview, kept picture or not
+    monkeypatch.setattr(AP, "ADD_LIVE_CELLS_MAX_VOXELS", n - 1)
+    assert h._add_box_elev_key() is None
     assert h._add_derive_note_text() == AP.ADD_NOTE_RIDGES_BOX.format(
         kind="Vessel ridges")
     _ridge(h, "gradient")
@@ -1038,7 +1054,7 @@ def test_ridge_note_priority(monkeypatch):
 
 def test_the_ridge_notes_say_no_engine_word():
     for text in (AP.ADD_NOTE_RIDGES_WHOLE, AP.ADD_NOTE_RIDGES_WHOLE_MEMORY,
-                 AP.ADD_NOTE_RIDGES_BOX):
+                 AP.ADD_NOTE_RIDGES_BOX, AP.ADD_NOTE_RIDGES_BOX_ONCE):
         for word in ("frangi", "meijering", "voxel", "elevation"):
             assert word not in text.lower()
         assert "{kind}" in text
@@ -1191,20 +1207,62 @@ def test_the_slow_patch_note_reads_the_wall_type(monkeypatch):
     seen = []
     real = AP.patch_slow_line
 
-    def _spy(n_, wall_kind=None, *, picture_kept=False):
-        seen.append((n_, wall_kind, picture_kept))
-        return real(n_, wall_kind, picture_kept=picture_kept)
+    def _spy(n_, wall_kind=None, *, picture_kept=False, find_nuclei=False,
+             growth=None):
+        seen.append((n_, wall_kind, picture_kept, find_nuclei, growth))
+        return real(n_, wall_kind, picture_kept=picture_kept,
+                    find_nuclei=find_nuclei, growth=growth)
 
     monkeypatch.setattr(AP, "patch_slow_line", _spy)
     _ridge(h, "membrane")
     assert h._add_derive_note_text() == real(n, "membrane")
-    assert seen[-1] == (n, "membrane", False)
+    assert seen[-1] == (n, "membrane", False, False, None)
     # a ridge type whose picture is kept: the ridge note is gone, and the
     # slow-patch note counts no picture to build
     _ridge(h, "frangi")
     h._add_elev_cache = {"key": h._add_elev_key(), "elev": np.zeros(1)}
     assert h._add_derive_note_text() == real(n, "frangi", picture_kept=True)
-    assert seen[-1] == (n, "frangi", True)
+    assert seen[-1] == (n, "frangi", True, False, None)
+
+
+def _box_of_millions(z):
+    """A box of ``z`` x 100 x 1000 voxels (``z / 10`` million); only its
+    size is read here."""
+    return (slice(0, int(z)), slice(0, 100), slice(0, 1000))
+
+
+def test_a_large_cells_box_says_its_preview_is_slow(monkeypatch):
+    """A box follows the whole patch's size rule: over 20 million voxels a
+    Preview fills it in one go, and the amber slot says so before it is
+    pressed, as on a whole patch."""
+    h = _cells(monkeypatch)
+    _ridge(h, "membrane")
+    assert AP.ADD_SLOW_PATCH_VOXELS == 20_000_000
+    h.place_box(_box_of_millions(250))                  # 25.0 million
+    line = h._add_derive_note_text()
+    # a box grows by Grow by's pick: the flood's figure (Spread has its own)
+    assert line == AP.patch_slow_line(25_000_000, "membrane", box=True,
+                                      growth=AP.GROW_FLOOD)
+    assert line == (
+        "This box is 25.0 million voxels; a Preview may take about a "
+        "minute, longer on a slower computer. Stop acts between steps.")
+    # one family with the whole patch's line, the region the only difference
+    assert AP.ADD_NOTE_BOX_SLOW_STEPS == (
+        AP.ADD_NOTE_PATCH_SLOW_STEPS.replace("This patch", "This box"))
+    # a 5 million box: no slow line
+    h.place_box(_box_of_millions(50))
+    assert h._add_derive_note_text() == ""
+    # at the slow size exactly: none either
+    h.place_box(_box_of_millions(200))
+    assert h._add_derive_note_text() == ""
+    # over the Preview limit S1 refuses the box: no slow line
+    h.place_box(_box_of_millions(1500))
+    assert h._add_derive_note_text() == ""
+    # a ridge wall type: its own note comes first
+    h.place_box(_box_of_millions(250))
+    _ridge(h, "frangi")
+    assert h._add_derive_note_text() == AP.ADD_NOTE_RIDGES_BOX.format(
+        kind="Vessel ridges")
 
 
 @pytest.mark.parametrize("n", [24_000_000, 500_000_000])
@@ -1453,21 +1511,24 @@ def test_no_reader_words_in_the_review_after_close_box(monkeypatch):
 
 
 def test_a_whole_patch_refused_for_measuring_names_no_reader():
-    """Cells with neither run markers nor Click markers, and Nuclei ▸
-    Anywhere, on a whole patch are measured by nothing (the Auto lines say
-    so): the strip names no read."""
+    """A Cells whole patch with a blank From is measured by nothing (the
+    Auto lines say so): the strip names no read.  The nuclei masks and
+    Nuclei ▸ Anywhere are measured on a whole patch as on a box."""
     base = {"has_box": True, "whole_patch": True, "box_shape": (4, 4, 4)}
     cells = dict(base, preset="cells", wall_channel="mem",
-                 nuclei_channel="nuc", source=AP.SOURCE_NUCLEI, n_clicks=0)
+                 nuclei_channel="nuc", source=AP.SOURCE_RUN, run_id=None,
+                 n_clicks=0)
     assert AP.preview_block(cells) == AP.ADD_S1_WHOLE_NO_RUN
     assert AP.measuring_stage(cells, reader="info") is None
     picked = dict(cells, has_other_run=True)
     assert AP.preview_block(picked) == AP.ADD_S1_WHOLE_PICK_RUN
     assert AP.measuring_stage(picked, reader="info") is None
+    masks = dict(cells, source=AP.SOURCE_NUCLEI, info_pending=True)
+    assert AP.measuring_stage(masks, reader="info") == "add_info_patch"
     anywhere = dict(base, preset="nuclei", channel="nuc",
                     look_for=AP.LOOK_ANYWHERE)
-    assert AP.preview_block(anywhere) == AP.ADD_S1_WHOLE_ANYWHERE
-    assert AP.measuring_stage(anywhere, reader="info") is None
+    assert AP.preview_block(anywhere) is None
+    assert AP.measuring_stage(anywhere, reader="info") == "add_info_patch"
     # a whole patch that is measured still names its read: another run's
     # objects, Click markers (a marker to place outranks the measuring
     # line) and the Nuclei markers

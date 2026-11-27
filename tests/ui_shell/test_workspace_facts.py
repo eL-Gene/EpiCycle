@@ -740,3 +740,92 @@ class TestAdvisoryColour:
 
     def test_the_dash_is_an_em_dash(self):
         assert "\u2014" in wf.MSG_STEP2_NO_RUN
+
+
+
+class TestNoTrainedModelAdvisory:
+    """The Step 3 / Step 4 line when Step 2 has trained no round.
+
+    A project can reconstruct without a Step 2 round: a Cellpose built-in or
+    a model file picked on the Model card works.  The old line ("there is
+    nothing to reconstruct with until Step 2 trains a round") said the
+    opposite, so the line now says what the user can do, naming the controls
+    by the words the screen shows.  The strip does not wrap, so the line is
+    short enough for the default dock and the longer words are its tooltip.
+    """
+
+    def test_the_words(self):
+        assert wf.MSG_NO_TRAINED_MODEL == (
+            "No trained 2D model yet: pick one under Model ▸ Change…, or "
+            "train a round in Step 2.")
+        assert wf.MSG_NO_TRAINED_MODEL_TIP == (
+            "No trained 2D model in this workspace yet. You can continue: "
+            "pick a model under Model ▸ Change… (a Cellpose built-in, or a "
+            "model file under Browse external paths), or train a round in "
+            "Step 2.")
+
+    def test_it_no_longer_says_there_is_nothing_to_reconstruct_with(self):
+        for text in (wf.MSG_NO_TRAINED_MODEL, wf.MSG_NO_TRAINED_MODEL_TIP):
+            assert "nothing to reconstruct" not in text
+
+    def test_it_names_the_model_card_and_its_button_as_shown(self):
+        from napari_epicycle.fusion_reconstruction import _step3_pr_text as P
+        from napari_epicycle.segmentation import _step4_text as T4
+        for title, button in ((P.S3_MODEL_TITLE, P.S3_MODEL_CHANGE_BTN),
+                              (T4.SEG_MODEL_TITLE, T4.MODEL_CHANGE_BTN)):
+            assert f"under {title} ▸ {button}," in wf.MSG_NO_TRAINED_MODEL
+            assert f"under {title} ▸ {button} (" in (
+                wf.MSG_NO_TRAINED_MODEL_TIP)
+
+    def test_the_tooltip_names_the_pickers_external_section_as_shown(self):
+        src = (Path(wf.__file__).resolve().parents[1] / "fusion_reconstruction"
+               / "refinement_registry_dialog.py").read_text(encoding="utf-8")
+        assert 'QLabel("Browse external paths")' in src
+        assert "under Browse external paths)" in wf.MSG_NO_TRAINED_MODEL_TIP
+        assert wf.advisory_tooltip(wf.MSG_NO_TRAINED_MODEL) == (
+            wf.MSG_NO_TRAINED_MODEL_TIP)
+        # any other advisory keeps its own text as its tooltip
+        assert wf.advisory_tooltip(wf.MSG_STEP2_NO_RUN) == ""
+
+    def test_the_line_fits_the_default_dock_in_the_users_font(self):
+        """Measured in a child process: offscreen Qt here has no fonts unless
+        it is given a font folder, and giving it one in this process would
+        change every later test's text widths."""
+        import subprocess
+        import sys
+        repo = Path(__file__).resolve().parents[2]
+        code = (
+            "import os, sys\n"
+            "os.environ['QT_QPA_PLATFORM'] = 'offscreen'\n"
+            "if os.path.isdir('C:/Windows/Fonts'):\n"
+            "    os.environ['QT_QPA_FONTDIR'] = 'C:/Windows/Fonts'\n"
+            "from qtpy.QtGui import QFont\n"
+            "from qtpy.QtWidgets import QApplication\n"
+            "app = QApplication([])\n"
+            "app.setFont(QFont('Segoe UI', 9))\n"
+            "from napari_epicycle.ui_shell import workflow_shell as s\n"
+            "from napari_epicycle.ui_shell import _workspace_facts as f\n"
+            "lab = s._BannerLabel()\n"
+            "lab.set_strip(f.MSG_NO_TRAINED_MODEL, 'amber')\n"
+            "lab.ensurePolished()\n"
+            "print('S3WORDS', app.font().family(), lab.sizeHint().width(),"
+            " flush=True)\n"
+            "os._exit(0)\n")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
+        env["PYTHONUTF8"] = "1"
+        proc = subprocess.run([sys.executable, "-c", code], cwd=str(repo),
+                              env=env, capture_output=True, text=True,
+                              timeout=300)
+        lines = [ln for ln in proc.stdout.splitlines()
+                 if ln.startswith("S3WORDS")]
+        assert lines, (proc.returncode, proc.stdout[-1500:],
+                       proc.stderr[-3000:])
+        parts = lines[-1].split()
+        width = int(parts[-1])
+        print(f"[S3WORDS] {lines[-1]}")
+        if not sys.platform.startswith("win"):
+            pytest.skip("the user's font (Segoe UI) is a Windows font")
+        assert "Segoe" in lines[-1], lines[-1]
+        # the 578 px default dock, with room to spare
+        assert width <= 540, width

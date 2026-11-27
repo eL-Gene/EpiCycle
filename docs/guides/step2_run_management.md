@@ -23,9 +23,33 @@ The box after "Run:" lists the runs in this workspace with a short summary, for 
 
 Switching closes the annotator, loads the new run's state, reloads the patch that run was last on and reopens the annotator on it. If the new run had no patch loaded, the annotator stays closed and you pick a patch from the list.
 
+Before switching, the drawing you were doing is saved. If it cannot be saved (the run's folder was moved, the disk is full), the switch stops and the box says why; it offers "Switch anyway (the drawing is lost)", and Cancel is the default.
+
+The first run of a project is different: nothing closes and the patch you have open stays, in the same view and on the same slice. What you drew before the run existed and the channel, model and training settings you set go into it, so pressing Accept again after making the run writes the slice into it. A model you choose in the New Run dialog wins over the one picked in the panel. Every later switch closes, reloads and reopens as described above.
+
+When the project has runs but none is active, for example because the active run's folder was removed, the Run picker shows "No run is active — pick one below, or click New Run." instead of showing a run as the current one. Picking one of those runs is a normal switch: it loads that run's own patch and slices. If you have slices or a drawing on screen, you are asked first (an open patch alone switches without a question): "Your slices from before a run was active are not kept; make a New Run to keep them, or switch and lose them."
+
+### When Step 2 cannot use the list of runs
+
+The list of runs is the file `step2_state.json` in the project folder. In three cases Step 2 saves nothing in the project, greys out New Run and says why in the Run picker (hover it for the whole sentence) and in the Run summary:
+
+* **The file is damaged.** Nothing was deleted: Step 2 keeps a copy beside it (`step2_state.json.corrupt-<time>`) and never writes over it. Keep the folder as it is and ask for help.
+* **Old-layout Step 2 data sits beside a folder of runs.** Press Browse and pick this same folder; Step 2 offers to update it.
+* **Another program held the file when the project was opened** (a backup, a sync tool or a virus scanner). Close and reopen the project, or press Browse and pick it again; Step 2 also tries again by itself at your next action.
+
+A file that another program holds for a moment while you work is not damaged: that one save is refused, said once, and tried again at your next change.
+
+### If a save is refused at close
+
+When Step 2 cannot save at close, or when you leave a project with Browse and its save is refused, it writes what it could not save (the slices, the settings, the round counters) to `artifacts/step2/rescue/<time>.json` and says where. Step 2 does not read this file back by itself: open the project again, check what is missing, and keep the file to recover it by hand (or ask for help). A drawing that could not be saved when you leave a project is not kept, and the box says so.
+
 ---
 
 ## New Run
+
+Until the project has a run, the Run picker says "No run yet — click New Run to start training." Until then Step 2 saves nothing in the project, and Predict, Accept, Finalize accepted, Train, the 2D annotator, the two imports and the training history ask you to make a run first.
+
+If New Run cannot write the list of runs because another program holds it for a moment, nothing is made; press New Run again.
 
 Opens a dialog with four parts:
 
@@ -34,7 +58,7 @@ Opens a dialog with four parts:
 * **Channels**: a preview of the channels in the viewer (information only).
 * **Preview**: the folder tree that will be created.
 
-Two buttons: **Create only** (makes the run but stays on the current one) and **Create + Activate** (makes it and switches to it; the default).
+Two buttons: **Create only** (makes the run but stays on the current one; not offered for the first run of a project, which is always switched to) and **Create + Activate** (makes it and switches to it; the default).
 
 ---
 

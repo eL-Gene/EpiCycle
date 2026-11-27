@@ -6,8 +6,19 @@ from napari_epicycle.hitl_training_annotation.controller.training_annotation_con
 from napari_epicycle.io_registry import HITLPersistenceService
 
 
-def _controller_stub(tmp_path):
+def _controller_stub(tmp_path, layout="legacy"):
+    """``layout``: Step 2 saves nothing in a folder with no run, so the
+    folder gets one -- ``"legacy"`` an old-layout ``training_data/`` (state
+    goes to hitl_state.json), ``"run"`` the active run ``pilot`` (state goes
+    to step2_state.json)."""
+    if layout == "legacy":
+        (tmp_path / "training_data").mkdir(parents=True, exist_ok=True)
+    elif layout == "run":
+        from napari_epicycle.hitl_training_annotation import _run_management as RM
+        RM.create_run_on_disk(tmp_path, "pilot", display_name="pilot")
+        RM.add_run_to_state_json(tmp_path, "pilot", activate=True)
     ctrl = TrainingAnnotationController.__new__(TrainingAnnotationController)
+    ctrl.active_run_id = "pilot" if layout == "run" else "default"
     ctrl.persistence = HITLPersistenceService()
     ctrl.working_dir = str(tmp_path)
     ctrl.current_round = 1
@@ -171,12 +182,12 @@ class _StubComboBox:
         return prev
 
 
-def _controller_with_ui(tmp_path):
+def _controller_with_ui(tmp_path, layout="run"):
     """Stub controller with a SimpleNamespace UI carrying the widgets that
     `_collect_training_config` and `_apply_inference_params_from_ui` read.
     """
     from types import SimpleNamespace
-    ctrl = _controller_stub(tmp_path)
+    ctrl = _controller_stub(tmp_path, layout=layout)
     ctrl.ui = SimpleNamespace(
         # Training Setup (Basic)
         epochs_sb=_StubSpinBox(500),
@@ -250,7 +261,9 @@ def test_save_captures_training_widget_changes_without_train_click(tmp_path):
     ctrl.ui.chan2_combo.setCurrentText("0: none")
     ctrl.ui.norm_cb.setChecked(False)
 
-    ctrl._save_internal_state()
+    assert ctrl._save_internal_state() == "saved-v3"
+    assert (tmp_path / "step2_state.json").is_file()
+    assert not (tmp_path / "hitl_state.json").exists()
 
     assert ctrl.current_config.get("epochs") == 100
     assert ctrl.current_config.get("learning_rate") == 0.005
@@ -270,7 +283,8 @@ def test_save_captures_inference_widget_changes_without_apply_click(tmp_path):
     ctrl.ui.inference_flow_thresh.setValue(0.7)
     ctrl.ui.inference_invert_cb.setChecked(True)
 
-    ctrl._save_internal_state()
+    assert ctrl._save_internal_state() == "saved-v3"
+    assert (tmp_path / "step2_state.json").is_file()
 
     assert ctrl.current_config.get("n_iterations") == 200
     assert ctrl.current_config.get("diameter") == 30
@@ -289,7 +303,7 @@ def test_save_preserves_non_widget_managed_keys(tmp_path):
     ctrl.current_config["pretrained_model_path"] = "/some/checkpoint/path"
     ctrl.current_config["custom_legacy_key"] = "should-survive"
 
-    ctrl._save_internal_state()
+    assert ctrl._save_internal_state() == "saved-v3"
 
     assert ctrl.current_config.get("pretrained_model_path") == "/some/checkpoint/path"
     assert ctrl.current_config.get("custom_legacy_key") == "should-survive"
@@ -314,7 +328,8 @@ def test_load_with_dynamic_channel_name_no_patch_yet(tmp_path):
     loads and labels become viewer-aware ('1: cdh1', '2: h2b'),
     the saved integer index resolves to the correct channel.
     """
-    ctrl = _controller_with_ui(tmp_path)
+    # An old-layout folder: its hitl_state.json is what the reload reads.
+    ctrl = _controller_with_ui(tmp_path, layout="legacy")
     # Simulate prior session: write state.json directly with the
     # viewer-aware channel labels that would have been saved when a
     # patch was loaded (cdh1 + h2b).  Bypass _save_internal_state
@@ -379,7 +394,9 @@ def test_round_trip_widget_changes_persist(tmp_path):
     ctrl.ui.inference_diameter_sb.setValue(45)
     ctrl.ui.inference_niter_dynamics.setValue(300)
     ctrl.ui.inference_invert_cb.setChecked(True)
-    ctrl._save_internal_state()
+    assert ctrl._save_internal_state() == "saved-v3"
+    saved = json.loads((tmp_path / "step2_state.json").read_text(encoding="utf-8"))
+    assert saved["runs"]["pilot"]["current_config"]["epochs"] == 120
 
     # Simulate fresh session: reset widgets to defaults + clear cfg.
     ctrl.ui.epochs_sb.setValue(500)

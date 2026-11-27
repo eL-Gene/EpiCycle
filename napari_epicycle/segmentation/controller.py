@@ -2565,6 +2565,7 @@ class SegmentStackController:
         snap = self._active_model
         needs = self._channels_needed()
         cache_dir = self._prediction_cache_dir() if self.working_dir else None
+        assumed_vals = self._z_assumed_values()
         rows = []
         for e in entries:
             rec = {} if e["conflict"] else self.state_manager.get_record(
@@ -2582,8 +2583,41 @@ class SegmentStackController:
                 e, rec, active_model=snap, needs=needs,
                 ticked=e["name"] in ticked,
                 running=running.get(e["name"]),
-                cache_complete=complete))
+                cache_complete=complete,
+                z_assumed=self._stack_z_assumed(e, rec, assumed_vals)))
         return rows
+
+    def _z_assumed_values(self) -> dict:
+        """Step 1's patches whose source row records a header voxel size
+        with an assumed Z, read once per refresh from Step 1's state."""
+        if not self.working_dir:
+            return {}
+        try:
+            from napari_epicycle.data_preparation._state import (
+                z_assumed_patch_values,
+            )
+            return z_assumed_patch_values(
+                S4M.read_step1_state(self.working_dir)) or {}
+        except Exception:          # noqa: BLE001 -- a row's words
+            return {}
+
+    def _stack_z_assumed(self, entry, record, values) -> bool:
+        """True when the stack's ``step1`` voxel size IS its Step 1 source's
+        assumed-Z value (a processed patch's store size counts only when
+        equal).  Words only: the record is never changed."""
+        sp = (record or {}).get("spacing")
+        if (not values or not isinstance(sp, dict)
+                or sp.get("source") != "step1"):
+            return False
+        try:
+            from napari_epicycle.data_preparation._state import _norm_path
+            rel = os.path.relpath(entry.get("path") or "", self.working_dir)
+            if rel.startswith(".."):
+                return False
+            hit = values.get(_norm_path(rel.replace(os.sep, "/")))
+            return bool(hit) and S4M.same_spacing(sp, {"zyx": hit[0]})
+        except (OSError, ValueError, TypeError):
+            return False
 
     def _push_summaries(self, rows, ticked):
         main, amber = S4R.session_summary(rows)
@@ -3433,7 +3467,8 @@ class SegmentStackController:
                     active_model=self._active_model,
                     needs=self._channels_needed(), ticked=row["ticked"],
                     running=running[stack_name],
-                    cache_complete=row["cache_complete"])
+                    cache_complete=row["cache_complete"],
+                    z_assumed=row.get("z_assumed", False))
                 self.ui.update_row(stack_name, new)
 
     def _clear_workbench_caches(self):

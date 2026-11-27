@@ -89,9 +89,11 @@ IMAGE_DERIVED_SEEDS = frozenset(
 #: target's footprint -- which a box has not got.
 ADD_WALL_KINDS = IMAGE_DERIVED_WALLS - {"hybrid"}
 
-#: Voxels in an Add box above which the region target refuses (the owner's
-#: 4 M limit; the Cells preset is the only caller).
-ADD_BOX_BUDGET = 4_000_000
+#: Voxels in an Add box above which the region target refuses (the Cells
+#: preset is the only caller).  It is the whole patch's own ceiling too
+#: (``region.WHOLE_FILL_MAX_VOXELS`` is this number): one size rule for any
+#: region, a box of any size or the whole patch.
+ADD_BOX_BUDGET = 100_000_000
 
 #: What the region target's hidden outside marker is made of.
 OUTSIDE_VALUES = ("faces+dark", "faces")

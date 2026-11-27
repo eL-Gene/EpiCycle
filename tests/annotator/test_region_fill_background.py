@@ -147,6 +147,8 @@ def test_the_engine_defaults():
     assert R.BACKGROUND_FROM_MARKER_UM == 6.0
     assert R.BACKGROUND_NN_SHARE == 0.75
     assert R.WHOLE_FILL_MAX_VOXELS == 100_000_000
+    # a box's budget is the same number: one size rule for any region
+    assert R.WHOLE_FILL_MAX_VOXELS == S.ADD_BOX_BUDGET
     assert C.GROWTH_LIMIT == S.DEFAULT_PARAMS["growth_limit"] == 28.0
     assert C.WALL_COST == S.DEFAULT_PARAMS["wall_cost"] == 40.0
     assert FILL in S.GROWTH_VALUES
@@ -984,11 +986,15 @@ def test_the_whole_fill_sentence():
 
 
 def test_a_box_fill_keeps_the_box_budget():
+    """A box still has a budget and refuses above it (the box's sentence,
+    not the whole patch's), though by default it is the whole ceiling."""
+    assert S.DEFAULT_PARAMS["box_budget"] == R.WHOLE_FILL_MAX_VOXELS
     shape = (6, 20, 20)
     out = _fill(np.zeros(shape, np.int32), np.zeros(shape, np.float32),
                 _fill_spec(box_budget=100), spacing=ISO05,
                 seed_points=[(3, 10, 10)])
     assert out.status == "refused" and out.refusal_reason == "too-big"
+    assert out.messages == [R.too_big_sentence(100)]
 
 
 # --------------------------------------------------------------------------- #

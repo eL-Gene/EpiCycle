@@ -605,6 +605,11 @@ def test_choosing_the_shrink_wrap_adds_exactly_two_keys(widget):
 def test_the_cells_combo_and_the_nuclei_combo_are_apart(widget):
     _nuc_page(widget)
     try:
+        # Cells' own pick: No outline (its default is the shrink-wrap)
+        widget.set_add_preset("cells")
+        widget.add_outline_combo.setCurrentIndex(
+            AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
+        widget.set_add_preset("nuclei")
         widget.add_nuc_outline_combo.setCurrentIndex(
             AP.OUTLINE_KEYS.index(AP.OUTLINE_SHRINK))
         widget.set_add_preset("cells")
@@ -673,11 +678,12 @@ def test_a_cells_card_left_open_is_not_closed_by_the_nuclei_card(widget):
         _back(widget)
 
 
-def test_never_on_a_whole_patch_or_over_candidates(widget):
+def test_on_a_whole_patch_as_on_a_box_never_over_candidates(widget):
     _nuc_page(widget, whole=True)
     try:
-        assert widget.add_nuc_outline_btn.isHidden()
-        assert widget._add_cells_container.isHidden()
+        # the card is on a whole patch as on a box
+        assert not widget.add_nuc_outline_btn.isHidden()
+        assert not widget._add_cells_container.isHidden()
         widget.update_add_ui_state(whole_patch=False)
         widget.add_nuc_outline_btn.setChecked(True)
         widget.add_nuc_outline_combo.setCurrentIndex(
@@ -927,7 +933,7 @@ def _land_info(h):
         th.end()
 
 
-def test_the_mode_is_none_unless_chosen_and_never_on_inside_or_whole(h):
+def test_the_mode_is_none_unless_chosen_and_never_on_inside(h):
     assert h._add_outline_mode() == AP.OUTLINE_NONE
     assert h._add_outline_key() is None
     h.adv.nuc_outline = AP.OUTLINE_SHRINK
@@ -937,8 +943,9 @@ def test_the_mode_is_none_unless_chosen_and_never_on_inside_or_whole(h):
     h.adv.look = (AP.LOOK_INSIDE, "r")
     assert h._add_outline_mode() == AP.OUTLINE_NONE
     h.adv.look = ANYWHERE
+    # a whole patch reads the pick as a box does
     h._add_whole_patch = True
-    assert h._add_outline_mode() == AP.OUTLINE_NONE
+    assert h._add_outline_mode() == AP.OUTLINE_SHRINK
     h._add_whole_patch = False
     # a page without the Nuclei card (an older panel): none
     plain = FakeAdv()
@@ -1140,9 +1147,9 @@ def test_the_remembered_state_never_turns_the_outline_on(h, widget):
 
 def test_the_real_page_and_the_gather_agree_on_the_outline(h, widget):
     """The real page, not a fake: with the shrink-wrap picked on Nuclei ▸
-    Anywhere, a box carries it into the Preview; on a whole patch the page
-    and the orchestrator both read no outline (no key in the snapshot, no
-    Dark below / Bridge gaps under Advanced, no bridge in its summary)."""
+    Anywhere, a box carries it into the Preview; a whole patch carries it
+    the same way (the key in the snapshot, Dark below under Advanced, the
+    bridge in its summary)."""
     reset_add(widget)
     h.adv = widget
     widget.update_add_ui_state(look_for_items=[], box_active=True)
@@ -1164,19 +1171,20 @@ def test_the_real_page_and_the_gather_agree_on_the_outline(h, widget):
         assert not widget._add_dark_below_row.isHidden()
         assert "bridge" in str(widget._add_advanced_toggle.property(
             "_epicycle_chevron_title"))
-        # a whole patch: no outline, on the page and in the orchestrator
+        # a whole patch: the same outline, on the page and in the
+        # orchestrator (one outline per patch: the cached one)
         h._add_whole_patch = True
         widget.update_add_ui_state(whole_patch=True)
-        assert h._add_outline_mode() == AP.OUTLINE_NONE
+        assert h._add_outline_mode() == AP.OUTLINE_SHRINK
         p = widget.get_add_params()
-        assert "outline" not in p and "bridge_um" not in p
-        assert widget._add_dark_below_row.isHidden()
-        assert widget._add_bridge_row.isHidden()
-        assert "bridge" not in str(widget._add_advanced_toggle.property(
+        assert p["outline"] == AP.OUTLINE_SHRINK and "bridge_um" in p
+        assert not widget._add_dark_below_row.isHidden()
+        assert "bridge" in str(widget._add_advanced_toggle.property(
             "_epicycle_chevron_title"))
-        kw, _why = h._add_gather_preview()
-        assert kw is None or "outline" not in kw["params"]
-        assert kw is None or "outline_roi" not in kw
+        kw, why = h._add_gather_preview()
+        assert why is None, why
+        assert kw["params"]["outline"] == AP.OUTLINE_SHRINK
+        assert kw["outline_roi"] is h._add_cached_outline()
         # the pick itself is kept for the next box
         assert widget.get_add_nuc_outline() == AP.OUTLINE_SHRINK
     finally:
