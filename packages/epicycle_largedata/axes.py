@@ -215,7 +215,10 @@ def read_voxel_spacing(path) -> Optional[Tuple[float, float, float]]:
 
     * **TIFF** — ImageJ ``spacing`` (Z) + ``XResolution`` / ``YResolution``
       (XY), scaled by the ImageJ ``unit``; OME-TIFF ``PhysicalSize{X,Y,Z}`` +
-      their units (preferred when present).
+      their units (preferred when present).  A stack ImageJ saved with more
+      than one slice and no ``spacing`` has a Z of 1 unit (ImageJ leaves the
+      key out at a depth of 1.0); tifffile's own ImageJ-style files keep the
+      XY fill.
     * **``.zarr`` / ``.zip``** — the OME-NGFF level-0 ``coordinateTransformations``
       scale (the durable physical spacing a Prepare baked in).
 
@@ -224,6 +227,29 @@ def read_voxel_spacing(path) -> Optional[Tuple[float, float, float]]:
     others (a lone XY spacing yields ``(xy, y, x)``); an all-unit ``(1, 1, 1)`` is
     returned as-is (the caller treats unit spacing as "unknown").
     """
+    return _read_voxel_spacing(path, None)
+
+
+def read_voxel_spacing_detail(path) -> Optional[dict]:
+    """:func:`read_voxel_spacing` plus how the Z value was obtained.
+
+    Returns ``{"zyx": (z, y, x), "z_from_xy": bool}`` or ``None`` exactly
+    when :func:`read_voxel_spacing` returns ``None`` (same file read, same
+    value).  ``z_from_xy`` is True when the header recorded no Z spacing and
+    Z was filled from the XY pixel size -- an assumption the panel says out
+    loud.  ``z_imagej_default`` is True when Z is ImageJ's default depth of
+    1 unit (a stack ImageJ saved with no ``spacing`` key), and
+    ``z_imagej_unit`` that unit as the file names it.  Never raises."""
+    detail: dict = {}
+    zyx = _read_voxel_spacing(path, detail)
+    if zyx is None:
+        return None
+    return {"zyx": zyx, "z_from_xy": bool(detail.get("z_from_xy", False)),
+            "z_imagej_default": bool(detail.get("z_imagej_default", False)),
+            "z_imagej_unit": detail.get("z_imagej_unit") or None}
+
+
+def _read_voxel_spacing(path, detail) -> Optional[Tuple[float, float, float]]:
     try:
         p = str(path)
     except Exception:
@@ -234,19 +260,22 @@ def read_voxel_spacing(path) -> Optional[Tuple[float, float, float]]:
                 os.path.isdir(p) and os.path.exists(os.path.join(p, ".zattrs"))):
             return _voxel_from_zarr(p)
         if low.endswith((".tif", ".tiff")):
-            return _voxel_from_tiff(p)
+            return _voxel_from_tiff(p, detail)
     except Exception:
         return None
     return None
 
 
-def _fill_zyx(z, y, x) -> Optional[Tuple[float, float, float]]:
+def _fill_zyx(z, y, x, detail=None) -> Optional[Tuple[float, float, float]]:
     """Coalesce a partial ``(z, y, x)`` into a full triple, or ``None`` if all
     three are absent.  A missing axis falls back to a present XY, then Z, then
-    ``1.0``."""
+    ``1.0``.  When *detail* (a dict) is given, ``detail["z_from_xy"]`` records
+    whether a missing Z was filled from XY."""
     if z is None and y is None and x is None:
         return None
     xy = x if x is not None else y
+    if detail is not None:
+        detail["z_from_xy"] = z is None and xy is not None
     zz = z if z is not None else (xy if xy is not None else 1.0)
     yy = y if y is not None else (xy if xy is not None else 1.0)
     xx = x if x is not None else (xy if xy is not None else 1.0)
@@ -256,7 +285,7 @@ def _fill_zyx(z, y, x) -> Optional[Tuple[float, float, float]]:
         return None
 
 
-def _parse_ome_voxel(xml) -> Optional[Tuple[float, float, float]]:
+def _parse_ome_voxel(xml, detail=None) -> Optional[Tuple[float, float, float]]:
     """PhysicalSize{Z,Y,X} (+ per-axis unit) from an OME-XML metadata string, in
     µm, or ``None``.  Regex-based (no XML dependency); never raises."""
     try:
@@ -284,16 +313,16 @@ def _parse_ome_voxel(xml) -> Optional[Tuple[float, float, float]]:
         y *= _um_factor(_unit("PhysicalSizeYUnit") or "um")
     if x is not None:
         x *= _um_factor(_unit("PhysicalSizeXUnit") or "um")
-    return _fill_zyx(z, y, x)
+    return _fill_zyx(z, y, x, detail)
 
 
-def _voxel_from_tiff(path) -> Optional[Tuple[float, float, float]]:
+def _voxel_from_tiff(path, detail=None) -> Optional[Tuple[float, float, float]]:
     import tifffile
 
     with tifffile.TiffFile(str(path)) as tf:
         ome = getattr(tf, "ome_metadata", None)
         if ome:
-            v = _parse_ome_voxel(ome)
+            v = _parse_ome_voxel(ome, detail)
             if v is not None:
                 return v
         ij = getattr(tf, "imagej_metadata", None) or {}
@@ -356,7 +385,45 @@ def _voxel_from_tiff(path) -> Optional[Tuple[float, float, float]]:
                 y *= xy_factor
         else:
             x = y = None
-        return _fill_zyx(z, y, x)
+        # ImageJ writes `spacing=` only for a stack whose voxel depth is not
+        # 1.0, and reads an absent key as depth 1.0.  So a stack ImageJ saved
+        # with more than one slice, a physical unit and an XY size but no
+        # `spacing` has a depth of exactly 1 unit: Z is read from the file,
+        # not assumed from XY.  tifffile writes the same marker with its own
+        # fixed version string and no such rule (a scripted stack of unknown
+        # depth), so a file with that version keeps the XY fill, as does a
+        # one-slice image.
+        if (z is None and ij and _is_physical_unit(unit)
+                and (x is not None or y is not None)
+                and str(ij.get("ImageJ", "") or "").strip() not in (
+                    "", _TIFFFILE_IMAGEJ_VERSION)
+                and _imagej_slice_count(ij) > 1):
+            z = 1.0 * _um_factor(unit)
+            if detail is not None:
+                detail["z_imagej_default"] = True
+                detail["z_imagej_unit"] = unit.strip()
+        return _fill_zyx(z, y, x, detail)
+
+
+#: The ImageJ version tifffile writes into every ImageJ description it makes
+#: (ImageJ and Fiji write their own).
+_TIFFFILE_IMAGEJ_VERSION = "1.11a"
+
+
+def _imagej_slice_count(ij) -> int:
+    """Z planes of an ImageJ description: ``slices``, or ``images`` for an
+    old plain stack that names no channels or frames.  0 when unreadable."""
+    def _int(key):
+        try:
+            return int(ij.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    slices = _int("slices")
+    if slices:
+        return slices
+    if _int("channels") > 1 or _int("frames") > 1:
+        return 1
+    return _int("images")
 
 
 def _voxel_from_zarr(path) -> Optional[Tuple[float, float, float]]:

@@ -8,8 +8,8 @@ over one run cell (its marker is "over kept"), a kept object over most of
 another (a sliver under Spread), a run object deep in the dark, one half in
 the dark, and three tissue outlines -- under Spread and Fill, on a box the
 size of the patch and on a sub-box handed the whole-patch outline, and on a
-whole patch (filled to the walls with a background marker, whatever the
-hidden Grow by says).
+whole patch (Fill: filled to the walls with a background marker; Spread:
+grown by Spread, Grow by being the user's pick there too).
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def _outlines():
 _CASES = (list(itertools.product((0, 1), ("o1", "o2", "o3"),
                                  ("compete", "flood"), ("whole", "sub")))
           + list(itertools.product((0, 1), ("o1", "o2", "o3"),
-                                   ("fill",), ("whole",))))
+                                   ("fill", "spread_patch"), ("whole",))))
 _SEEN = {"slivers": 0, "dark": 0, "over_kept": 0, "outside": 0}
 
 
@@ -68,12 +68,17 @@ def test_the_run_count_is_the_previews_markers(monkeypatch, seed, oname,
     ch, run, labels = _world(seed)
     outline = _outlines()[oname]
     thr = _threshold(ch)
-    # "fill": a whole patch, its hidden Grow by left at Spread
-    whole = growth == "fill"
+    # "fill": a whole patch with Grow by on Fill to the walls (filled with
+    # a background marker); "spread_patch": a whole patch with Grow by on
+    # Spread from each marker (grown by Spread, in tiles)
+    whole = growth in ("fill", "spread_patch")
+    sent = {"fill": "flood", "spread_patch": "compete"}.get(growth, growth)
+    want = {"fill": "fill_with_background",
+            "spread_patch": "compete"}.get(growth, growth)
     roi = tuple(slice(0, s) for s in SHAPE) if where == "whole" else SUB
     crop = where == "sub"
     params = {"preset": "cells", "dark_outside": False, "outline": "cleared",
-              "growth": "compete" if whole else growth, "whole_patch": whole}
+              "growth": sent, "whole_patch": whole}
     info = AP.add_box_info(
         existing_roi=(labels[roi] if crop else labels), dark_sources=None,
         dark_rois=({k: v[roi] for k, v in ch.items()} if crop else ch),
@@ -103,10 +108,10 @@ def test_the_run_count_is_the_previews_markers(monkeypatch, seed, oname,
         run_guide_roi=run[roi], dark_threshold=thr, outline_roi=outline)
     assert len(seen) == 1
     engine = seen[0]
-    # what the engine ran: the fill on a whole patch (no tiles), else the
-    # Grow by pick
-    assert ran == [("fill_with_background" if whole else growth)]
-    if whole:
+    # what the engine ran: the fill on a whole patch with Fill (no tiles),
+    # else the Grow by pick
+    assert ran == [want]
+    if growth == "fill":
         assert engine.n_tiles == 0
 
     assert info.run_count is not None

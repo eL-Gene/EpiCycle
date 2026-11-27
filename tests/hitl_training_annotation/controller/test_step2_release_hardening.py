@@ -790,23 +790,38 @@ def _new_layout_ctrl(tmp_path):
     return ctrl
 
 
-def test_save_internal_state_quarantines_a_corrupt_state_file(tmp_path):
+def test_save_internal_state_refuses_beside_a_corrupt_state_file(tmp_path):
+    """A run list that cannot be read is never overwritten: the save writes
+    nothing and the file stays byte for byte as it was."""
     ctrl = _new_layout_ctrl(tmp_path)
     state_path = tmp_path / "step2_state.json"
     state_path.write_text('{"runs": {"other": ', encoding="utf-8")  # truncated
 
-    ctrl._save_internal_state()
+    assert ctrl._save_internal_state() == "unreadable"
 
-    quarantined = list(tmp_path.glob("step2_state.json.corrupt-*"))
-    assert len(quarantined) == 1, "the corrupt file must be kept, not overwritten"
-    assert quarantined[0].read_text(encoding="utf-8") == '{"runs": {"other": '
-    # A fresh, valid state file replaced it.
-    assert json.loads(state_path.read_text(encoding="utf-8"))["runs"]
+    assert state_path.read_text(encoding="utf-8") == '{"runs": {"other": '
+    # one byte copy set aside for recovery; the file itself untouched
+    copies = list(tmp_path.glob("step2_state.json.corrupt-*"))
+    assert len(copies) == 1
+    assert copies[0].read_text(encoding="utf-8") == '{"runs": {"other": '
+    assert not (tmp_path / "hitl_state.json").exists()
 
-    text = chr(10).join(ctrl.ui.training_log_output.lines)
-    assert "OTHER run" in text
-    assert "Recover them from the quarantined copy" in text
-    assert str(quarantined[0]) in text
+
+def test_save_internal_state_refuses_when_the_file_goes_bad_after_the_check(
+        tmp_path):
+    """The file goes bad AFTER the save checked it (a race): the save is
+    refused and the file is left byte for byte -- a fresh file carrying only
+    the active run is never written over the other runs' entries."""
+    ctrl = _new_layout_ctrl(tmp_path)
+    state_path = tmp_path / "step2_state.json"
+    state_path.write_text('{"runs": {"other": ', encoding="utf-8")  # truncated
+    ctrl._step2_write_target = lambda: "run"      # the check saw a good file
+
+    assert ctrl._save_internal_state() == "refused"
+
+    assert state_path.read_text(encoding="utf-8") == '{"runs": {"other": '
+    assert "could not be read back" in ctrl._last_save_error
+    assert not (tmp_path / "hitl_state.json").exists()
 
 
 def test_save_internal_state_leaves_a_valid_state_file_alone(tmp_path):

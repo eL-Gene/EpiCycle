@@ -104,9 +104,24 @@ class DummySegmentationManager:
         return self._masks.get(slice_label)
 
 
-def _make_train_ctrl(tmp_path, *, config=None, seg_manager=None, training_manager=None):
-    """Shared helper for training round flow tests."""
+def _make_train_ctrl(tmp_path, *, config=None, seg_manager=None, training_manager=None,
+                     layout="legacy"):
+    """Shared helper for training round flow tests.
+
+    ``layout``: Step 2 writes nothing in a folder with no run, so every
+    folder here is given one: ``"legacy"`` (the default -- these tests pin
+    the old layout's artifact files) adds an old-layout ``training_data/``;
+    ``"run"`` makes and activates the run ``pilot``.
+    """
+    if layout == "legacy":
+        (tmp_path / "training_data").mkdir(parents=True, exist_ok=True)
+    elif layout == "run":
+        from napari_epicycle.hitl_training_annotation import _run_management as RM
+        RM.create_run_on_disk(tmp_path, "pilot", display_name="pilot")
+        RM.add_run_to_state_json(tmp_path, "pilot", activate=True)
     ctrl = TrainingAnnotationController.__new__(TrainingAnnotationController)
+    if layout == "run":
+        ctrl.active_run_id = "pilot"
     ctrl.persistence = HITLPersistenceService()
     ctrl.training_manager = training_manager or TrainingManager()
     ctrl.segmentation_manager = seg_manager or DummySegmentationManager()
@@ -298,59 +313,63 @@ def test_train_model_promotes_latest_checkpoint_for_curation(tmp_path):
     assert any("Active lateral model set" in line for line in ctrl.ui.training_log_output.lines)
 
 
-def test_persist_curated_training_pair_writes_image_mask_files(tmp_path):
-    """Fresh workspace + persist: auto-bootstraps default run + writes
-    to NEW layout (artifacts/step2/runs/default/axial/rounds/round_03/accepted/).
-
-    Updated 2026-05-24: user reported the legacy fallback was firing on
-    fresh workspaces, creating a stray training_data/ folder.  The fix
-    in _persist_curated_training_pair auto-bootstraps a default run on
-    UNKNOWN layout instead of falling back to legacy.  This test now
-    verifies the CORRECT behavior."""
+def _pair_ctrl(tmp_path):
     ctrl = TrainingAnnotationController.__new__(TrainingAnnotationController)
     ctrl.segmentation_manager = DummySegmentationManager()
     ctrl.working_dir = str(tmp_path)
     ctrl.current_round = 3
     ctrl.sample_records = {}
-
+    ctrl.active_run_id = ""
     slice_label = "stack_patch_XZ_9"
     ctrl.segmentation_manager.set(
         slice_label,
         np.random.rand(2, 12, 14).astype(np.float32),
         np.ones((12, 14), dtype=np.uint16),
     )
+    return ctrl, slice_label
+
+
+def test_persist_curated_training_pair_writes_image_mask_files(tmp_path):
+    """Fresh workspace (no run) + persist: NOTHING is written.
+
+    The pair is not sent to the old layout's training_data/ and no run is
+    made behind the user's back; the refusal is reported to the caller."""
+    ctrl, slice_label = _pair_ctrl(tmp_path)
+
+    out = ctrl._persist_curated_training_pair(slice_label)
+
+    assert out == {}
+    assert ctrl._last_pair_refusal == "no-run"
+    assert list(tmp_path.iterdir()) == [], (
+        "a folder with no run must stay empty (no training_data/, no run, "
+        "no step2_state.json)"
+    )
+    assert "img_uri" not in ctrl.sample_records.get(slice_label, {})
+
+
+def test_persist_curated_training_pair_writes_image_mask_files_in_run(tmp_path):
+    """A folder with an active run: the pair lands in the run's round
+    folder (artifacts/step2/runs/<run>/axial/round_03/accepted/), and never
+    in the old training_data/."""
+    from napari_epicycle.hitl_training_annotation import _run_management as RM
+    RM.create_run_on_disk(tmp_path, "pilot", display_name="pilot")
+    RM.add_run_to_state_json(tmp_path, "pilot", activate=True)
+    ctrl, slice_label = _pair_ctrl(tmp_path)
+    ctrl.active_run_id = "pilot"
 
     out = ctrl._persist_curated_training_pair(slice_label)
 
     assert out["img_uri"]
     assert out["mask_uri"]
-    # Phase B.2 (2026-05-25) flat layout:
-    # artifacts/step2/runs/default/axial/round_03/accepted/
-    # Pre-B.2 was `axial/rounds/round_03/accepted/` (split).
     new_layout_dir = (
-        tmp_path / "artifacts" / "step2" / "runs" / "default"
+        tmp_path / "artifacts" / "step2" / "runs" / "pilot"
         / "axial" / "round_03" / "accepted"
-    )
-    assert new_layout_dir.exists(), (
-        f"expected new-layout dir {new_layout_dir} to exist after persist; "
-        f"saw out_dir={out}"
     )
     assert (new_layout_dir / "stack_patch_XZ_z0009_img.tif").exists()
     assert (new_layout_dir / "stack_patch_XZ_z0009_mask.tif").exists()
     assert ctrl.sample_records[slice_label]["img_uri"].endswith("_img.tif")
     assert ctrl.sample_records[slice_label]["mask_uri"].endswith("_mask.tif")
-    # NEGATIVE assertion: legacy fallback should NOT have fired
-    assert not (tmp_path / "training_data").exists(), (
-        "legacy training_data/ folder should NOT be created on fresh workspace "
-        "with the new auto-bootstrap fix in place"
-    )
-    # Verify the bootstrap also created the run manifest + state JSON.
-    # State JSON lives at workspace root (per _paths.state_json_path),
-    # NOT under artifacts/step2/.
-    assert (
-        tmp_path / "artifacts" / "step2" / "runs" / "default" / "run_manifest.json"
-    ).exists()
-    assert (tmp_path / "step2_state.json").exists()
+    assert not (tmp_path / "training_data").exists()
 
 
 def test_insert_slice_mask_with_unique_labels_preserves_existing_predictions():
@@ -729,8 +748,10 @@ class TestC5PersistCuratedPairBucketCounter:
             "schema_version": 3, "active_run_id": "default",
             "runs": {"default": {}}
         }), encoding="utf-8")
+        # the active run has its folder (a run without one writes nothing)
+        _step2_paths.run_root(tmp_path, "default").mkdir(parents=True, exist_ok=True)
 
-        ctrl = _make_train_ctrl(tmp_path)
+        ctrl = _make_train_ctrl(tmp_path, layout=None)
         ctrl.active_run_id = "default"
         ctrl.current_round_by_view = {"lateral": 5, "axial": 2}
         ctrl.selected_view = "XY"  # selected = lateral (wrong counter pre-fix)
@@ -764,8 +785,10 @@ class TestC5PersistCuratedPairBucketCounter:
             "schema_version": 3, "active_run_id": "default",
             "runs": {"default": {}}
         }), encoding="utf-8")
+        # the active run has its folder (a run without one writes nothing)
+        _step2_paths.run_root(tmp_path, "default").mkdir(parents=True, exist_ok=True)
 
-        ctrl = _make_train_ctrl(tmp_path)
+        ctrl = _make_train_ctrl(tmp_path, layout=None)
         ctrl.active_run_id = "default"
         ctrl.current_round_by_view = {"lateral": 5, "axial": 2}
         ctrl.selected_view = "XZ"  # selected = axial, but persisting XY → lateral
@@ -814,8 +837,10 @@ class TestC5CollectPriorPairsPerBucket:
             "schema_version": 3, "active_run_id": "default",
             "runs": {"default": {}}
         }), encoding="utf-8")
+        # the active run has its folder (a run without one writes nothing)
+        _step2_paths.run_root(tmp_path, "default").mkdir(parents=True, exist_ok=True)
 
-        ctrl = _make_train_ctrl(tmp_path)
+        ctrl = _make_train_ctrl(tmp_path, layout=None)
         ctrl.active_run_id = "default"
         ctrl.current_round_by_view = {"lateral": 3, "axial": 1}
         ctrl.selected_view = "XY"  # doesn't matter for explicit-arg

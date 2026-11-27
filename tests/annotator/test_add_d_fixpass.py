@@ -41,11 +41,11 @@ from .test_reshape_region import _threshold
 # --------------------------------------------------------------------------- #
 # Whole patch from S2 keeps the picked run
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("pick", [0, 2])       # a run, Click markers
+@pytest.mark.parametrize("pick", [0, 1, 2])    # a run, nuclei masks, clicks
 def test_whole_patch_with_no_box_keeps_the_run_picked_under_markers(
         widget, monkeypatch, pick):
-    """A run and Click markers both fill a whole patch: either one picked
-    stays picked, and S1 never asks for a run."""
+    """A run, the nuclei masks and Click markers all fill a whole patch:
+    any one picked stays picked, and S1 never asks for a run."""
     install_fakes(monkeypatch)
     ch, cells = _world()
     hh = Harness(cells.copy(), images=ch)

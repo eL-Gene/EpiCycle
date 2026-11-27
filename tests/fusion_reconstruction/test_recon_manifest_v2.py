@@ -183,6 +183,38 @@ def test_path_values_are_written_as_plain_json(tmp_path):
     assert type(m["source_stack_path"]) is str
 
 
+def test_null_axes_is_written_as_null():
+    """Step 3 records the axes its prediction manifest says Cellpose was
+    handed, and null when there is no such record: the writer keeps a
+    null as null, never a default order."""
+    m = L.build_real_manifest(seg_config=_seg(), recon_config=_recon(),
+                              **dict(CORE, axes=None))
+    assert "axes" in m and m["axes"] is None
+    back = json.loads(json.dumps(m))
+    assert "axes" in back and back["axes"] is None
+
+
+def test_run_real_writes_null_axes_into_manifest_json(tmp_path, fake_useg3d):
+    """From cached views ``run_real`` never reads the axes, so ``None``
+    passes through to ``manifest.json`` as null."""
+    out = L.ReconstructionPipelineService().run_real(
+        working_dir=str(tmp_path), source_stack_path=str(tmp_path / "P1.tif"),
+        lateral_model_path="lat", axial_model_path="ax",
+        seg_config=_seg(), recon_config=_recon(), cached_views=_views(),
+        axes=None, patch_name="P1.tif",
+        reconstructions_root=str(tmp_path / "runs"))
+    text = Path(out["manifest_path"]).read_text(encoding="utf-8")
+    assert '"axes": null' in text
+    assert json.loads(text)["axes"] is None
+
+
+def test_run_reals_axes_default_is_unchanged():
+    """Other callers (Step 4) keep the package's default order."""
+    import inspect
+    sig = inspect.signature(L.ReconstructionPipelineService.run_real)
+    assert sig.parameters["axes"].default == "ZCYX"
+
+
 # ---------------------------------------------------------------- extra keys
 
 def test_extra_keys_are_written_as_given():
@@ -283,15 +315,26 @@ def _write(ws: Path, manifest, patch="P1.tif"):
 
 
 def _both(ws: Path):
-    """The same reconstruction written v1 (old shape) and v2."""
+    """The same reconstruction written v1 (old shape), v2, v2 as every
+    Step 3 reconstruction before the axes were recorded wrote it
+    (``"ZCYX"`` whatever the patch), and v2 with no prediction record
+    (``null`` axes).  Nothing reads the key, so all four read alike."""
     seg, rc = _seg(), _recon()
     core = dict(CORE, source_stack_path=str(ws / "patches" / "P1.tif"))
+
+    def v2_with(axes):
+        return json.loads(json.dumps(L.build_real_manifest(
+            seg_config=seg, recon_config=rc, **dict(core, axes=axes))))
+
     return (json.loads(json.dumps(v1_manifest(seg, rc, **core))),
-            json.loads(json.dumps(L.build_real_manifest(
-                seg_config=seg, recon_config=rc, **core))))
+            v2_with(core["axes"]), v2_with("ZCYX"), v2_with(None))
 
 
-@pytest.mark.parametrize("which", [0, 1])
+# the indices of ``_both``: v1, v2, an old v2 saying "ZCYX", v2 with null
+WHICH = [0, 1, 2, 3]
+
+
+@pytest.mark.parametrize("which", WHICH)
 def test_step3s_last_run_reader(tmp_path, which):
     from napari_epicycle.fusion_reconstruction.controller import (
         _newest_recon_manifest,
@@ -307,7 +350,7 @@ def test_step3s_last_run_reader(tmp_path, which):
 
 def test_the_shared_preset_reads_v1_keys_the_same_from_v2(tmp_path):
     from napari_epicycle.ui_shell._recon_presets import step3_recon_preset
-    old, new = _both(tmp_path)
+    old, new = _both(tmp_path)[:2]
     p1 = step3_recon_preset(old["recon_config"])
     p2 = step3_recon_preset(new["recon_config"])
     assert {k: p2[k] for k in p1} == p1          # nothing v1 gave changed
@@ -318,7 +361,7 @@ def test_step4s_step3_preset_is_more_exact_on_v2(tmp_path):
     manifest records, so a v2 manifest also fills the probability, the
     grouping and the size groups; ``n_cpu`` stays unread by Step 4."""
     from napari_epicycle.segmentation import _step4_models as M
-    old, new = _both(tmp_path)
+    old, new = _both(tmp_path)[:2]
     p1 = M.step3_recon_preset(old["recon_config"])
     p2 = M.step3_recon_preset(new["recon_config"])
     gained = set(p2) - set(p1)
@@ -336,7 +379,7 @@ def test_step4s_step3_preset_is_more_exact_on_v2(tmp_path):
     assert M.step3_recon_preset(found["recon_config"]) == p2
 
 
-@pytest.mark.parametrize("which", [0, 1])
+@pytest.mark.parametrize("which", WHICH)
 def test_step3s_state_scan_reads_both(tmp_path, which):
     from napari_epicycle.fusion_reconstruction.state_manager import (
         ReconstructionStateManager,
@@ -355,7 +398,7 @@ def test_step3s_state_scan_reads_both(tmp_path, which):
         timer.stop()
 
 
-@pytest.mark.parametrize("which", [0, 1])
+@pytest.mark.parametrize("which", WHICH)
 def test_step4s_run_store_reads_both(tmp_path, which):
     from napari_epicycle.segmentation.io import StackSegmentationRunStore
     m = _both(tmp_path)[which]
@@ -368,3 +411,49 @@ def test_step4s_run_store_reads_both(tmp_path, which):
     assert Path(payload["source_stack_path"]).name == "P1.tif"
     assert payload["labels_path"] == CORE["labels_path"]
     assert payload["run_id"] == CORE["run_id"]
+
+
+def test_an_old_zcyx_manifest_still_reads_everywhere(tmp_path):
+    """An old Step 3 manifest says ``"ZCYX"`` whatever its patch and has
+    no ``axes_from``; one written now says its real order with
+    ``axes_from: "prediction"``, or null without it.  Every reader returns
+    for them what it returns for the same reconstruction recorded with its
+    real order."""
+    from napari_epicycle.fusion_reconstruction.controller import (
+        _newest_recon_manifest,
+    )
+    from napari_epicycle.segmentation import _step4_models as M
+    from napari_epicycle.segmentation.io import StackSegmentationRunStore
+    _v1, real, old, null = _both(tmp_path)
+    assert (real["axes"], old["axes"], null["axes"]) == ("CZYX", "ZCYX",
+                                                          None)
+    # a fresh Step 3 walk adds the word through its extra keys
+    fresh = json.loads(json.dumps(L.build_real_manifest(
+        seg_config=_seg(), recon_config=_recon(),
+        extra_manifest={"axes_from": "prediction"},
+        **dict(CORE, source_stack_path=str(tmp_path / "patches" / "P1.tif"),
+               axes="CZYX"))))
+    assert fresh["axes_from"] == "prediction"
+    assert "axes_from" not in old and "axes_from" not in null
+
+    def reads(m, sub):
+        ws = tmp_path / sub
+        _write(ws, m)
+        last = _newest_recon_manifest(ws / "artifacts" / "step3" / "runs")
+        found = M.newest_step3_manifest(str(ws))
+        d = ws / "artifacts" / "step4" / "runs" / "r1"
+        d.mkdir(parents=True)
+        (d / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+        store = StackSegmentationRunStore()
+        (path,) = store.list_manifests(str(ws))
+        payload = store.load_manifest(path)
+        drop = ("path", "axes", "axes_from")
+        return ({k: v for k, v in last.items() if k not in drop},
+                {k: v for k, v in found.items() if k not in drop},
+                M.step3_recon_preset(found["recon_config"]),
+                {k: v for k, v in payload.items() if k not in drop})
+
+    want = reads(real, "real")
+    assert reads(old, "old") == want
+    assert reads(null, "null") == want
+    assert reads(fresh, "fresh") == want

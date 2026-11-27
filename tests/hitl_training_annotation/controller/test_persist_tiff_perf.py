@@ -411,7 +411,7 @@ def test_persist_writes_via_async_writer_not_inline_imwrite():
     # async opt-in param exists; debounce hot-loop uses it.
     assert "async_write=False" in src
     # Both files routed through the _emit helper (async submit OR sync atomic).
-    assert "_emit(mask_path, compact_mask)" in src
+    assert "_emit(mask_path, compact_mask," in src
     assert "_emit(img_path," in src
     # _emit offloads to the background writer when async_write, else atomic.
     assert "_pair_writer.submit(" in src

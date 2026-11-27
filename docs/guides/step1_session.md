@@ -55,8 +55,8 @@ Underneath it a second line sometimes appears, about the step you are on:
 
 | Where | What it says | What it means |
 |---|---|---|
-| Step 2 | No run yet — click New Run to start training. | The project has no training run yet. Nothing is wrong; make one when you are ready. |
-| Step 2, Step 3 | This project uses the old folder layout. Press Browse and pick this same folder to update it. | The project was made by an older version. Opening a step only READS it — nothing on disk is changed until you press Browse and pick the same folder, which updates it properly. |
+| Step 2 | No run yet — click New Run to start training. | The project has no training run yet. Nothing is wrong; make one when you are ready. Until then Step 2 saves nothing here. |
+| Step 2, Step 3 | This project uses the old folder layout. Press Browse and pick this same folder to update it. | The project was made by an older version. Step 3 only reads it until you press Browse and pick the same folder, which updates it properly. Step 2 may keep adding to it in the old layout until then (it never moves or deletes anything). |
 | Step 3, Step 4 | No trained 2D model in this workspace yet… | Step 2 has not finished a training round in this project. |
 
 The line is always there, it updates the moment you pick a folder, and hovering

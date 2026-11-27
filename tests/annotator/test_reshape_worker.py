@@ -431,7 +431,10 @@ def test_the_marker_worker_reports_no_stages_and_claims_none():
                  # names while the box, the patch or a run is read
                  "add_accept", "add_draw", "add_clear", "add_undo_all",
                  "add_discard", "add_walls", "add_balls",
-                 "add_info_patch", "add_run"}
+                 "add_info_patch", "add_run",
+                 # the click fill's first update of a box and of a whole
+                 # patch (the live markers, 2026-11-22)
+                 "add_prepare", "add_prepare_patch"}
     assert (set(RW.STAGE_TEXT) - {"done"} - _REFINE_ONLY - _ADD_ONLY
             == set(STAGES))
     assert _ADD_ONLY <= set(RW.STAGE_TEXT)

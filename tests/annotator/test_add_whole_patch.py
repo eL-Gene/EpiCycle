@@ -70,8 +70,8 @@ def test_the_finish_flags_no_patch_face_on_whole_patch():
 
 def test_a_cells_whole_patch_is_never_over_the_box_limit():
     """A Cells whole patch is filled to the walls in one go whatever Grow by
-    says, so the 4 million voxel limit of a box never applies to it; an
-    ordinary box is held to it with either Grow by."""
+    says, so a box's voxel limit (``box_budget``) never applies to it (its
+    own ceiling does); an ordinary box is held to it with either Grow by."""
     existing = np.zeros((2, 2, 4), np.int32)
     p = {"preset": "cells", "box_budget": 10, "dark_outside": False}
     kw = dict(existing_roi=existing, dark_sources=None, dark_rois=None,
@@ -366,19 +366,28 @@ def test_a_cells_whole_patch_is_never_clamped_nor_over_the_limit(
     assert AP.preview_block(s) is None, AP.preview_block(s)
 
 
-def test_a_cells_whole_patch_refuses_at_the_default_spacing(hc):
+def test_a_cells_whole_patch_runs_at_the_default_spacing(hc):
+    """A Cells whole patch whose spacing was never set runs as a Cells box
+    does: Preview is live, nothing is refused, and the amber default-spacing
+    note is asked for (the same as on a box)."""
     hc.ctx["spacing_source"] = "unknown"
     hc._start_add_whole()
     _land_info(hc)
     hc._add_refresh_ui()
-    assert hc.adv.last("status_text") == AP.ADD_S1_NEEDS_SPACING_BOXED
-    assert hc.adv.last("preview_enabled") is False
-    # an ordinary Cells box keeps running at the default spacing
+    assert hc.adv.last("preview_enabled") is True
+    assert hc.adv.last("default_spacing") is True
+    s = hc._add_s1_state()
+    assert not s.get("spacing_unknown")
+    assert AP.preview_block(s) is None, AP.preview_block(s)
+    kw, why = hc._add_gather_preview()
+    assert why is None, why
+    assert kw["params"]["whole_patch"] is True
+    # an ordinary Cells box runs at the default spacing the same way
     b = hc._add_box
     hc._on_add_box_changed(b.cz, b.cy, b.cx, 6, 10, 10)
     _land_info(hc)
     hc._add_refresh_ui()
-    assert hc.adv.last("status_text") != AP.ADD_S1_NEEDS_SPACING_BOXED
+    assert hc.adv.last("default_spacing") is True
 
 
 def test_no_patch_face_is_an_edge_on_a_cells_whole_patch(hc):
@@ -478,15 +487,26 @@ def test_a_cells_whole_patch_takes_click_markers(hc):
     assert AP.measuring_stage(s, reader="info") == "add_info_patch"
 
 
-def test_a_cells_whole_patch_with_click_markers_refuses_at_default_spacing(
+def test_a_cells_whole_patch_with_click_markers_runs_at_default_spacing(
         hc):
-    """The default-spacing refusal holds for Click markers on a whole
-    patch (now reachable)."""
+    """Click markers on a whole patch whose spacing was never set: Preview
+    is live, a live run's gather is not refused, and with "Update as I
+    click" on the clicks run as they would on a box -- the amber
+    default-spacing note says the rest."""
     hc.ctx["spacing_source"] = "unknown"
-    _clicks_whole(hc)
+    pts = _clicks_whole(hc)
     hc._add_refresh_ui()
-    assert hc.adv.last("status_text") == AP.ADD_S1_NEEDS_SPACING_BOXED
-    assert hc.adv.last("preview_enabled") is False
+    assert hc.adv.last("preview_enabled") is True
+    assert hc.adv.last("default_spacing") is True
+    assert AP.preview_block(hc._add_s1_state()) is None
+    kw, why = hc._add_gather_preview()
+    assert why is None, why
+    assert kw["click_points"] == pts
+    hc._add_live_enabled = True
+    hc.adv.wall = dict(hc.adv.wall, wall_kind="membrane")
+    assert hc._add_live_possible()
+    kw, why = hc._add_gather_preview()
+    assert why is None, why
 
 
 def _fill(hc):

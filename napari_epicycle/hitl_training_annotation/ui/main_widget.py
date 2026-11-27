@@ -320,7 +320,7 @@ class TrainingAnnotationHITL2D(QWidget):
         layout.addWidget(self._dim_desc(_T.RUN_SUMMARY_DESC, panel))
         # The controller's own labels (it writes them in
         # ``_refresh_round_status``): kept; four sit inside the card.
-        self.status_run_value = QLabel("default")
+        self.status_run_value = QLabel(_T.RUN_SUMMARY_NO_RUN)
         self.status_total_pairs_value = QLabel("0")
         self.status_pairs_lateral_value = QLabel("0")
         self.status_pairs_axial_value = QLabel("0")

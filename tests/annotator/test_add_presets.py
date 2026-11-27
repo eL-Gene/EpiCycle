@@ -1,9 +1,10 @@
 """The two presets.
 
 What a switch sets (only the keys the user has not touched), that it never
-resizes the box, the Cells-only 4 M limit (S/M/L and the start box clamp,
-Nuclei L does not), the default-spacing note that replaced the voxel-size
-refusal, the dark tick that is
+resizes the box, the Cells-only preset size (S/M/L and the start box reach
+at most ``ADD_CELLS_PRESET_MAX_VOXELS``, Nuclei L does not; the Preview
+limit is the larger ``ADD_BOX_BUDGET``), the default-spacing note that
+replaced the voxel-size refusal, the dark tick that is
 NOT a preset value, and the per-workspace memory of the last preset.
 """
 
@@ -104,6 +105,10 @@ def test_dark_off_greys_the_two_dark_rows_with_its_sentence(widget):
     reset_add(widget)
     widget.set_add_preset("cells")
     widget.update_add_ui_state(voxel_size_known=True)
+    # No outline picked: the dark tick decides what is outside (an outline,
+    # the default, greys the tick for its own reason)
+    widget.add_outline_combo.setCurrentIndex(
+        AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
     widget.add_dark_outside_cb.setChecked(False)
     assert not widget.add_dark_clearance_sb.isEnabled()
     assert not widget.add_dark_factor_sb.isEnabled()
@@ -117,6 +122,9 @@ def test_the_micron_rows_stay_live_at_the_default_spacing(widget):
     row is greyed for it, whatever the old ``voxel_size_known`` says."""
     reset_add(widget)
     widget.set_add_preset("cells")
+    # No outline picked: an outline greys the dark rows for its own reason
+    widget.add_outline_combo.setCurrentIndex(
+        AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
     widget.add_dark_outside_cb.setChecked(True)
     widget.update_add_ui_state(voxel_size_known=False, default_spacing=True)
     for attr in ("add_click_radius_sb", "add_core_erode_sb",
@@ -246,11 +254,13 @@ def test_nuclei_l_is_not_clamped(big):
     assert _n(big._add_box) == 150 * 200 * 200
 
 
-def test_cells_l_is_clamped_to_the_budget(big):
+def test_cells_l_is_kept_to_the_preset_size(big):
     big.adv.preset = "cells"
     big._set_add_box_size_fraction(0.5)
-    assert 0 < _n(big._add_box) <= AP.ADD_BOX_BUDGET
-    assert _n(big._add_box) > 0.9 * AP.ADD_BOX_BUDGET
+    assert 0 < _n(big._add_box) <= AP.ADD_CELLS_PRESET_MAX_VOXELS
+    assert _n(big._add_box) > 0.9 * AP.ADD_CELLS_PRESET_MAX_VOXELS
+    # a size, not the limit: nothing is said
+    assert big._add_transient is None
 
 
 def test_a_preset_switch_never_resizes_the_box(big):
@@ -261,7 +271,13 @@ def test_a_preset_switch_never_resizes_the_box(big):
     big._on_add_preset_changed("cells")
     assert big._add_box == box
     state = big._add_s1_state()
-    assert AP.preview_block(state).startswith("This box is 6.0 million")
+    # 6 million voxels: under the Cells limit, so Preview is not refused
+    # for its size
+    assert not str(AP.preview_block(state) or "").startswith("This box is")
+    big.adv.params["box_budget"] = 5_000_000
+    assert AP.preview_block(big._add_s1_state()).startswith(
+        "This box is 6.0 million")
+    big.adv.params.pop("box_budget")
     big.adv.preset = "nuclei"
     big._on_add_preset_changed("nuclei")
     big.adv.params["channel"] = "nuc"
@@ -313,7 +329,7 @@ def test_the_start_box_is_clamped_on_cells(big, monkeypatch):
     big._add_last_size = (200, 300, 300)
     monkeypatch.setattr(type(big), "_add_restore_preset", lambda self: None)
     big._start_add()
-    assert _n(big._add_box) <= AP.ADD_BOX_BUDGET
+    assert _n(big._add_box) <= AP.ADD_CELLS_PRESET_MAX_VOXELS
 
 
 class _FakeSettings:

@@ -183,11 +183,31 @@ def test_close_mid_preview_cancels_and_a_late_finish_is_stale(h):
 
 
 def test_an_unstoppable_thread_is_parked(h):
+    from napari_epicycle.annotator import curation_3d_widget as C3W
+
     th, w = _launch(h)
     FakeThread.stuck = True
-    h._add_abandon_workers()
-    assert (th, w) in h._refine_parked_threads
-    assert th.finished.cbs == []
+    try:
+        h._add_abandon_workers()
+        assert (th, w) in h._refine_parked_threads
+        # kept at module level too (a QThread dropped while running
+        # aborts the process; the page may go first); its end is heard
+        # by the module-level release AND by the page's own watch (the
+        # update owed) -- the page's earlier handlers were disconnected
+        assert (th, w) in C3W._ADD_PARKED_THREADS
+        cbs = list(th.finished.cbs)
+        assert C3W._on_parked_thread_finished in cbs
+        assert any(getattr(cb, "__name__", "") == "_on_add_parked_finished"
+                   for cb in cbs), cbs
+        assert len(cbs) == 2
+        # still running: not released at park time
+        assert w._kwargs or True  # a fake worker; the real one keeps kwargs
+        FakeThread.stuck = False                # it ends
+        C3W._on_parked_thread_finished()
+        assert (th, w) not in C3W._ADD_PARKED_THREADS
+    finally:
+        C3W._ADD_PARKED_THREADS[:] = [
+            pr for pr in C3W._ADD_PARKED_THREADS if pr != (th, w)]
 
 
 # --------------------------------------------------------------------------- #

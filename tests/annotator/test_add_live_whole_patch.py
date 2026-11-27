@@ -606,7 +606,8 @@ def test_a_large_whole_patch_with_the_tick_on_says_the_first_update(
     # the tick on but Anywhere: no update as you click there
     wl._add_live_enabled = True
     wl.adv.look = (AP.LOOK_ANYWHERE, None)
-    assert wl._add_derive_note_text() == AP.nuclei_patch_slow_line(n)
+    assert wl._add_derive_note_text() == AP.nuclei_patch_slow_line(
+        n, anywhere=True)
 
 
 #: the label's fonts: offscreen Qt in this process has none, so the note is

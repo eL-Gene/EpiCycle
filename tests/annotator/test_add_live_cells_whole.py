@@ -97,20 +97,22 @@ def _runs():
 def test_the_growth_rule_of_a_live_whole_patch_is_the_box_rule():
     assert AP.cells_growth({"whole_patch": True, "box_rule": True}) == (
         AP.GROW_FLOOD)
-    # whatever Grow by says: a whole patch is filled to the walls
+    # the box rule is the flood (the page sends it with Fill only)
     assert AP.cells_growth({"whole_patch": True, "box_rule": True,
                             "growth": AP.GROW_SPREAD}) == AP.GROW_FLOOD
     assert AP.cells_growth({"whole_patch": True}) == AP.GROW_PATCH
+    # Grow by is the user's pick on a whole patch: Spread grows by Spread
     assert AP.cells_growth({"whole_patch": True,
-                            "growth": AP.GROW_SPREAD}) == AP.GROW_PATCH
+                            "growth": AP.GROW_SPREAD}) == AP.GROW_SPREAD
     assert AP.cells_growth({"growth": AP.GROW_SPREAD}) == AP.GROW_SPREAD
     assert AP.cells_growth({}) == AP.GROW_FLOOD
     spec = AP.cells_spec({"whole_patch": True, "box_rule": True,
                           "source": AP.SOURCE_CLICKS})
     # the whole patch runs as one box: the flood takes no whole patch, and
-    # the whole fill's ceiling is its budget
+    # the whole fill's ceiling is its budget -- a box's budget too
     assert INC.is_click_fill(spec) and not spec.params["whole_patch"]
     assert spec.params["box_budget"] == R.WHOLE_FILL_MAX_VOXELS
+    assert spec.params["box_budget"] == AP.ADD_BOX_BUDGET
     assert spec.params["growth"] == AP.GROW_FLOOD
 
 
@@ -261,8 +263,16 @@ def test_a_live_whole_patch_fills_to_its_faces(wl):
 
 
 # --------------------------------------------------------------------------- #
-# a patch the click fill cannot take is not run by a click
+# a patch the click fill cannot take is not run by a click (over the
+# full-run size; at or under it the full fill answers the click)
 # --------------------------------------------------------------------------- #
+def _over_the_full_run_size(monkeypatch):
+    """The fixture's patch (18,000 voxels) stands for a large one (5.2
+    million): over ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` a click the click fill
+    cannot take is refused."""
+    monkeypatch.setattr(AP, "ADD_LIVE_FULL_RUN_MAX_VOXELS", 1000)
+
+
 def _flat_everywhere(monkeypatch):
     real = INC.flat_survey
 
@@ -319,6 +329,7 @@ def _stepped_aside(wl, res, how):
 
 def test_a_flat_patch_is_not_flooded_by_the_first_click(wl, monkeypatch,
                                                          capsys):
+    _over_the_full_run_size(monkeypatch)
     _flat_everywhere(monkeypatch)
     floods = _Floods(monkeypatch)
     got = _answers(monkeypatch)
@@ -362,6 +373,7 @@ def test_a_flat_patch_is_not_flooded_by_the_first_click(wl, monkeypatch,
 
 def test_a_cold_or_failed_click_fill_floods_nothing_on_a_click(
         wl, monkeypatch):
+    _over_the_full_run_size(monkeypatch)
     monkeypatch.setattr(AP, "_INCREMENTAL_OFF", True)
     floods = _Floods(monkeypatch)
     got = _answers(monkeypatch)
@@ -386,6 +398,7 @@ def test_a_cold_or_failed_click_fill_floods_nothing_on_a_click(
 def test_seeds_of_one_cell_on_a_flat_patch_flood_nothing(wl, monkeypatch):
     """Markers sharing an id (the seeds of one cell) take the stage step
     by step: where it steps aside a click floods nothing either."""
+    _over_the_full_run_size(monkeypatch)
     _flat_everywhere(monkeypatch)
     floods = _Floods(monkeypatch)
     got = _answers(monkeypatch)
@@ -397,6 +410,32 @@ def test_seeds_of_one_cell_on_a_flat_patch_flood_nothing(wl, monkeypatch):
     assert floods.n == 0
     _stepped_aside(wl, got[-1], "not run as you click (flat spots)")
     assert len(wl._add_click_markers) == 2
+
+
+def test_a_small_flat_patch_is_flooded_on_a_click_and_stays_live(
+        wl, monkeypatch):
+    """At or under the full-run size the click the click fill cannot take
+    runs the full fill (by the box rule), and later clicks keep running."""
+    _flat_everywhere(monkeypatch)
+    floods = _Floods(monkeypatch)
+    assert wl._add_roi_voxels() <= AP.ADD_LIVE_FULL_RUN_MAX_VOXELS
+    assert wl._add_marker_click(CELL_A)
+    _fire(wl)
+    assert wl.launched[-1]["params"]["live"]
+    _finish(wl)
+    assert floods.n == 1
+    res = wl._add_preview_res
+    assert res.ok and res.click_how == "full run (flat spots)"
+    assert (wl._add_preview_result == _id_at(wl, CELL_A)).any()
+    assert wl._add_cells_live_whole() and wl._add_live_possible()
+    assert AP.s1_sentence(wl._add_s1_state()) != (
+        AP.ADD_S1_LIVE_OVER_GATE_PATCH)
+    assert wl._add_marker_click(CELL_B)
+    assert wl._add_live_timer.isActive()
+    _fire(wl)
+    _finish(wl)
+    assert floods.n == 2
+    assert (wl._add_preview_result == _id_at(wl, CELL_B)).any()
 
 
 def test_a_manual_preview_on_a_flat_patch_still_floods_it(wl, monkeypatch):
@@ -475,19 +514,21 @@ def test_the_tick_on_keeps_a_box_result(ci):
     assert _runs() == n
 
 
-def test_over_the_live_whole_ceiling_a_patch_waits_for_preview(
-        wl, monkeypatch):
+def test_over_the_live_ceiling_a_patch_waits_for_preview(wl, monkeypatch):
+    """The whole patch's live limit is the box's: one rule, one number."""
     n = int(np.prod(wl.sync_manager.shared_labels["L"].shape))
-    assert AP.ADD_LIVE_CELLS_WHOLE_MAX_VOXELS == 20_000_000
+    assert AP.ADD_LIVE_CELLS_MAX_VOXELS == 20_000_000
     wl._add_click_markers = [{"zyx": CELL_A, "id": 8, "ticked": True}]
-    monkeypatch.setattr(AP, "ADD_LIVE_CELLS_WHOLE_MAX_VOXELS", n)
+    monkeypatch.setattr(AP, "ADD_LIVE_CELLS_MAX_VOXELS", n)
     assert wl._add_cells_live_whole() and wl._add_live_possible()
-    monkeypatch.setattr(AP, "ADD_LIVE_CELLS_WHOLE_MAX_VOXELS", n - 1)
+    monkeypatch.setattr(AP, "ADD_LIVE_CELLS_MAX_VOXELS", n - 1)
     assert not wl._add_cells_live_whole_rule()
     assert not wl._add_live_possible()
     assert wl._add_cells_stage_key() is None
+    # S1 names the limit, as on a box
     assert AP.s1_sentence(wl._add_s1_state()) == (
-        AP.ADD_S1_LIVE_OVER_GATE_PATCH)
+        AP.ADD_S1_LIVE_OVER_GATE_PATCH_SIZE.format(
+            n=AP.voxel_limit_words(n - 1)))
     # a Preview then fills it with a background marker, as the tick off
     assert "box_rule" not in wl._add_cells_engine_params()
 
@@ -662,7 +703,10 @@ def test_a_box_over_the_live_limit_preview_always_runs(ci, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_a_large_whole_patch_with_the_tick_on_says_the_first_update(
         wl, monkeypatch):
+    # the live note has its own size (5 million, under the live limit);
+    # the Preview's wait keeps the slow-patch size
     monkeypatch.setattr(AP, "ADD_SLOW_PATCH_VOXELS", 10)
+    monkeypatch.setattr(AP, "ADD_SLOW_LIVE_PATCH_VOXELS", 10)
     n = int(np.prod(wl.sync_manager.shared_labels["L"].shape))
     live = AP.ADD_NOTE_PATCH_SLOW_LIVE_CELLS.format(m=AP.millions(n))
     assert "prepares it once" in live

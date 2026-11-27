@@ -77,6 +77,9 @@ class FakeThread:
     def wait(self, _ms):
         return not FakeThread.stuck
 
+    def isRunning(self):
+        return bool(FakeThread.stuck)
+
     # test helpers
     def run(self):
         self.started.emit()

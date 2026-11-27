@@ -136,9 +136,22 @@ class DummySegmentationManager:
         self.data_masks[slice_label] = mask
 
 
-def _make_ctrl(tmp_path, *, round_num=0, sample_records=None):
-    """Create a minimal controller instance for testing."""
+def _make_ctrl(tmp_path, *, round_num=0, sample_records=None, layout="legacy"):
+    """Create a minimal controller instance for testing.
+
+    ``layout``: Step 2 writes nothing in a folder with no run, so the folder
+    gets one -- ``"legacy"`` (the default; these tests were written against
+    the old layout's training_data/ folders) adds ``training_data/``,
+    ``"run"`` makes and activates the run ``pilot``, ``None`` adds nothing.
+    """
+    if layout == "legacy":
+        (Path(tmp_path) / "training_data").mkdir(parents=True, exist_ok=True)
+    elif layout == "run":
+        from napari_epicycle.hitl_training_annotation import _run_management as RM
+        RM.create_run_on_disk(tmp_path, "pilot", display_name="pilot")
+        RM.add_run_to_state_json(tmp_path, "pilot", activate=True)
     ctrl = TrainingAnnotationController.__new__(TrainingAnnotationController)
+    ctrl.active_run_id = {"legacy": "default", "run": "pilot"}.get(layout, "")
     ctrl.persistence = HITLPersistenceService()
     ctrl.training_manager = TrainingManager()
     ctrl.segmentation_manager = DummySegmentationManager()
@@ -185,7 +198,7 @@ def _make_ctrl(tmp_path, *, round_num=0, sample_records=None):
 
 def test_accept_sets_accepted_status_not_staged():
     """SAM-path accept should set status to 'accepted', not 'staged'."""
-    ctrl = _make_ctrl(Path("/tmp/test_accept"))
+    ctrl = _make_ctrl(Path("/tmp/test_accept"), layout=None)
     slice_label = "patch01_XY_5"
     ctrl._touch_sample(slice_label, status="predicted", view="XY")
 
@@ -771,8 +784,10 @@ def test_create_empty_mask_seed_calls_schedule_state_save():
 
 
 def test_predicted_record_round_trips_through_save_load(tmp_path):
-    """Predicted sample_records must survive _save_internal_state / load cycle."""
-    ctrl = _make_ctrl(tmp_path)
+    """Predicted sample_records must survive _save_internal_state / load cycle
+    (a folder with a run: the records go to the run's entry of
+    step2_state.json)."""
+    ctrl = _make_ctrl(tmp_path, layout="run")
 
     slice_label = "patch01_XY_42"
     ctrl._touch_sample(slice_label, status="predicted", view="XY")
@@ -781,10 +796,11 @@ def test_predicted_record_round_trips_through_save_load(tmp_path):
     # Persist to disk (this is what _schedule_state_save eventually triggers).
     ctrl._save_internal_state()
 
-    state_file = tmp_path / "hitl_state.json"
-    assert state_file.exists(), "hitl_state.json should be written"
+    state_file = tmp_path / "step2_state.json"
+    assert state_file.exists(), "step2_state.json should be written"
+    assert not (tmp_path / "hitl_state.json").exists()
 
-    persisted = json.loads(state_file.read_text())
+    persisted = json.loads(state_file.read_text())["runs"]["pilot"]
     assert "sample_records" in persisted
     assert slice_label in persisted["sample_records"]
     assert persisted["sample_records"][slice_label]["status"] == "predicted"

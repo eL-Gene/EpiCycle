@@ -536,6 +536,54 @@ _ADD_NUMBA = {"ok": None, "why": None}
 #: drops a running thread; the answer lands in ``_ADD_NUMBA`` whatever page
 #: is open.  Kept for the process once started (one tiny thread).
 _ADD_NUMBA_JOB = {"thread": None, "worker": None}
+#: Add preview threads that would not stop in time at an exit, kept here
+#: as well as on their page: a QThread dropped while it runs aborts the
+#: process, and the page may go before the thread does.  Released (with
+#: the worker's inputs) when they end (``_add_release_parked``).
+_ADD_PARKED_THREADS: list = []
+
+
+def _release_parked_threads(page=None) -> list:
+    """Every parked Add thread that has ended (the preview, the box-info
+    or the clear worker) leaves the module list -- and the page's own list
+    when ``page`` is given -- and its worker lets go of its kwargs
+    (``RefineWorker`` keeps them for life: the labels, the outline, the
+    wall picture, a stage).  A thread still running stays for the next
+    pass.  Never raises, never waits.  Returns the threads let go."""
+    lists = [_ADD_PARKED_THREADS]
+    mine = (getattr(page, "_refine_parked_threads", None)
+            if page is not None else None)
+    if mine is not None:
+        lists.append(mine)
+    gone = []
+    for lst in lists:
+        for pair in list(lst):
+            try:
+                th, worker = pair
+                if not str(getattr(worker, "kind", "")).startswith("add"):
+                    continue                # Refine's pairs are not ours
+                if th.isRunning():
+                    continue
+                try:
+                    worker._kwargs = {}
+                except Exception:  # noqa: BLE001
+                    pass
+                while pair in lst:
+                    lst.remove(pair)
+                if not any(g is th for g in gone):
+                    gone.append(th)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ADD] parked thread not released: {exc!r}")
+    return gone
+
+
+def _on_parked_thread_finished(*_a) -> None:
+    """A parked Add thread's own ``finished``, heard at module level so
+    the release happens when the page that parked it is already gone."""
+    gone = _release_parked_threads()
+    if gone:
+        print("[ADD] {} parked thread(s) ended - inputs let go".format(
+            len(gone)))
 
 #: The Add page's tissue-outline layer; its side-view copies are
 #: ``<name>_XY`` / ``_XZ`` / ``_YZ`` (the subviewer manager's naming).
@@ -1635,10 +1683,21 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # settings epoch (a finish launched on other settings is stale) and
         # an Accept waiting for the last change to be drawn
         self._add_live_enabled = True
+        # "Always update as I click" (Cells ▸ Click markers): off at every
+        # start of napari, never kept; and whether the live run in flight
+        # is the slow one (the region filled whole after the clicks settle)
+        self._add_live_always_enabled = False
+        self._add_live_slow_run = False
         self._add_live_timer = None
         self._add_live_dirty = False
         self._add_live_run = False
         self._add_live_stage = None
+        # a live run waited for the click fill to be compiled: the solver
+        # check's answer runs it again
+        self._add_live_waits_fill = False
+        # a slow live update was cancelled by a change: its answer is
+        # dropped when its thread ends, and the run owed follows then
+        self._add_live_superseded = False
         self._add_settings_epoch = 0
         self._add_launch_settings_epoch = 0
         self._add_accept_pending = False
@@ -1729,6 +1788,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_outline_cache = None
         self._add_outline_errors = {}
         self._add_elev_cache = None
+        # Cells ▸ Nuclei masks on a whole patch: the nuclear seeds the first
+        # Preview found ({"key", "seeds", "n_small"}), handed to the next
+        self._add_nuclei_seeds_cache = None
         # a small box's own wall picture ({"key", "elev"}), kept per box
         # and wall settings for any Cells box at or under the live limit --
         # the tick on or off, whatever the marker source (the walls do not
@@ -1749,6 +1811,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_launch_cells_holder = None
         self._add_launch_cells_sig = None
         self._add_drawn_cells_sig = None
+        self._add_launch_slow_sig = None
+        self._add_drawn_slow_sig = None
         self._add_clear_masks = {}
         self._add_outline_layer_key = None
         self._add_outline_layer = None
@@ -2933,6 +2997,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     on_outline_changed=self._on_add_outline_changed,
                     on_show_outline=self._on_add_show_outline,
                     on_live_toggled=self._on_add_live_toggled,
+                    on_live_always_toggled=(
+                        self._on_add_live_always_toggled),
                     on_click_pick=self._add_pick_object,
                 )
             # Populate image combos immediately so user can
@@ -8204,9 +8270,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             center = self._add_crosshair_center(shape)
             if center is not None:
                 box = box.with_center(*center).clamped(shape)
-            # on Cells the start box is clamped to the budget before it is
-            # drawn; Nuclei keeps today's box
-            box = self._add_clamp_box(box, shape)
+            # on Cells the start box is kept to the presets' size before it
+            # is drawn; Nuclei keeps today's box
+            box = self._add_clamp_box(box, shape,
+                                      limit=self._add_preset_limit())
         self._add_box = box
         self._add_roi = self._add_box.bounds_slices(shape)
         # a new session has no box from before a whole patch
@@ -8475,12 +8542,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # same size is exactly that box, another size is centred on
             # it -- so the markers inside it stay (none: the patch centre)
             b = getattr(self, "_add_box_before_whole", None) or b
-        # on Cells only, scaled uniformly to the budget
+        # on Cells only, scaled uniformly to the presets' size; S1 says the
+        # box shrank only when the budget made it (the presets' own size
+        # is the size, as on any box)
         from packages.epicycle_annotator.roi_box import BoxRec
 
         c = self._add_clamp_box(BoxRec(b.cz, b.cy, b.cx, sz, sy, sx),
-                                main.data.shape)
-        shrunk = (c.sz, c.sy, c.sx) != (sz, sy, sx)
+                                main.data.shape,
+                                limit=self._add_preset_limit())
+        shrunk = ((c.sz, c.sy, c.sx) != (sz, sy, sx)
+                  and sz * sy * sx > self._add_budget())
         sz, sy, sx = c.sz, c.sy, c.sx
         self._on_add_box_changed(b.cz, b.cy, b.cx, sz, sy, sx,
                                  clamped=shrunk)
@@ -8614,13 +8685,67 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """The "Update as I click" tick (the orchestrator's copy)."""
         return bool(getattr(self, "_add_live_enabled", False))
 
+    def _add_live_always(self) -> bool:
+        """"Always update as I click" in force: the tick, "Update as I
+        click" on, Cells ▸ Click markers (the only place the tick shows; a
+        hidden tick does nothing)."""
+        if not (getattr(self, "_add_live_always_enabled", False)
+                and self._add_live_on() and self._add_preset() == "cells"):
+            return False
+        from packages.epicycle_annotator import add_preview as AP
+
+        return self._add_marker_source()[0] == AP.SOURCE_CLICKS
+
+    def _add_cells_live_quick(self) -> bool:
+        """Cells ▸ Click markers: the region is run as you click the quick
+        way -- a whole patch as :meth:`_add_cells_live_whole`, a box as
+        :meth:`_add_cells_live_box` says."""
+        if getattr(self, "_add_whole_patch", False):
+            return self._add_cells_live_whole()
+        return self._add_cells_live_box()
+
+    def _add_live_slow(self) -> bool:
+        """"Always update as I click" in force on a region the quick way
+        cannot take now -- walls or a Grow by the click fill does not redo,
+        a region over ``ADD_LIVE_CELLS_MAX_VOXELS``, or a click fill that
+        could not take it for a reason other than its flat spots (one
+        still being compiled is a wait, not this) -- and at most
+        ``ADD_BOX_BUDGET``: the region
+        is filled whole, as a Preview fills it, a moment after the clicks
+        settle (``ADD_LIVE_SLOW_DEBOUNCE_MS``), on a live run."""
+        if not self._add_live_always():
+            return False
+        if (not getattr(self, "_add_running", False)
+                or getattr(self, "_add_review", False)
+                or getattr(self, "_add_box", None) is None
+                or getattr(self, "_add_roi", None) is None):
+            return False
+        from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_roi_voxels() > int(AP.ADD_BOX_BUDGET):
+            return False
+        # a click fill still being compiled is a wait (a few seconds, once
+        # per session), not a reason to fill the region whole: its clicks
+        # are drawn when it is ready
+        return not self._add_cells_live_quick()
+
+    def _add_live_slow_in_flight(self) -> bool:
+        """The slow live run (:meth:`_add_live_slow`) is in flight: S1 says
+        it is updating, and Stop works."""
+        return (bool(getattr(self, "_add_live_run", False))
+                and bool(getattr(self, "_add_live_slow_run", False))
+                and self._add_live_in_flight())
+
     def _add_live_possible(self) -> bool:
         """A live run can follow a change now: the tick on, a box session,
         Nuclei ▸ At the markers I place (on a box or the whole patch) or
-        Cells ▸ Click markers on a box of at most
-        ``ADD_LIVE_CELLS_MAX_VOXELS`` or on a whole patch whose walls the
-        click fill redoes (:meth:`_add_cells_live_whole`), and at least one
-        ticked marker."""
+        Cells ▸ Click markers on a box or a whole patch of at most
+        ``ADD_LIVE_CELLS_MAX_VOXELS`` (one rule for any region) -- a whole
+        patch with walls the click fill redoes
+        (:meth:`_add_cells_live_whole`), a box as
+        :meth:`_add_cells_live_box` says, or any region up to the Preview
+        limit with "Always update as I click" on (:meth:`_add_live_slow`)
+        -- and at least one ticked marker."""
         if not self._add_live_on():
             return False
         if (not getattr(self, "_add_running", False)
@@ -8633,13 +8758,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if self._add_preset() == "cells":
             if self._add_marker_source()[0] != AP.SOURCE_CLICKS:
                 return False
-            if getattr(self, "_add_whole_patch", False):
-                # a whole patch runs as you click with the walls the click
-                # fill redoes (the box rule); others wait for Preview
-                if not self._add_cells_live_whole():
-                    return False
-            elif self._add_roi_voxels() > int(AP.ADD_LIVE_CELLS_MAX_VOXELS):
-                # a larger box waits for Preview (S1 row 13.5 says so)
+            # a whole patch runs as you click with the walls the click fill
+            # redoes (the box rule); a larger box, or one over the full-run
+            # size the click fill does not or could not take, waits for
+            # Preview (S1 row 13.5 says so) -- unless "Always update as I
+            # click" fills it whole after the clicks
+            if (not self._add_cells_live_quick()
+                    and not self._add_live_slow()):
                 return False
         elif self._add_look_for()[0] != AP.LOOK_MARKERS:
             return False
@@ -8664,7 +8789,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """Nuclei ▸ At the markers I place on a whole patch with "Update as
         I click" on: every run -- a Preview press too -- prepares the patch
         once and solves only the pieces whose markers changed.  The tick
-        off (or a box) runs the one-go way."""
+        off (or a box), or a Tissue outline chosen (the prepared patch
+        has none), runs the one-go way."""
         if not (self._add_live_on()
                 and getattr(self, "_add_whole_patch", False)):
             return False
@@ -8672,7 +8798,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return False
         from packages.epicycle_annotator import add_preview as AP
 
-        return self._add_look_for()[0] == AP.LOOK_MARKERS
+        if self._add_look_for()[0] != AP.LOOK_MARKERS:
+            return False
+        return self._add_outline_mode() == AP.OUTLINE_NONE
 
     def _add_marker_stage_key(self):
         """What the prepared patch depends on: the labels (the volume and
@@ -8755,46 +8883,135 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
     def _add_cells_live_whole_rule(self) -> bool:
         """Cells ▸ Click markers on a whole patch of at most
-        ``ADD_LIVE_CELLS_WHOLE_MAX_VOXELS`` with "Update as I click" on and
-        walls the click fill redoes (Membrane sheets, Intensity edges):
+        ``ADD_LIVE_CELLS_MAX_VOXELS`` (a box's live limit too) with "Update
+        as I click" on and
+        walls the click fill redoes (Membrane sheets, Intensity edges) and
+        Grow by on Fill to the walls:
         every run there -- a Preview press too -- fills by the box rule (to
         the walls, bounded by the tissue outline and the dark rule, no
         background marker, the patch's faces open) through the click
         fill's prepared patch.  The tick off, other walls or a larger patch
-        keep the whole-patch fill with a background marker."""
+        keep the whole-patch fill with a background marker; Spread grows
+        the patch by Spread."""
         if not (self._add_live_on()
                 and getattr(self, "_add_whole_patch", False)
                 and self._add_preset() == "cells"):
             return False
         from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_marker_source()[0] != AP.SOURCE_CLICKS:
+            return False
+        if self._add_roi_voxels() > int(AP.ADD_LIVE_CELLS_MAX_VOXELS):
+            return False
+        return self._add_cells_click_fill_fits()
+
+    def _add_cells_click_fill_fits(self) -> bool:
+        """The walls and the Grow by are ones the click fill redoes:
+        Membrane sheets or Intensity edges, filled to the walls (Spread
+        from each marker is never redone by click, on a box or a whole
+        patch).  One place for both regions: a whole patch needs it at any
+        size, a box only over ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` (at or under
+        it a click may run the full fill, any walls)."""
+        return self._add_live_aside_why() is None
+
+    def _add_live_aside_why(self):
+        """What the click fill does not redo here: ``"walls"`` (a Wall type
+        other than Membrane sheets or Intensity edges), ``"grow"`` (Grow by
+        on Spread from each marker), or ``None`` (it redoes both).  The
+        line under the live tick names that control."""
+        from packages.epicycle_annotator import add_preview as AP
         from packages.epicycle_annotator.reshape.incremental import (
             CLICK_FILL_WALLS,
         )
 
-        if self._add_marker_source()[0] != AP.SOURCE_CLICKS:
-            return False
-        if self._add_roi_voxels() > int(AP.ADD_LIVE_CELLS_WHOLE_MAX_VOXELS):
-            return False
-        return (str(self._add_wall_params().get("wall_kind") or "")
-                in CLICK_FILL_WALLS)
+        if (str(self._add_wall_params().get("wall_kind") or "")
+                not in CLICK_FILL_WALLS):
+            return "walls"
+        if (str(self._add_params().get("growth") or AP.GROW_FLOOD)
+                != AP.GROW_FLOOD):
+            return "grow"
+        return None
 
-    def _add_cells_whole_fell_back(self) -> bool:
-        """The kept prepared patch says the click fill could not take this
-        key (its flat spots, the flood not compiled, a failure): until the
-        key changes no click runs the whole patch by itself -- a full flood
-        of it takes many seconds -- and S1 says to press Preview."""
+    def _add_cells_live_box(self) -> bool:
+        """Cells ▸ Click markers on a box runs as you click: at most
+        ``ADD_LIVE_CELLS_MAX_VOXELS``, and over
+        ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` only with walls and a Grow by the
+        click fill redoes (:meth:`_add_cells_click_fill_fits`) and while
+        it has not stepped aside (:meth:`_add_cells_click_fell_back`).  At
+        or under that size a click the click fill cannot take runs the full
+        fill, as before."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        n = self._add_roi_voxels()
+        if n > int(AP.ADD_LIVE_CELLS_MAX_VOXELS):
+            return False
+        if n <= int(AP.ADD_LIVE_FULL_RUN_MAX_VOXELS):
+            return True
+        return (self._add_cells_click_fill_fits()
+                and not self._add_cells_click_fell_back())
+
+    def _add_cells_click_fell_back(self) -> bool:
+        """The kept prepared box or patch says the click fill could not take
+        this key (its flat spots, switched off, a failure; a flood still
+        being compiled is never recorded -- that is a wait): until
+        the key changes no click runs the region by itself -- a full flood
+        of it cannot be stopped and takes many seconds near the live limit
+        -- and S1 says to press Preview.  The key holds the box, so a box
+        and the whole patch share this one rule.  A region at or under
+        ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` never counts as fallen back: there
+        the full run answers the click and later clicks keep running.  With
+        "Always update as I click" on, flat spots never count (the click
+        fill runs despite them), only a real fallback does."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_roi_voxels() <= int(AP.ADD_LIVE_FULL_RUN_MAX_VOXELS):
+            return False
         kept = getattr(self, "_add_cells_stage", None)
-        if not kept or not (kept.get("full") or kept.get("fallback")):
+        always = self._add_live_always()
+        if not kept or not ((kept.get("full") and not always)
+                            or kept.get("fallback")):
             return False
         key = self._add_cells_stage_key()
         return key is not None and kept.get("key") == key
 
+    def _add_cells_click_flat(self) -> bool:
+        """:meth:`_add_cells_click_fell_back` for the click fill's flat
+        spots (the kept record is a full run, not a failure): the one step
+        aside the spacing can change -- the tissue outline's smallest piece
+        is a volume in µm³, so at the never-set spacing debris in the dark
+        can count as tissue and bring flat spots the true spacing would
+        not."""
+        if not self._add_cells_click_fell_back():
+            return False
+        kept = getattr(self, "_add_cells_stage", None) or {}
+        return bool(kept.get("full"))
+
     def _add_cells_live_whole(self) -> bool:
         """:meth:`_add_cells_live_whole_rule`, and the click fill can take
-        the patch (:meth:`_add_cells_whole_fell_back`): clicks run it as you
+        the patch (:meth:`_add_cells_click_fell_back`): clicks run it as you
         click.  A Preview press still fills it by the box rule."""
         return (self._add_cells_live_whole_rule()
-                and not self._add_cells_whole_fell_back())
+                and not self._add_cells_click_fell_back())
+
+    def _add_cells_fill_pending(self) -> bool:
+        """Cells ▸ Click markers on a box or a whole patch over
+        ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` that is run as you click, while
+        the click fill is still being compiled (the solver check started at
+        the first box has not answered): a click there waits, and S1 says
+        so.  At or under that size a click runs the full fill instead."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        if not (self._add_live_on() and self._add_preset() == "cells"
+                and getattr(self, "_add_running", False)):
+            return False
+        if self._add_marker_source()[0] != AP.SOURCE_CLICKS:
+            return False
+        if self._add_roi_voxels() <= int(AP.ADD_LIVE_FULL_RUN_MAX_VOXELS):
+            return False
+        live = (self._add_cells_live_whole()
+                if getattr(self, "_add_whole_patch", False)
+                else self._add_cells_live_box())
+        return live and AP.click_fill_compiling()
 
     def _add_cells_engine_params(self) -> dict:
         """The Cells run's settings as the engine reads them, as the page
@@ -8816,9 +9033,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             dark_clearance_um=float(params.get("dark_clearance_um", 2.0)),
             core_erode_um=float(params.get("core_erode_um", 1.0)),
             click_radius_um=float(params.get("click_radius_um", 1.0)),
-            box_budget=int(params.get("box_budget", 4_000_000)),
-            # the Grow by pick as the page holds it: a whole patch is
-            # filled to the walls whatever it says (cells_growth decides)
+            box_budget=int(params.get("box_budget", AP.ADD_BOX_BUDGET)),
+            # the Grow by pick as the page holds it: on a whole patch Fill
+            # means the fill with a background marker, or the box rule as
+            # you click (cells_growth decides)
             growth=str(params.get("growth") or AP.GROW_FLOOD),
             wall_cost=float(params.get("wall_cost", 40.0)),
             growth_limit=float(params.get(
@@ -8841,9 +9059,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         click (:meth:`_add_cells_live_whole`) the whole patch's wall picture
         key stands for the box's.  ``None`` when no stage serves the page:
         not Cells ▸ Click markers, no box, a whole patch with the tick off
-        or other walls, a box over ``ADD_LIVE_CELLS_MAX_VOXELS``, or a fill
-        the click fill does not redo (Spread, a wall picture other than
-        membrane / gradient)."""
+        or other walls, a box over ``ADD_LIVE_CELLS_MAX_VOXELS``, a box over
+        ``ADD_LIVE_FULL_RUN_MAX_VOXELS`` with the tick off (as on a whole
+        patch: preparing a large region for clicks nobody runs live costs
+        tens of bytes a voxel; at or under that size a box keeps a stage
+        either way), or a fill the click fill does not redo (Spread, a wall
+        picture other than membrane / gradient).  "Always update as I
+        click" is not in the key (a good stage is good either way): its
+        flip lets go only a stage it made meaningless
+        (:meth:`_add_stage_fits_tick`)."""
         from packages.epicycle_annotator import add_preview as AP
         from packages.epicycle_annotator.reshape import incremental as INC
 
@@ -8854,6 +9078,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     if self._add_cells_live_whole_rule() else None)
         else:
             base = self._add_box_elev_key()
+            if (base is not None and not self._add_live_on()
+                    and self._add_roi_voxels()
+                    > int(AP.ADD_LIVE_FULL_RUN_MAX_VOXELS)):
+                base = None
         shared = self._add_shared_volume()
         if base is None or shared is None:
             return None
@@ -8864,12 +9092,25 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if not INC.is_click_fill(spec):
             return None
         dark = spec.params["outside"] == "faces+dark"
-        return base + (
+        key = base + (
             id(shared), int(getattr(self, "_add_volume_epoch", 0)),
             str(getattr(self, "_active_labels_name", "") or ""), spec,
             self._add_cached_dark() if dark else None,
             tuple(sorted(self._add_image_channel_names())) if dark else (),
             self._add_outline_key())
+        return key
+
+    def _add_stage_fits_tick(self, kept) -> bool:
+        """A kept prepared box means something under the tick as it is: a
+        stage kept despite its flat spots only with "Always update as I
+        click" on, a full run the flat spots chose only with it off."""
+        kept = kept or {}
+        always = self._add_live_always()
+        if getattr(kept.get("stage"), "flat_override", None) and not always:
+            return False
+        if kept.get("full") and always:
+            return False
+        return True
 
     def _add_keep_cells_stage(self, res) -> None:
         """The prepared box a finished run took is kept for the next click
@@ -8884,6 +9125,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 or holder.get("key") != key):
             return
         if key != self._add_cells_stage_key():
+            return
+        if not self._add_stage_fits_tick(holder):
+            # the tick flipped while the run held it
             return
         self._add_cells_stage = holder
 
@@ -8906,18 +9150,66 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                     ("smooth_sigma", 1.5))),
                 self._add_half_factor())
 
+    def _add_slow_sig(self):
+        """What a Cells ▸ Click markers region filled whole answers -- the
+        region, the walls and their key, the labels, the engine's spec, the
+        dark rule's inputs, the outline, the ticked markers and their ids,
+        the finish's settings and the half-size factor -- or ``None``."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_preset() != "cells":
+            return None
+        roi = getattr(self, "_add_roi", None)
+        shared = self._add_shared_volume()
+        if roi is None or shared is None:
+            return None
+        params = self._add_cells_engine_params()
+        if params["source"] != AP.SOURCE_CLICKS:
+            return None
+        spec = AP.cells_spec(params)
+        ticked = [m for m in self._add_markers() if m["ticked"]]
+        finish = self._add_params()
+        return (self._add_elev_key(),
+                tuple((int(sl.start), int(sl.stop)) for sl in roi),
+                bool(getattr(self, "_add_whole_patch", False)),
+                id(shared), int(getattr(self, "_add_volume_epoch", 0)),
+                str(getattr(self, "_active_labels_name", "") or ""), spec,
+                self._add_cached_dark(),
+                tuple(sorted(self._add_image_channel_names())),
+                self._add_outline_key(),
+                tuple(tuple(int(v) for v in m["zyx"]) for m in ticked),
+                tuple(int(m["id"]) for m in ticked),
+                tuple(finish.get(k, d) for k, d in (
+                    ("min_size", 0), ("clear_border", True),
+                    ("edge_margin", 3), ("auto_smooth", True),
+                    ("smooth_sigma", 1.5))),
+                self._add_half_factor())
+
     def _add_cells_drawn_current(self) -> bool:
         """Cells ▸ Click markers filled by the click fill: the result drawn
         already answers the ticked markers with these settings -- a Preview
         has nothing to run.  On a whole patch filled as you click; on a box
         at or under ``ADD_LIVE_CELLS_MAX_VOXELS`` only while its prepared
         box is kept for the same key (the next run would reuse it)."""
+        if (getattr(self, "_add_preview_result", None) is not None
+                and getattr(self, "_add_drawn_slow_sig", None) is not None
+                and self._add_drawn_slow_sig == self._add_slow_sig()):
+            # filled whole by a slow update on these very inputs: the
+            # Preview's own fill
+            return True
         drawn = getattr(self, "_add_drawn_cells_sig", None)
         if (drawn is None
                 or getattr(self, "_add_preview_result", None) is None):
             return False
         sig = self._add_cells_sig()
         if sig is None or drawn != sig:
+            return False
+        kept = getattr(self, "_add_cells_stage", None) or {}
+        if (getattr(kept.get("stage"), "flat_override", None)
+                and getattr(getattr(self, "_add_preview_res", None),
+                            "by_click", False)):
+            # drawn by a stage kept despite its flat spots ("Always update
+            # as I click"): a Preview fills exactly, so it runs
             return False
         if self._add_cells_live_whole_rule():
             return True
@@ -8958,6 +9250,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         follows its finish).  False when no live run can follow: then a
         quiet already running ends too (it would run nothing)."""
         if not self._add_live_possible():
+            # a slow update in flight is stale as well: nothing would
+            # draw its answer (the tick went off, the preset or the
+            # markers' source changed, the region grew past the limit)
+            self._add_cancel_stale_slow_run(follow=False)
             t = getattr(self, "_add_live_timer", None)
             if t is not None:
                 try:
@@ -8968,11 +9264,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             return False
         if self._add_live_in_flight() or getattr(self, "_add_busy", False):
             self._add_live_dirty = True
+            self._add_cancel_stale_slow_run()
             return True
         from qtpy.QtCore import QTimer
 
         from packages.epicycle_annotator.add_preview import (
             ADD_LIVE_DEBOUNCE_MS,
+            ADD_LIVE_SLOW_DEBOUNCE_MS,
         )
 
         t = getattr(self, "_add_live_timer", None)
@@ -8981,8 +9279,35 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             t.setSingleShot(True)
             t.timeout.connect(self._add_live_fire)
             self._add_live_timer = t
-        t.start(int(ADD_LIVE_DEBOUNCE_MS))
+        # the region filled whole waits longer: a burst of clicks makes one
+        # slow run, not several
+        t.start(int(ADD_LIVE_SLOW_DEBOUNCE_MS if self._add_live_slow()
+                    else ADD_LIVE_DEBOUNCE_MS))
         return True
+
+    def _add_cancel_stale_slow_run(self, *, follow=True) -> None:
+        """A change during the slow update (the region filled whole after
+        the clicks): its answer is stale already, so the run is cancelled
+        -- between its steps (Spread between tiles; the step in progress
+        finishes first) -- and the run owed follows its end, with the wall
+        picture the run had built.  Not a Stop: nothing is said in S1.
+        ``follow`` False: no run can follow (live switched off); the
+        answer is dropped all the same."""
+        if (not self._add_live_slow_in_flight()
+                or getattr(self, "_add_stopping", False)
+                or getattr(self, "_add_live_superseded", False)):
+            return
+        worker = getattr(self, "_add_worker", None)
+        if worker is None:
+            return
+        try:
+            worker.cancel()
+        except Exception:  # noqa: BLE001 - the run's answer is dropped anyway
+            pass
+        self._add_live_superseded = True
+        print("[ADD] slow update cancelled - a change came while it ran; {}"
+              .format("one more update follows" if follow
+                      else "nothing would draw its answer"))
 
     def _add_live_timer_active(self) -> bool:
         t = getattr(self, "_add_live_timer", None)
@@ -9055,6 +9380,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 self._add_watch_parked()
             return
         self._add_live_dirty = False
+        slow = self._add_live_slow()
+        if slow and self._add_cells_drawn_current():
+            # a slow update already filled these inputs whole, as a
+            # Preview would: nothing to run (a Preview pressed during it
+            # is answered by it)
+            print("[ADD] the slow update's result is current - nothing "
+                  "to run")
+            self._add_manual_owed = False
+            self._add_live_settle_accept()
+            return
         try:
             kwargs, why = self._add_gather_preview(live=True)
         except Exception as exc:  # noqa: BLE001 - never strand the page
@@ -9065,7 +9400,45 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if kwargs is None:
             self._add_live_refused(why)
             return
+        self._add_live_slow_estimate = None
+        self._add_launch_slow_sig = None
+        if slow:
+            self._add_live_slow_estimate = self._add_live_slow_seconds(
+                kwargs)
+            self._add_launch_slow_sig = self._add_slow_sig()
+            print("[ADD] live run fills the region whole (Always update is "
+                  "on; the quick fill cannot take it) - estimated {:.0f} s"
+                  .format(self._add_live_slow_estimate))
+        # read by S1 ("Updating the region…") and Stop once the run exists
+        self._add_live_slow_run = slow
         self._launch_add_worker(kwargs, live=True)
+
+    def _add_live_slow_seconds(self, kwargs) -> float:
+        """The slow update's rough time: the region's voxels, its Wall type
+        (a ridge picture counted until it is kept for the region) and the
+        growth rule the gathered run hands the engine."""
+        from packages.epicycle_annotator import add_preview as AP
+
+        try:
+            growth = AP.cells_growth(dict(kwargs or {}).get("params") or {})
+        except Exception:  # noqa: BLE001 - an estimate never stops a run
+            growth = AP.GROW_FLOOD
+        kind = self._add_wall_params().get("wall_kind")
+        return AP.live_update_seconds(
+            self._add_roi_voxels(), kind, growth,
+            picture_kept=self._add_wall_picture_kept())
+
+    def _add_wall_picture_kept(self) -> bool:
+        """The region's wall picture is kept for the walls on the page now:
+        the whole patch's (its key), or a box's own (where a box keeps
+        one)."""
+        if getattr(self, "_add_whole_patch", False):
+            return ((getattr(self, "_add_elev_cache", None) or {})
+                    .get("key") == self._add_elev_key())
+        bkey = self._add_box_elev_key()
+        return (bkey is not None
+                and (getattr(self, "_add_box_elev_cache", None)
+                     or {}).get("key") == bkey)
 
     def _add_live_refused(self, why) -> None:
         """A live run that cannot run: the drawn box is zeroed and the model
@@ -9154,6 +9527,56 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             print(f"[ADD] live tick not restored: {exc!r}")
             return
         self._add_live_enabled = bool(live)
+        # "Always update as I click" is never kept: the orchestrator's copy
+        # follows the tick as the page holds it now (off on a new page)
+        acb = getattr(adv, "add_live_always_cb", None)
+        if acb is not None:
+            try:
+                self._add_live_always_enabled = bool(acb.isChecked())
+            except Exception:  # noqa: BLE001 - a torn-down tick is off
+                self._add_live_always_enabled = False
+
+    def _on_add_live_always_toggled(self, checked) -> None:
+        """"Always update as I click": kept while the annotator is open
+        (the next box reads the page's tick), never saved.  The
+        click fill's stage key does not carry it: only a stage the flip
+        made meaningless (one kept despite flat spots, or the full run they
+        caused) is let go here; a run follows when nothing is drawn yet,
+        and a quiet already running restarts with the new delay.  Off
+        during a slow update (the region filled whole after the clicks):
+        that update is cancelled -- nothing would draw its answer -- and
+        the region waits for Preview."""
+        on = bool(checked)
+        slow = self._add_live_slow_in_flight()
+        self._add_live_always_enabled = on
+        if slow and not on:
+            # its answer would be dropped anyway: cut it short now (the
+            # walls it built are kept for the next run)
+            self._add_cancel_stale_slow_run()
+        print("[ADD] always update as I click {}".format(
+            "on" if on else "off"))
+        if (not getattr(self, "_add_running", False)
+                or getattr(self, "_add_review", False)):
+            return
+        kept = getattr(self, "_add_cells_stage", None)
+        if kept and not self._add_stage_fits_tick(kept):
+            # a stage kept despite flat spots (the tick going off) or the
+            # full run they chose (the tick going on): the next click
+            # prepares again under the new rule; a good stage stays
+            self._add_drop_cells_stage("Always update as I click {}".format(
+                "on" if on else "off"))
+        self._add_prune_caches()
+        # a run launched under the other rule is stale, and one more run
+        # follows -- unless what is drawn already answers the page
+        self._add_settings_epoch = int(
+            getattr(self, "_add_settings_epoch", 0)) + 1
+        if (self._add_live_timer_active() or self._add_live_in_flight()
+                or (not getattr(self, "_add_busy", False)
+                    and not (getattr(self, "_add_preview_result", None)
+                             is not None
+                             and self._add_cells_drawn_current()))):
+            self._add_live_schedule()
+        self._add_refresh_ui()
 
     def _on_add_live_toggled(self, checked) -> None:
         """The tick: kept per workspace.  Off: the quiet ends, an Accept
@@ -9639,14 +10062,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 # with "Update as I click" on, no Preview is pressed: the
                 # first update reads the patch once
                 return AP.nuclei_patch_slow_line(
-                    n, live=self._add_marker_engine_on())
+                    n, live=self._add_marker_engine_on(),
+                    anywhere=self._add_look_for()[0] == AP.LOOK_ANYWHERE)
         return ""
 
     def _add_cells_note_text(self) -> str:
         """The one amber slot on Cells, first match: a half-size session
         reading another run, one channel with markers from a run, more than
         5 % of the run's markers outside the tissue outline, a ridge wall
-        type's slow wall picture, a slow whole patch."""
+        type's slow wall picture, a slow whole patch or box (over
+        ``ADD_SLOW_PATCH_VOXELS``, up to the size a Preview runs)."""
         from packages.epicycle_annotator import add_preview as AP
 
         kind, _run_id = self._add_marker_source()
@@ -9660,9 +10085,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if (kind == "labels" and len(self._add_image_channel_names()) < 2
                 and _ADD_NUMBA["ok"] is not False):
             # the advice names only what is on the page: Spread (picked
-            # already or not) and Bridge gaps (with the shrink-wrap); on a
-            # whole patch, where Grow by and Wall cost are hidden, a box is
-            # the way; where Spread cannot run there is none to give
+            # already or not) and Bridge gaps (with the shrink-wrap), on a
+            # box or a whole patch alike; where Spread cannot run there is
+            # none to give
             params = self._add_params()
             return AP.one_channel_note(
                 spread=params.get("growth") == AP.GROW_SPREAD,
@@ -9685,12 +10110,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             from packages.epicycle_annotator.reshape import region as _R
 
             n = int(np.prod([int(sl.stop - sl.start) for sl in roi]))
-            # over the fill's ceiling S1 refuses: no "may take minutes"
-            if (AP.ADD_SLOW_PATCH_VOXELS < n
-                    <= int(_R.WHOLE_FILL_MAX_VOXELS)
+            if (AP.ADD_SLOW_LIVE_PATCH_VOXELS < n
                     and self._add_cells_live_whole()):
-                # filled as you click: no Preview is pressed; the first
-                # update prepares the patch once
+                # filled as you click (at most the live limit): no Preview
+                # is pressed; the first update prepares the patch once --
+                # said until a prepared patch is kept for it
+                kept = getattr(self, "_add_cells_stage", None) or {}
+                if (kept.get("stage") is not None
+                        and kept.get("key") == self._add_cells_stage_key()):
+                    return ""
                 return AP.ADD_NOTE_PATCH_SLOW_LIVE_CELLS.format(
                     m=AP.millions(n))
             if (AP.ADD_SLOW_PATCH_VOXELS < n
@@ -9700,14 +10128,48 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 wall_kind = self._add_wall_params().get("wall_kind")
                 kept = ((getattr(self, "_add_elev_cache", None) or {})
                         .get("key") == self._add_elev_key())
-                return AP.patch_slow_line(n, wall_kind, picture_kept=kept)
+                # Nuclei masks not yet found for this patch add the
+                # finder's time
+                seeds = getattr(self, "_add_nuclei_seeds_cache", None) or {}
+                find = (kind == "nuclei_masks"
+                        and seeds.get("key") != self._add_nuclei_seeds_key())
+                # Spread (honoured on a whole patch) has its own figure
+                growth = (AP.GROW_SPREAD if self._add_params().get("growth")
+                          == AP.GROW_SPREAD else None)
+                return AP.patch_slow_line(n, wall_kind, picture_kept=kept,
+                                          find_nuclei=find, growth=growth)
+        elif roi is not None:
+            # a box follows the whole patch's size rule: over the slow size
+            # (the live limit too) a Preview fills it in one go, which
+            # cannot be stopped once it runs -- said before it is pressed
+            n = int(np.prod([int(sl.stop - sl.start) for sl in roi]))
+            budget = int(self._add_params().get("box_budget",
+                                                AP.ADD_BOX_BUDGET))
+            if AP.ADD_SLOW_PATCH_VOXELS < n <= budget:
+                wall_kind = self._add_wall_params().get("wall_kind")
+                bkey = self._add_box_elev_key()
+                kept = (bkey is not None
+                        and (getattr(self, "_add_box_elev_cache", None)
+                             or {}).get("key") == bkey)
+                # a box grows by Grow by's pick: the flood's figure, or
+                # Spread's
+                growth = (AP.GROW_SPREAD if self._add_params().get("growth")
+                          == AP.GROW_SPREAD else AP.GROW_FLOOD)
+                # Nuclei masks on a box are found at every Preview (only a
+                # whole patch keeps its seeds): the finder's time is added
+                find = self._add_marker_source()[0] == "nuclei_masks"
+                return AP.patch_slow_line(n, wall_kind, picture_kept=kept,
+                                          box=True, growth=growth,
+                                          find_nuclei=find)
         return ""
 
     def _add_ridge_note_text(self) -> str:
         """A ridge wall type (Vessel ridges, Thin-faint ridges) builds its
         wall picture slowly: on a whole patch until it is kept (under the
-        fill's ceiling), and on a large box at every Preview.  ``""``
-        otherwise."""
+        fill's ceiling); on a box of ``ADD_RIDGE_BOX_VOXELS`` or more until
+        it is kept, where a box keeps it (at or under the size
+        ``_add_box_elev_key`` keys), and at every Preview over that size.
+        ``""`` otherwise."""
         from packages.epicycle_annotator import add_preview as AP
         from packages.epicycle_annotator.reshape import region as _R
 
@@ -9729,22 +10191,31 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 return AP.ridges_whole_line(words, n, kind)
             return ""
         if n >= int(AP.ADD_RIDGE_BOX_VOXELS):
-            return AP.ADD_NOTE_RIDGES_BOX.format(kind=words)
+            # the box's picture is kept exactly where its cache key exists
+            # (one rule, the cache's): over that size it is built again at
+            # every Preview; under it, said until it is kept for this box
+            bkey = self._add_box_elev_key()
+            if bkey is None:
+                return AP.ADD_NOTE_RIDGES_BOX.format(kind=words)
+            kept = (getattr(self, "_add_box_elev_cache", None) or {}).get(
+                "key")
+            if kept != bkey:
+                return AP.ADD_NOTE_RIDGES_BOX_ONCE.format(kind=words)
         return ""
 
     # --- Cells: the tissue outline, the whole patch's wall picture ---------
     def _add_outline_mode(self) -> str:
         """The tissue outline the page asks for: "cleared" / "shrink" /
         "none".  Cells: its Walls card's pick.  Nuclei: its own card's pick
-        on Anywhere and the markers (the page's snapshot carries it only
-        when one is chosen, so a panel without the card reads none); "none"
-        on Inside each cell and on a whole patch.  "none" too for the
-        cleared-objects outline while no Clear is in force (the page greys
-        that item)."""
+        on Anywhere and the markers, on a box or a whole patch alike (the
+        page's snapshot carries it only when one is chosen, so a panel
+        without the card reads none); "none" on Inside each cell.  "none"
+        too for the cleared-objects outline while no Clear is in force (the
+        page greys that item)."""
         from packages.epicycle_annotator import add_preview as AP
 
         if self._add_preset() != "cells":
-            if self._add_inside() or getattr(self, "_add_whole_patch", False):
+            if self._add_inside():
                 return AP.OUTLINE_NONE
             # read from the Nuclei card itself (a panel without it: none)
             adv = self._get_advanced_features_widget()
@@ -9862,6 +10333,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if ecache and ecache.get("key") != self._add_elev_key():
             self._add_elev_cache = None
             print("[ADD] whole-patch wall picture dropped: its inputs changed")
+        scache = getattr(self, "_add_nuclei_seeds_cache", None)
+        if scache and scache.get("key") != self._add_nuclei_seeds_key():
+            self._add_nuclei_seeds_cache = None
+            print("[ADD] whole-patch nuclear seeds dropped: their inputs "
+                  "changed")
         # the markers' prepared whole patch: off Nuclei ▸ At the markers I
         # place (or the tick, or the whole patch), or once its inputs changed
         mcache = getattr(self, "_add_marker_cache", None)
@@ -10271,8 +10747,21 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         marker can run here (it imports numba: about a second).  The thread
         is the module's, not this page's: Cancel, Done and a close never
         wait for it, and its answer is kept whatever page is open."""
-        if (_ADD_NUMBA["ok"] is not None
-                or _ADD_NUMBA_JOB.get("thread") is not None):
+        if _ADD_NUMBA["ok"] is not None:
+            return
+        if _ADD_NUMBA_JOB.get("thread") is not None:
+            # started from an earlier page (another annotator): this page
+            # hears the answer too, once -- a live run waiting on it here
+            # would otherwise wait for ever
+            w = _ADD_NUMBA_JOB.get("worker")
+            if w is not None and not getattr(self, "_add_numba_hooked",
+                                              False):
+                self._add_numba_hooked = True
+                try:
+                    w.finished.connect(self._on_add_numba_finished)
+                    w.error.connect(self._on_add_numba_error)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[ADD] solver check not hooked: {exc!r}")
             return
         try:
             from qtpy.QtCore import QThread
@@ -10292,6 +10781,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             w.error.connect(_add_numba_failed)
             w.finished.connect(self._on_add_numba_finished)
             w.error.connect(self._on_add_numba_error)
+            self._add_numba_hooked = True
             w.finished.connect(th.quit)
             w.error.connect(th.quit)
             th.start()
@@ -10301,29 +10791,60 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             _ADD_NUMBA_JOB["worker"] = None
 
     def _on_add_numba_finished(self, _outcome=None) -> None:
-        """The page's part of the answer (the module kept it already)."""
+        """The page's part of the answer (the module kept it already).  A
+        live run that waited for the click fill to be compiled
+        (``_add_live_waits_fill``) runs again now, once: the clicks placed
+        meanwhile are drawn by it."""
         if not self._add_widget_alive():
             return
+        if getattr(self, "_add_live_waits_fill", False):
+            self._add_live_waits_fill = False
+            self._add_live_fill_settled("the click fill (now compiled)")
         if getattr(self, "_add_running", False) or _ADD_NUMBA["ok"] is False:
             self._add_refresh_ui()
 
     def _on_add_numba_error(self, _message=None) -> None:
+        """The check ended in an error: the compile state is settled all
+        the same, so a live run that waited for it runs again once (its
+        click fill then answers with the full run or steps aside)."""
         if not self._add_widget_alive():
             return
+        if getattr(self, "_add_live_waits_fill", False):
+            self._add_live_waits_fill = False
+            self._add_live_fill_settled("the click fill (check failed)")
         self._add_refresh_ui()
+
+    def _add_live_fill_settled(self, what) -> None:
+        """The click fill's compile state settled while a live run waited
+        for it.  No input of the markers' run changed: a slow update in
+        flight (the region filled whole, "Always update as I click") is
+        left to finish -- cancelling it would zero its result for nothing;
+        otherwise the waiting run runs once (``_add_live_input_landed``)."""
+        if self._add_live_slow_in_flight():
+            print("[ADD] live: {} - the slow update in flight is left to "
+                  "finish".format(what))
+            return
+        if (getattr(self, "_add_preview_result", None) is not None
+                and not getattr(self, "_add_live_dirty", False)
+                and not self._add_live_in_flight()):
+            # a Preview, or the full run of a small box, drew the markers
+            # meanwhile: exact already, it stands
+            print("[ADD] live: {} - a result drawn meanwhile stands"
+                  .format(what))
+            return
+        self._add_live_input_landed(what)
 
     def _add_check_outline_choice(self) -> None:
         """No Clear behind "Outline of the objects you cleared" is in force
-        any more while it is the choice: it falls back -- to the shrink-wrap
-        on a whole patch (the outline is the only outside there, picked or
-        not), else to "No outline (as before)".  S1 says so once, and only
-        when the cleared objects came back (an Undo); otherwise quietly."""
+        any more while it is the choice: it falls back to the preset's
+        default -- the shrink-wrap on Cells, "No outline" on Nuclei -- on a
+        box and a whole patch alike.  S1 says so once, and only when the
+        cleared objects came back (an Undo); otherwise quietly."""
         from packages.epicycle_annotator import add_preview as AP
 
         adv = self._get_advanced_features_widget()
         cells = self._add_preset() == "cells"
-        # Cells: its Walls card's pick; Nuclei: its own card's (which falls
-        # back to No outline: it is never on a whole patch)
+        # Cells: its Walls card's pick; Nuclei: its own card's
         getter, setter = (("get_add_outline", "set_add_outline") if cells
                           else ("get_add_nuc_outline", "set_add_nuc_outline"))
         if (adv is None or not hasattr(adv, getter)
@@ -10349,9 +10870,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_clears_back = False
         if in_force:
             return
-        whole = bool(getattr(self, "_add_whole_patch", False))
-        fallback = (AP.OUTLINE_SHRINK if whole and cells
-                    else AP.OUTLINE_NONE)
+        # Cells falls back to its default outline, on a box and a whole
+        # patch alike (the shrink-wrap); Nuclei to its default, No outline
+        fallback = AP.OUTLINE_SHRINK if cells else AP.OUTLINE_NONE
         getattr(adv, setter)(fallback)
         print("[ADD] the cleared-objects outline is gone ({}); Tissue "
               "outline -> {}".format("its objects are back" if back
@@ -10376,10 +10897,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """Whole patch (beside Place box, or Whole on the box row): with no
         box, start a session whose box is the patch; with a box, make the box
         the patch.  ALWAYS -- the buttons are never grey.  A choice that
-        cannot fill a whole patch (Cells with neither another run's objects
-        nor Click markers, or without Spread from each marker; Nuclei ▸
-        Anywhere in the box) greys Preview, and S1 says why
-        (``add_preview.preview_block``)."""
+        cannot fill a whole patch (Cells with no marker source picked, or
+        without the growth engine; a patch over the Preview limit) greys
+        Preview, and S1 says why (``add_preview.preview_block``)."""
         if not getattr(self, "_add_running", False):
             self._start_add(whole=True)
             return
@@ -10456,17 +10976,29 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._push_add_ui(**kw)
 
     def _add_budget(self) -> int:
-        try:
-            return int(self._add_params().get("box_budget", 4_000_000))
-        except Exception:
-            return 4_000_000
+        """The Cells box budget (Preview refuses above it)."""
+        from packages.epicycle_annotator.add_preview import ADD_BOX_BUDGET
 
-    def _add_clamp_box(self, box, shape):
-        """On Cells, scale the box uniformly by ``(budget / n) ** (1/3)``
-        (floored, >= 1) when it is over the budget."""
+        try:
+            return int(self._add_params().get("box_budget", ADD_BOX_BUDGET))
+        except Exception:
+            return int(ADD_BOX_BUDGET)
+
+    def _add_preset_limit(self) -> int:
+        """The most S / M / L and a new box reach on Cells: their own size
+        (``ADD_CELLS_PRESET_MAX_VOXELS``), never over the budget."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_CELLS_PRESET_MAX_VOXELS,
+        )
+
+        return min(self._add_budget(), int(ADD_CELLS_PRESET_MAX_VOXELS))
+
+    def _add_clamp_box(self, box, shape, limit=None):
+        """On Cells, scale the box uniformly by ``(limit / n) ** (1/3)``
+        (floored, >= 1) when it is over ``limit`` (``None``: the budget)."""
         if self._add_preset() != "cells" or box is None:
             return box
-        budget = self._add_budget()
+        budget = self._add_budget() if limit is None else int(limit)
         n = int(box.sz) * int(box.sy) * int(box.sx)
         if n <= budget:
             return box
@@ -12724,15 +13256,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         return cache.get(self._add_dark_key())
 
     def _add_default_spacing(self) -> bool:
-        """True when Step 3's spacing was never set -- Cells runs on the
-        1.0 um default as it is and the page says so in amber.  Follows the
-        context's own word about where the spacing came from (a half-size
-        session of 0.5 um voxels hands over (1, 1, 1) and is known), and the
-        numbers only when the context does not say."""
+        """True when Step 3's spacing was never set -- every Add path runs
+        on the 1.0 um default as it is and the page says so in amber.
+        Follows the context's own word about where the spacing came from
+        (a half-size session of 0.5 um voxels hands over (1, 1, 1) and is
+        known), and the numbers only when the context does not say."""
         return self._add_spacing_unknown()
 
     def _add_s1_state(self) -> dict:
         """Everything :func:`add_preview.s1_sentence` reads."""
+        from packages.epicycle_annotator.add_preview import (
+            ADD_BOX_BUDGET as _BOX_BUDGET,
+        )
+
         shared = self._add_shared_volume()
         preset = self._add_preset()
         params = self._add_params()
@@ -12747,7 +13283,6 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # (Cells); on Nuclei it is the outline alone ("none" unless chosen)
         mode = self._add_outline_mode()
         dark_needed = dark_on or mode != "none"
-        whole = bool(getattr(self, "_add_whole_patch", False))
         info_pending = False
         if preset == "cells":
             if info is None:
@@ -12797,7 +13332,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             "has_box": box is not None and getattr(self, "_add_running", False),
             "preset": preset,
             "box_shape": shape,
-            "box_budget": int(params.get("box_budget", 4_000_000)),
+            "box_budget": int(params.get("box_budget", _BOX_BUDGET)),
             "channel": str(params.get("channel", "") or ""),
             "wall_channel": str(self._add_wall_params().get("channel") or ""),
             "nuclei_channel": self._add_nuclei_channel(),
@@ -12816,10 +13351,8 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             "user_emptied": bool(getattr(self, "_add_user_emptied", False)),
             # Inside each cell and the whole patch
             "look_for": self._add_look_for()[0],
-            # the micron knobs of Inside each cell and of a Cells whole
-            # patch refuse at the never-set 1.0 um default
-            "spacing_unknown": ((inside or (preset == "cells" and whole))
-                                and self._add_spacing_unknown()),
+            # (a spacing never set refuses nothing: every Add path runs on
+            # the 1.0 um fallback and the amber note says so)
             "outline_pending": outline_pending,
             "outline_error": outline_error,
             "numba_ok": _ADD_NUMBA["ok"] is not False,
@@ -12845,6 +13378,29 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # Cells whole patch with walls the click fill redoes skips)
             "live_on": self._add_live_on(),
             "live_whole_ok": self._add_cells_live_whole(),
+            # ... and a box over the full-run size the click fill does not
+            # or could not take (row 13.5 too)
+            "live_box_ok": (bool(getattr(self, "_add_whole_patch", False))
+                            or self._add_cells_live_box()),
+            # ... a step aside of either region for the click fill's flat
+            # spots, and the spacing never set: row 13.5 names the spacing
+            "flat_spots": (self._add_live_on()
+                           and self._add_cells_click_flat()),
+            "default_spacing": self._add_default_spacing(),
+            # ... and a region run as you click whose click fill is still
+            # being compiled: its clicks wait
+            "fill_pending": self._add_cells_fill_pending(),
+            # "Always update as I click": no row 13.5 at all; while the
+            # region is filled whole after the clicks, S1 says so (busy)
+            "live_always": self._add_live_always(),
+            "live_updating": self._add_live_slow_in_flight(),
+            # ... its time, estimated at its launch (S1 names it)
+            "live_updating_seconds": (
+                getattr(self, "_add_live_slow_estimate", None)
+                if self._add_live_slow_in_flight() else None),
+            # ... and what a step aside's line under the tick names: the
+            # Wall type or Grow by the click fill does not redo
+            "live_aside": self._add_live_aside_why(),
         }
         if getattr(self, "_add_review", False):
             from packages.epicycle_annotator.add_preview import cells_with_two
@@ -12913,6 +13469,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _add_refresh_ui(self, **extra) -> None:
         """Push S1 (the 4.9a table), Preview's enable and the strip."""
         from packages.epicycle_annotator.add_preview import (
+            live_tick_note,
             preview_block,
             s1_kind,
             s1_sentence,
@@ -12927,13 +13484,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         preview_ok = (running and not busy and not review
                       and preview_block(state) is None)
         kw = dict(status_text=s1_sentence(state), status_kind=s1_kind(state),
+                  # the line under "Update as I click": row 13.5's reason,
+                  # decided by the same state ("" while live runs)
+                  live_tick_note=live_tick_note(state),
                   default_spacing=self._add_default_spacing(),
                   preview_enabled=preview_ok,
                   busy=busy,
                   # Stop drops a Clear's count; its write cannot be stopped;
-                  # a preview whose answer has landed has nothing to stop
-                  stop_enabled=busy and not getattr(self, "_add_stopping",
-                                                    False)
+                  # a preview whose answer has landed has nothing to stop.
+                  # The slow live run (the region filled whole) stops too
+                  stop_enabled=(busy or bool(state.get("live_updating")))
+                  and not getattr(self, "_add_stopping", False)
                   and getattr(self, "_add_clear_phase", None) != "clearing"
                   and not getattr(self, "_add_answer_landed", False),
                   # the one amber slot (another run read, a whole patch)
@@ -12958,6 +13519,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # a whole patch filled the way a box is (the box rule): its help
         # line, the membrane tick hidden, its summary
         kw["live_whole_rule"] = bool(self._add_cells_live_whole_rule())
+        # ... and whether it is run as you click now (False: the click fill
+        # stepped aside, S1 says to press Preview): the help line agrees
+        kw["live_whole_ok"] = bool(state.get("live_whole_ok"))
         # the moving bar while the box, the patch, the outline or a run is
         # read on a worker -- only while a reader is alive or due, in the
         # words of what it reads whatever S1 says (the app is live then;
@@ -13023,7 +13587,13 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
     def _add_gather_preview(self, live: bool = False):
         """``(kwargs, None)`` for :func:`run_add_preview`, or ``(None,
-        sentence)``.  Main thread; every array a copied box crop.  ``live``
+        sentence)``.  Main thread.  ``existing_roi`` is a copied box crop
+        (``None`` when a prepared whole patch is handed in); a Nuclei box's
+        image channel is a copied crop too.  Cells' image channels
+        (``wall_roi``, ``dark_rois``, ``nuclei_roi``) and the Nuclei
+        markers' channel on a whole patch are the layers' own arrays,
+        unread here: the worker cuts the box.  The other run is handed as a
+        view.  ``live``
         (a run after a click): the session's cached next id, as the click
         that reserved it read, instead of a max over the whole volume."""
         from packages.epicycle_annotator import add_preview as AP
@@ -13079,7 +13649,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if preset != "cells" and state.get("look_for") == AP.LOOK_INSIDE:
             # Inside each cell: the nuclear channel, the other run's cells
             # and the PATCH's levels cropped to the box's z range (a box's
-            # own levels are not the patch's); spacing in microns, known
+            # own levels are not the patch's); spacing in microns
             guide = getattr(self, "_add_run_guide", None)
             if guide is None:
                 return None, AP.ADD_S1_RUN_LOADING
@@ -13094,8 +13664,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             p = dict(common, look_for=AP.LOOK_INSIDE,
                      nuc_radius_um=float(params.get("nuc_radius_um", 2.5)),
                      nuc_edge=float(params.get("nuc_edge", 0.25)),
-                     two_gap=float(params.get("two_gap", 0.70)),
-                     spacing_known=not self._add_spacing_unknown())
+                     two_gap=float(params.get("two_gap", 0.70)))
             # the other run as a view: it is never written (the recipe reads
             # it; a copy was ~0.3 s on the main thread on a whole patch)
             kw.update(params=p, image_roi=image_roi,
@@ -13113,12 +13682,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 kw.update(run_guide_patch=guide, existing_patch=shared)
             return kw, None
         if preset != "cells":
-            if (getattr(self, "_add_whole_patch", False)
-                    and state.get("look_for") == AP.LOOK_MARKERS):
-                # the markers on a whole patch: the layer's own array, read
-                # on the worker (the engine converts it and never writes
-                # it); a float64 copy of the patch here was 0.4 s on the
-                # main thread at 100 million voxels
+            if getattr(self, "_add_whole_patch", False):
+                # the markers or Anywhere on a whole patch: the layer's own
+                # array, read on the worker (the engine converts it and
+                # never writes it); a float64 copy of the patch here was
+                # 0.4 s on the main thread at 100 million voxels
                 image_roi = self._refine_channel_source(
                     params.get("channel", ""))
             else:
@@ -13181,13 +13749,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         wall = self._add_wall_params()
         whole = bool(getattr(self, "_add_whole_patch", False))
 
-        def _image(name, dtype=np.float32):
-            # a box: a copied crop; the whole patch: the layer's own array,
-            # read on the worker (copies of every channel at patch size were
-            # seconds on the main thread)
-            if whole:
-                return self._refine_channel_source(name)
-            return self._add_channel_crop(name, roi, dtype)
+        def _image(name):
+            # the layer's own array, on a box as on the whole patch: the
+            # worker cuts the box (a copied crop of every channel here was
+            # about 0.3 s an array at 5 million voxels, on the main thread)
+            return self._refine_channel_source(name)
 
         wall_roi = _image(wall.get("channel"))
         if wall_roi is None:
@@ -13234,10 +13800,19 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 elevation_roi = bcache.get("elev")
         nuclei_roi = None
         run_guide_roi = None
+        nuclei_seeds = None
+        self._add_launch_seeds_key = None
         if kind == "nuclei_masks":
-            nuclei_roi = _image(self._add_nuclei_channel(), np.float64)
+            nuclei_roi = _image(self._add_nuclei_channel())
             if nuclei_roi is None:
                 return None, AP.ADD_S1_PICK_NUCLEI_CHANNEL
+            skey = self._add_nuclei_seeds_key()
+            self._add_launch_seeds_key = skey
+            scache = getattr(self, "_add_nuclei_seeds_cache", None)
+            if skey is not None and scache and scache.get("key") == skey:
+                # the seeds an earlier Preview of this whole patch found
+                nuclei_seeds = {"seeds": scache.get("seeds"),
+                                "n_small": scache.get("n_small", 0)}
         elif kind == "labels":
             guide = getattr(self, "_add_run_guide", None)
             if guide is None:
@@ -13256,15 +13831,23 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         p = dict(common,
                  nuclei_threshold=("otsu" if nthr is None else float(nthr)),
                  **self._add_cells_engine_params())
-        if live and whole:
-            # a run after a click on a whole patch: the bridge refuses
-            # rather than flood it whole where the click fill steps aside
-            # (a box's live run gathers what its Preview gathers)
+        if live and not self._add_live_slow():
+            # a run after a click, on a box or a whole patch: the bridge
+            # refuses rather than flood the region whole where the click
+            # fill steps aside (a Preview press floods it).  "Always update
+            # as I click" on a region the quick way cannot take: no such
+            # refusal -- the region is filled whole, as a Preview fills it
             p["live"] = True
+        if live and self._add_live_always():
+            # ... and the click fill keeps running despite its flat spots
+            # (sent only with the tick on: a Preview stays exact)
+            p["live_always"] = True
         kw.update(params=p, spacing=self._refine_spacing(), wall_roi=wall_roi,
                   dark_rois=dark_rois, dark_threshold=dark,
                   nuclei_roi=nuclei_roi, run_guide_roi=run_guide_roi,
                   outline_roi=outline_roi, elevation_roi=elevation_roi)
+        if nuclei_seeds is not None:
+            kw.update(nuclei_seeds=nuclei_seeds)
         if kind == AP.SOURCE_CLICKS:
             # the clicks reach the Preview only as its markers: markers left
             # from a box on another source are hidden and kept, never sent
@@ -13360,6 +13943,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_transient = why
             self._add_refresh_ui()
             return
+        # (a manual Preview's answer records no slow-update inputs: only a
+        # slow update answers a Preview, never the other way round)
+        self._add_launch_slow_sig = None
         self._launch_add_worker(kwargs)
         _st.lap("launch")
         _st.line(preset=kwargs.get("preset"))
@@ -13398,13 +13984,28 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             except Exception as exc:  # noqa: BLE001
                 print(f"[ADD] parked preview thread not watched: {exc!r}")
 
+    def _add_release_parked(self) -> None:
+        """Every parked Add thread that has ended leaves the parked lists
+        and its worker lets go of its inputs (:func:`_release_parked_threads`
+        for this page's list and the module's).  Never raises."""
+        gone = _release_parked_threads(self)
+        watched = getattr(self, "_add_parked_watched", None)
+        if watched:
+            watched[:] = [t for t in watched
+                          if not any(t is g for g in gone)]
+        if gone:
+            print("[ADD] {} parked preview thread(s) ended - inputs let go"
+                  .format(len(gone)))
+
     def _on_add_parked_finished(self, *_a) -> None:
-        """A parked Add preview thread ended: its refusal leaves S1 (only
-        while S1 still says it).  Safe when the page is already gone."""
+        """A parked Add preview thread ended: its inputs are let go, and
+        its refusal leaves S1 (only while S1 still says it).  Safe when the
+        page is already gone."""
         from packages.epicycle_annotator.add_preview import (
             ADD_S1_PARKED_REFUSED,
         )
 
+        self._add_release_parked()
         if (getattr(self, "_add_live_dirty", False)
                 and getattr(self, "_add_thread", None) is None):
             # an update owed while the parked thread ran runs now
@@ -13464,8 +14065,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_live_dirty = False
         self._add_manual_owed = False
         self._add_live_landed = False
+        self._add_live_superseded = False
         if not live:
             self._add_live_keep_transient = None
+            self._add_live_slow_run = False
         self._add_live_run = bool(live)
         whole = bool(getattr(self, "_add_whole_patch", False))
         self._add_live_stage = (("add_box_patch" if whole else "add_box")
@@ -13513,6 +14116,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             self._add_thread = None
             self._add_worker = None
             self._add_busy = False
+            self._add_live_slow_run = False
             self._add_let_go_launch_cells()
             if live:
                 # the drawn result no longer matches the markers: it goes
@@ -13549,7 +14153,12 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 self._add_warm_text = None
                 self._add_refresh_ui()
                 return
-            self._push_add_ui(measuring=stage_text(stage))
+            kw = {"measuring": stage_text(stage)}
+            if self._add_live_slow_in_flight():
+                # the slow update stops: the page's strip greys Stop on
+                # every reader's line unless told otherwise
+                kw["stop_enabled"] = True
+            self._push_add_ui(**kw)
             return
         if stage == "add_warm":
             # the growth engine's first set-up on this computer (~10 s,
@@ -13672,6 +14281,14 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         if _t_launch is not None:
             print("[ADD-PERF] worker wall={:.0f}ms (start to finish signal)".format(
                 (_time.perf_counter() - _t_launch) * 1000.0), flush=True)
+            if (getattr(self, "_add_live_run", False)
+                    and getattr(self, "_add_live_slow_run", False)):
+                # the slow update: measured against what S1 said
+                est = getattr(self, "_add_live_slow_estimate", None)
+                print("[ADD] live update of the region took {:.1f} s "
+                      "(estimated {:.0f} s)".format(
+                          _time.perf_counter() - _t_launch,
+                          float(est or 0.0)), flush=True)
         if getattr(self, "_add_stopping", False):
             self._on_add_stopped()
             return
@@ -13689,6 +14306,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             # (another token) owns the launch key: nothing is kept then.
             # The markers' prepared patch and solution likewise
             self._add_keep_elevation(res)
+            self._add_keep_nuclei_seeds(res)
             self._add_keep_marker_stage(res)
             # ... and the Cells click fill's prepared box
             self._add_keep_cells_stage(res)
@@ -13696,6 +14314,23 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
             line = line() if callable(line) else ""
             if line:
                 print(line)
+        elif (res is not None and getattr(res, "status", "") == "cancelled"
+              and getattr(self, "_add_live_superseded", False)
+              and (token is None or token == getattr(self, "_add_token", 0))):
+            # a slow update cancelled by a change: the walls it built before
+            # the cancel are kept for the run owed (their key is checked
+            # against the page now).  The click fill's prepared box is not:
+            # a stage cut short is never reused
+            self._add_keep_elevation(res)
+        if getattr(self, "_add_live_superseded", False):
+            # a slow update cancelled by a change: its answer (cut short,
+            # or the fill that could not be cut) is dropped; the run owed
+            # follows when the thread ends
+            self._add_live_superseded = False
+            self._add_let_go_launch_cells()
+            print("[ADD] the cancelled slow update ended - its answer is "
+                  "dropped")
+            return
         if self._add_is_stale(token):
             return
         if res is None or getattr(res, "status", "") == "cancelled":
@@ -13721,12 +14356,33 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 # advise clearing them
                 refusal = _AP.ADD_S1_INSIDE_ALL_TAKEN_NUCLEI_RUN
             if reason == _AP.NOT_LIVE_HERE:
-                # a click on a whole patch the click fill cannot take: no
-                # flood ran; the kept patch now says so (no click runs it
-                # until its key changes) and S1 says its gate at once
-                print("[ADD] live run on the whole patch stepped aside - "
-                      "press Preview to fill it")
+                # a click on a box or a whole patch the click fill cannot
+                # take: no flood ran; the kept stage now says so (no click
+                # runs it until its key changes) and S1 says its gate at once
+                print("[ADD] live run on the {} stepped aside - press "
+                      "Preview to fill it".format(
+                          "whole patch"
+                          if getattr(self, "_add_whole_patch", False)
+                          else "box"))
                 refusal = None
+                if self._add_live_slow():
+                    # "Always update as I click": the region is filled
+                    # whole now, once this thread has ended
+                    print("[ADD] Always update is on - the region is "
+                          "filled whole instead")
+                    self._add_live_dirty = True
+            elif reason == _AP.LIVE_PREPARING:
+                # the click fill is still being compiled: nothing is
+                # remembered against the region, S1 says the clicks wait
+                # (fill_pending), and the solver check's answer runs it
+                # again.  Compiled meanwhile (the answer came first): one
+                # more run follows this one's end
+                print("[ADD] live run waits for the fill to compile")
+                refusal = None
+                if _AP.click_fill_compiling():
+                    self._add_live_waits_fill = True
+                else:
+                    self._add_live_dirty = True
             live_refused = bool(getattr(self, "_add_live_run", False))
             if live_refused:
                 # live: the result drawn for the earlier markers goes in
@@ -13767,6 +14423,15 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # click: a Preview on it then runs nothing)
         self._add_drawn_cells_sig = getattr(self, "_add_launch_cells_sig",
                                             None)
+        # ... and a slow update (the region filled whole, as a Preview
+        # fills it): its inputs, so a Preview on them runs nothing
+        # (a slow run the click fill answered after all -- it retried the
+        # quick way with its flat spots -- is not the Preview's answer)
+        self._add_drawn_slow_sig = (
+            getattr(self, "_add_launch_slow_sig", None)
+            if (getattr(self, "_add_live_run", False)
+                and getattr(self, "_add_live_slow_run", False)
+                and not getattr(res, "by_click", False)) else None)
         if getattr(self, "_add_live_run", False):
             # live: no forced repaint; the diff write replaces the result
             # on screen.  An Accept waiting goes on when the thread ends
@@ -13818,6 +14483,44 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_elev_cache = {"key": key, "elev": elev}
         print("[ADD] whole-patch wall picture kept for the next Preview")
 
+    def _add_keep_nuclei_seeds(self, res) -> None:
+        """Cells ▸ Nuclei masks on a whole patch: the nuclear seeds the run
+        found are kept for the next Preview of the same patch, labels,
+        Clears, nuclei channel, threshold, spacing and half size (finding
+        them is the finder's whole run over the patch).  A box keeps none:
+        its seeds are found at every Preview, as they always were."""
+        seeds = getattr(res, "nuclei_seeds", None)
+        key = getattr(self, "_add_launch_seeds_key", None)
+        if (seeds is None or key is None
+                or not getattr(self, "_add_whole_patch", False)
+                or key != self._add_nuclei_seeds_key()):
+            return
+        self._add_nuclei_seeds_cache = {"key": key,
+                                        "seeds": seeds.get("seeds"),
+                                        "n_small": seeds.get("n_small", 0)}
+        print("[ADD] whole-patch nuclear seeds kept for the next Preview")
+
+    def _add_nuclei_seeds_key(self):
+        """What the whole patch's nuclear seeds depend on: the labels (the
+        volume and its write epoch -- the seeds are clipped to its empty
+        voxels), the Clears in force, the nuclei channel, the threshold,
+        the session (patch, run, spacing, half size).  ``None`` off a Cells
+        whole patch with Nuclei masks."""
+        if (self._add_preset() != "cells"
+                or not getattr(self, "_add_whole_patch", False)
+                or self._add_marker_source()[0] != "nuclei_masks"):
+            return None
+        shared = self._add_shared_volume()
+        if shared is None:
+            return None
+        thr = getattr(self, "_add_nuclei_threshold_value", None)
+        clears = tuple((int(seq), tuple(sorted(int(i) for i in ids)))
+                       for seq, ids in (self._add_cleared_in_force() or ()))
+        return (id(shared), int(getattr(self, "_add_volume_epoch", 0)),
+                clears, str(self._add_nuclei_channel() or ""),
+                "otsu" if thr is None else float(thr),
+                self._add_session_key())
+
     def _on_add_error(self, message) -> None:
         if getattr(self, "_add_stopping", False):
             self._on_add_stopped()
@@ -13846,8 +14549,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _stop_add_preview(self) -> None:
         """Stop is a STATE: flag, cancel, say so, return -- no
         pump, no wait.  The finish handlers route to the stopped path.
-        While Clear objects counts, Stop drops the count instead."""
-        if not getattr(self, "_add_busy", False):
+        While Clear objects counts, Stop drops the count instead.  A live
+        run stops only when it is the slow one (the region filled whole
+        after the clicks, "Always update as I click")."""
+        if (not getattr(self, "_add_busy", False)
+                and not self._add_live_slow_in_flight()):
             return
         if getattr(self, "_add_clear_phase", None) == "counting":
             self._stop_add_clear_count()
@@ -13861,13 +14567,24 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         from napari_epicycle.annotator.reshape_worker import stage_text
 
         self._add_stopping = True
+        # Stop is the answer: a click or a Preview that came in while the
+        # run ran is dropped with it (only a marker placed while it winds
+        # down is drawn afterwards, _on_add_stopped)
+        self._add_live_dirty = False
+        self._add_manual_owed = False
         try:
             worker.cancel()
         except Exception:
             pass
         print("[ADD] Stop pressed")
-        self._add_refresh_ui(stage_text=stage_text("stopping"),
-                             stop_enabled=False)
+        text = stage_text("stopping")
+        from packages.epicycle_annotator import add_preview as AP
+
+        if self._add_roi_voxels() > int(AP.ADD_SLOW_PATCH_VOXELS):
+            # a step already running on a region this large (a distance
+            # map, a flood) is never cut short: Stop waits for it
+            text = "{} {}".format(text, AP.ADD_STOP_STEP_ENDS)
+        self._add_refresh_ui(stage_text=text, stop_enabled=False)
 
     def _on_add_stopped(self) -> None:
         """Drop the answer; say Stopped.  ``_add_busy`` stays until the
@@ -13879,9 +14596,17 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
 
         self._add_stopping = False
         # Stop is the answer: no run follows it, and its prepared box goes
+        # -- except for a marker placed while it wound down: that click
+        # is drawn once Stopped is said (its quiet starts then)
+        dirty = (bool(getattr(self, "_add_live_dirty", False))
+                 and self._add_live_possible())
         self._add_live_dirty = False
         self._add_manual_owed = False
         self._add_let_go_launch_cells()
+        if getattr(self, "_add_live_run", False):
+            # a live run stopped (the slow one): the result drawn for the
+            # earlier markers goes, as at a live refusal
+            self._invalidate_add_preview(live_schedule=False)
         self._add_transient = (ADD_S1_STOPPED_PATCH
                                if getattr(self, "_add_whole_patch", False)
                                else ADD_S1_STOPPED)
@@ -13891,6 +14616,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         print("[ADD] preview stopped - nothing from this {} was added".format(
             "patch" if getattr(self, "_add_whole_patch", False) else "box"))
         self._add_refresh_ui()
+        if dirty:
+            print("[ADD] a marker placed while stopping - one live run "
+                  "follows")
+            self._add_transient = None      # its run says S1, not Stopped
+            if getattr(self, "_add_thread", None) is not None:
+                # said from the worker's finish: the thread's own end
+                # runs the one update owed
+                self._add_live_dirty = True
+            else:
+                self._add_live_schedule()
 
     def _on_add_thread_finished(self) -> None:
         """The QThread's own ``finished``: only now is Preview live again."""
@@ -13913,6 +14648,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_answer_landed = False
         self._add_warm_text = None
         self._add_live_run = False
+        self._add_live_slow_run = False
         self._add_live_stage = None
         self._add_live_landed = False
         if was_stopping:
@@ -13977,6 +14713,16 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         except Exception:
             pass
         parked.append((th, worker))
+        _ADD_PARKED_THREADS.append((th, worker))
+        # hear its end at module level (the page may go first): the
+        # worker's inputs (a labels copy, the outline, the wall picture, a
+        # stage) are let go then; the page's own watch runs the update owed
+        try:
+            th.finished.connect(_on_parked_thread_finished)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ADD] parked thread not watched: {exc!r}")
+        _release_parked_threads(self)
+        self._add_watch_parked()
 
     def _add_abandon_workers(self) -> None:
         """Cancel + clean both Add workers (every exit of).
@@ -14256,7 +15002,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         # a Cells whole patch is filled to the walls in one go: never over
         # the box limit
         over = (preset == "cells"
-                and n_box > int(params.get("box_budget", 4_000_000))
+                and n_box > int(params.get("box_budget", AP.ADD_BOX_BUDGET))
                 and not whole)
         if preset == "cells" and kind == "labels" and not over:
             guide = getattr(self, "_add_run_guide", None)
@@ -14267,12 +15013,10 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 if dark_needed:
                     dark_rois = {}
                     for n in self._add_image_channel_names():
-                        if whole:
-                            # the whole patch: the layer's own array, read
-                            # on the worker (a copy here was ~0.3 s each)
-                            c = self._refine_channel_source(n)
-                        else:
-                            c = self._add_channel_crop(n, roi, np.float32)
+                        # the layer's own array, on a box as on the whole
+                        # patch: the engine cuts the box on the worker (a
+                        # copy here was ~0.3 s each)
+                        c = self._refine_channel_source(n)
                         if c is not None:
                             dark_rois[n] = c
         nuc_source = None
@@ -14302,8 +15046,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
                 nuclear = self._refine_channel_source(
                     params.get("channel", ""))
                 if (nuclear is not None and self._add_cached_levels() is None
-                        and self._add_levels_error() is None
-                        and not self._add_spacing_unknown()):
+                        and self._add_levels_error() is None):
                     levels_sources = (nuclear, guide)
         elif preset != "cells" and not refused_whole:
             # the Brightness histogram and its Auto (B4.2): the box crop,
@@ -15971,6 +16714,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         not an open edit -- Refine, Refine all, "+ Add another" and the
         navigator stay open there -- so the Undo is not refused; the page
         follows it instead."""
+        # the labels changed under the page: every cache keyed on the
+        # volume's write epoch (the markers' prepared patch, the whole
+        # patch's nuclear seeds, the click fill's stage) is stale now
+        self._add_volume_epoch = int(
+            getattr(self, "_add_volume_epoch", 0)) + 1
         if (not getattr(self, "_add_review", False)
                 or getattr(self, "_add_undoing_all", False)):
             return
@@ -16043,6 +16791,9 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         """The main Undo took back a Clear: the objects it pasted back that
         an Accept of this review wrote are listed again (each entry keeps
         the ids its Accept wrote, ``accept_ids``)."""
+        # the labels changed under the page (see _add_after_accept_undone)
+        self._add_volume_epoch = int(
+            getattr(self, "_add_volume_epoch", 0)) + 1
         if (not getattr(self, "_add_review", False)
                 or getattr(self, "_add_undoing_all", False)):
             return
@@ -16124,6 +16875,7 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
         self._add_outline_cache = None
         self._add_outline_errors = {}
         self._add_elev_cache = None
+        self._add_nuclei_seeds_cache = None
         self._add_box_elev_cache = None
         self._add_drop_marker_cache("the patch is going away")
         self._add_drop_cells_stage("the patch is going away")
@@ -16774,6 +17526,11 @@ class Curation3DAnnotator(NativeMultiviewAnnotator):
     def _reset_add_state(self) -> None:
         """Return Add mode to idle (mirrors _reset_split_state)."""
         self._add_release_histogram()
+        # a live run waiting for the click fill to compile belongs to the
+        # region that is closing: the next region starts without it
+        self._add_live_waits_fill = False
+        # a superseded slow update belongs to the session that ended
+        self._add_live_superseded = False
         # forget the cached Advanced Features dock (final fix pass P1); a
         # plain attribute write so a borrowed-method harness needs nothing
         self._afw_cache = None

@@ -177,6 +177,9 @@ def _make_predict_ctrl():
     ctrl.viewer = types.SimpleNamespace(dims=types.SimpleNamespace(ndisplay=2))
     ctrl.current_config = {}
 
+    # past the run gate: these tests drive Predict itself, not the
+    # question a folder with no run asks first
+    ctrl._require_run = lambda _action: True
     ctrl.guard_calls = []
     ctrl._confirm_resegment = lambda label: (
         ctrl.guard_calls.append(label) or False

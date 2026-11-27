@@ -1,12 +1,22 @@
 """Crop, then copy -- every Add reader of an image layer ("B4", B4.1).
 
-A channel may be lazy, multiscale or 4-D; ``np.asarray(layer.data)`` on the
-main thread would materialise the WHOLE patch to use one box.  Every Add
-path therefore slices the box from ONE pyramid level first
-(``_refine_channel_source``) and copies it.  The layers here have data whose
-``__array__`` RAISES -- any whole-layer read fails the test -- while
-``__getitem__`` with a 3-D box (or the worker's strided read) returns a real
-array.
+A channel may be lazy, multiscale or 4-D; ``np.asarray(layer.data)`` would
+materialise the WHOLE patch to use one box.  Every Add path therefore
+resolves ONE pyramid level first (``_refine_channel_source``) and reads
+only the box from it.  Where that cut happens depends on the path:
+
+- the Nuclei preset, the box info (Brightness histogram, Auto, the dark
+  threshold) and the labels being edited (``existing_roi``): the main
+  thread slices the box and copies it;
+- the Cells preset's image channels (the wall channel, every dark channel,
+  the nuclei-masks channel): the main thread hands the worker the layer's
+  own array UNREAD, and the worker cuts the box (the engine slices before
+  it reads).
+
+The layers here have data whose ``__array__`` RAISES -- any whole-layer
+read fails the test -- while ``__getitem__`` with a 3-D box (or the
+worker's strided read) returns a real array and records the key it was
+read with.
 
 Qt-free: the real orchestrator methods on ``add_harness.Harness``.
 """
@@ -118,7 +128,7 @@ def _nuclei_harness(kind):
     return h, img, labels
 
 
-def _cells_harness(kind, source=("labels", "run1")):
+def _cells_harness(kind, source=("labels", "run1"), box=None):
     from .test_reshape_region import _tissue
 
     mem, nuc, cells = _tissue()
@@ -127,8 +137,44 @@ def _cells_harness(kind, source=("labels", "run1")):
     h.adv.preset = "cells"
     h.adv.source = source
     h._add_run_guide = cells.copy()
-    h.place_box(tuple(slice(0, n) for n in cells.shape))
+    h.place_box(box if box is not None
+                else tuple(slice(0, n) for n in cells.shape))
     return h, mem, nuc, cells
+
+
+#: a box strictly inside the (12, 40, 40) tissue on every axis, so a cut of
+#: the wrong region (or of the whole layer) cannot match the box's crop
+INNER_BOX = (slice(1, 11), slice(3, 37), slice(2, 38))
+
+
+def _seed_dark(h):
+    h._add_dark_cache[h._add_dark_key()] = {
+        "t": 0.1, "lo": {"mem": 0.0, "nuc": 0.0},
+        "hi": {"mem": 1.0, "nuc": 1.0}}
+
+
+def _run_preview(kw):
+    """One worker run of the gathered kwargs (the arrays the main thread
+    copied are copied again, so two runs never share a buffer)."""
+    kw = dict(kw)
+    for k in ("existing_roi", "run_guide_roi"):
+        if kw.get(k) is not None:
+            kw[k] = np.array(kw[k], copy=True)
+    return AP.run_add_preview(**kw)
+
+
+def _same_preview(got, want):
+    assert got.status == want.status == "ok", (got.refusal, want.refusal)
+    assert got.roi == want.roi
+    assert got.ids == want.ids
+    assert got.ids, "the run added nothing: the comparison would be vacuous"
+    np.testing.assert_array_equal(got.result, want.result)
+
+
+def _reads_of(arr):
+    """Every key the fake layer array was read with (box reads only)."""
+    assert isinstance(arr, RaisingData), type(arr)
+    return list(arr.reads)
 
 
 KINDS = ["3d", "4d", "multiscale"]
@@ -169,22 +215,33 @@ def test_the_raising_fake_returns_a_view():
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_the_cells_nuclei_masks_preview_reads_only_the_box(patched, kind):
-    """B8: the Cells preset's nuclei-masks source crops the nuclei channel
-    in ``_add_gather_preview`` under the raising fake too."""
-    h, mem, nuc, cells = _cells_harness(kind, source=("nuclei_masks", None))
+def test_the_cells_nuclei_masks_preview_the_worker_cuts_the_box(patched,
+                                                                kind):
+    """The Cells preset's nuclei-masks source: ``_add_gather_preview``
+    hands the worker the nuclei channel's own array without reading it, and
+    the worker reads exactly the box -- its answer is the answer on a
+    hand-made crop of the box."""
+    h, mem, nuc, cells = _cells_harness(kind, source=("nuclei_masks", None),
+                                        box=INNER_BOX)
     h.adv.nuclei_channel = "nuc"
-    h._add_dark_cache[h._add_dark_key()] = {
-        "t": 0.1, "lo": {"mem": 0.0, "nuc": 0.0},
-        "hi": {"mem": 1.0, "nuc": 1.0}}
+    _seed_dark(h)
     h._add_info = AP.AddBoxInfo(empty_share=1.0, nuclei_auto=0.5)
     kw, why = h._add_gather_preview()
     assert why is None, why
     roi = h._add_roi
-    got = kw["nuclei_roi"]
-    assert got is not None
-    np.testing.assert_array_equal(got, nuc[roi])
-    assert not np.shares_memory(got, nuc)
+    lazy = kw["nuclei_roi"]
+    # the main thread read nothing of the channel
+    assert _reads_of(lazy) == []
+    got = _run_preview(kw)                 # no WholeReadError on the worker
+    reads = _reads_of(lazy)
+    assert reads and all(r == roi for r in reads), reads
+    want = _run_preview(dict(
+        kw, nuclei_roi=nuc[roi].astype(np.float64),
+        wall_roi=mem[roi].astype(np.float32),
+        dark_rois=(None if kw["dark_rois"] is None else {
+            "mem": mem[roi].astype(np.float32),
+            "nuc": nuc[roi].astype(np.float32)})))
+    _same_preview(got, want)
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -200,24 +257,33 @@ def test_the_nuclei_preview_reads_only_the_box(patched, kind):
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_the_cells_preview_reads_only_the_box(patched, kind):
-    h, mem, nuc, cells = _cells_harness(kind)
-    h._add_dark_cache[h._add_dark_key()] = {
-        "t": 0.1, "lo": {"mem": 0.0, "nuc": 0.0},
-        "hi": {"mem": 1.0, "nuc": 1.0}}
+def test_the_cells_preview_the_worker_cuts_the_box(patched, kind):
+    """The Cells preset on a box: the wall channel and every dark channel
+    reach the worker as the layers' own arrays, unread by the main thread;
+    the worker reads exactly the box of each, and its answer is the answer
+    on hand-made float crops of the box."""
+    h, mem, nuc, cells = _cells_harness(kind, box=INNER_BOX)
+    _seed_dark(h)
     h._add_info = AP.AddBoxInfo(empty_share=1.0, run_count=(8, 8))
     kw, why = h._add_gather_preview()
     assert why is None, why
     roi = h._add_roi
-    # the wall and dark crops are float32 copies of the box
-    assert kw["wall_roi"].dtype == np.float32
-    np.testing.assert_array_equal(kw["wall_roi"], mem[roi])
     assert set(kw["dark_rois"]) == {"mem", "nuc"}
-    for name, src in (("mem", mem), ("nuc", nuc)):
-        crop = kw["dark_rois"][name]
-        assert crop.dtype == np.float32
-        np.testing.assert_array_equal(crop, src[roi])
-        assert not np.shares_memory(crop, src)
+    lazies = [kw["wall_roi"], kw["dark_rois"]["mem"], kw["dark_rois"]["nuc"]]
+    for lazy in lazies:
+        assert _reads_of(lazy) == []       # the main thread read nothing
+    # the labels being edited are still a box copy made on the main thread
+    assert isinstance(kw["existing_roi"], np.ndarray)
+    assert kw["existing_roi"].shape == tuple(s.stop - s.start for s in roi)
+    got = _run_preview(kw)                 # no WholeReadError on the worker
+    for lazy in lazies:
+        reads = _reads_of(lazy)
+        assert reads and all(r == roi for r in reads), reads
+    want = _run_preview(dict(
+        kw, wall_roi=mem[roi].astype(np.float32),
+        dark_rois={"mem": mem[roi].astype(np.float32),
+                   "nuc": nuc[roi].astype(np.float32)}))
+    _same_preview(got, want)
 
 
 @pytest.mark.parametrize("kind", KINDS)

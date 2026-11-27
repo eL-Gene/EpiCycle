@@ -36,13 +36,15 @@ def persist_patch(
     selected_z_range: Sequence[int],
     bounding_box: Any,
     source_path: Optional[str] = None,
-    source_display_name: str = "",
+    source_display_name: Optional[str] = "",
     axes: str = "CZYX",
     source_axes: Optional[str] = None,
     voxel_size: Optional[Any] = None,
     source_kind: str = "raw",
     source_from: Optional[str] = None,
     timestamp: Optional[str] = None,
+    voxel_size_source: Optional[str] = None,
+    voxel_z_from_xy: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Write *data* + sidecar into ``artifacts/step1/patches/`` and register it.
 
@@ -57,6 +59,14 @@ def persist_patch(
     ``axes`` when not given.  ``voxel_size`` (optional ``[Z, Y, X]`` µm) is the
     acquisition spacing, also recorded on the source entry.  Neither reaches
     the FROZEN sidecar (source-level provenance, not per-patch geometry).
+    ``voxel_size_source`` (optional ``"detected"`` / ``"user"``) is the type the
+    panel showed for that spacing -- read from the file's header, or typed --
+    and is stored with it; ``None`` keeps the value-based typing.  A source row
+    that already exists takes the spacing only when it has none of its own
+    (``register_source``).  ``voxel_z_from_xy`` (optional) says a
+    ``"detected"`` value's Z was not measured by the file (filled in from the
+    XY pixel size, or ImageJ's default depth); it is stored with a
+    ``"detected"`` value.
 
     ``source_kind`` ("raw" | "processed") records WHICH pixels were cropped —
     the raw source or the prepared processed store — and is stamped on the
@@ -110,6 +120,8 @@ def persist_patch(
             state, path=source_path, display_name=source_display_name,
             axes=source_axes or axes, voxel_size=voxel_size,
             timestamp=timestamp, prefix=prefix,
+            voxel_size_source=voxel_size_source,
+            voxel_z_from_xy=voxel_z_from_xy,
         )
     register_patch(
         state, patch_name=name, relative_path=rel_tiff,

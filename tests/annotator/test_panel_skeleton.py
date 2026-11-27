@@ -1967,7 +1967,10 @@ class TestTheAddPageAfterRebuild:
     #: 2026-11-16: the click markers' first row now holds Place markers, the
     #: word "Ball" and its radius spin box, whose height is 2 px over the
     #: button's; the placed count left that row; 7f+dark stays under 759.5)
-    MEASURED = {"7a": 645, "7a+": 705, "7b": 703, "7c": 677, "7d": 740,
+    #: (7b 703 -> 718, 2026-11-24: the Tissue outline defaults to the
+    #: shrink-wrap on a box too, so the Walls card shows Show the tissue
+    #: outline under the row: 15 px; still under 7f+dark)
+    MEASURED = {"7a": 645, "7a+": 705, "7b": 718, "7c": 677, "7d": 740,
                 "7e": 671, "7f": 741, "7f+dark": 753}
     LIVE_VIEWPORT_W = 312
 
@@ -2078,13 +2081,19 @@ class TestTheAddPageAfterRebuild:
                         AP.ADD_S1_BUSY_REFUSED, AP.ADD_S1_PARKED_REFUSED,
                         AP.ADD_S1_FAILED,
                         AP.ADD_S1_ALL_FILTERED, AP.ADD_S1_INPUTS_CHANGED,
-                        # Update as I click: a Cells whole patch, a Cells
-                        # box over the live limit, and an Accept waiting
-                        # that ended
+                        # Update as I click: a Cells whole patch or box not
+                        # run as you click, a Cells box or patch over the
+                        # live limit, and an Accept waiting that ended
                         AP.ADD_S1_LIVE_OVER_GATE_PATCH,
+                        AP.ADD_S1_LIVE_STEPPED_ASIDE_BOX,
                         AP.ADD_S1_LIVE_OVER_GATE_BOX.format(
                             n=AP.voxel_limit_words(
                                 AP.ADD_LIVE_CELLS_MAX_VOXELS)),
+                        AP.ADD_S1_LIVE_OVER_GATE_PATCH_SIZE.format(
+                            n=AP.voxel_limit_words(
+                                AP.ADD_LIVE_CELLS_MAX_VOXELS)),
+                        # ... and a click waiting for the click fill
+                        AP.ADD_S1_LIVE_PREPARING,
                         AP.ADD_S1_ACCEPT_WAIT_OFF,
                         AP.ADD_S1_CLEAR_WAIT_LIVE),
                        key=len)
@@ -2364,7 +2373,15 @@ class TestTheAddPageAfterRebuild:
         help slot, under ADD_DARK_OFF."""
         from packages.epicycle_annotator import add_preview as AP
 
+        from packages.epicycle_annotator import (
+            add_preview as _AP,
+        )
+
         self._state_7f(widget)
+        # No outline picked (the default outline decides what is outside
+        # and greys the dark tick): the dark tick is the user's again
+        widget.add_outline_combo.setCurrentIndex(
+            _AP.OUTLINE_KEYS.index(_AP.OUTLINE_NONE))
         widget.add_dark_outside_cb.setChecked(False)
         try:
             assert not widget.add_dark_off_note.isHidden()
@@ -2504,6 +2521,15 @@ class TestTheAddPageAfterRebuild:
     #:           Advanced help slot); Show and its legend go with the
     #:           outline (two ambers stacked were 759)
     #:   7l+both 648 / 698 px  2.85  both conditions at once
+    #: (2026-11-24, the Cells whole patch runs at the never-set spacing:)
+    #:   7k+sp   558 / 596 px  2.43  7k at the default spacing: the derive
+    #:           note keeps the slot, the spacing note is in the Advanced
+    #:           help slot (= 7k with Advanced closed)
+    #:   7k+sp0  509 / 547 px  2.23  7k at the default spacing with no
+    #:           derive note: the spacing note under S1
+    #:   (7k and 7h0 measured with the Inside / whole-patch spacing refusal
+    #:   gone from their longest-S1 lists: 7k unchanged at 596, 7h0 647 ->
+    #:   635 -- see NUC_OUTLINE_MEASURED)
     #: No take-off was needed.  The page's tallest state stays 7f+dark
     #: (751 px); 3.1 not raised.
     #: (2026-11-16: the nothing-ticked S1 line with the two-nuclei tail --
@@ -2511,12 +2537,17 @@ class TestTheAddPageAfterRebuild:
     #: that can show it: 7d 728 -> 740, 7g 574 -> 586; the Cells states read
     #: the Cells line, which does not move them)
     CELLS_MEASURED = {"7i": 638, "7j": 731, "7k": 596, "7l": 750,
-                      "7l+sp": 750, "7l+dark": 698, "7l+both": 698}
-    DERIVE_STATES = ("7d", "7g", "7h", "7h0", "REVIEW", "7i", "7j", "7k",
-                     "7l", "7l+sp", "7l+dark", "7l+both",
+                      "7l+sp": 750, "7l+dark": 698, "7l+both": 698,
+                      "7k+sp": 596, "7k+sp0": 547}
+    #: 7h+sp: 7h at the never-set spacing with no derive note -- Inside
+    #: each cell runs there, and the spacing amber shows under S1 (with a
+    #: derive note up, 7h, it would move to the Advanced help slot)
+    DERIVE_STATES = ("7d", "7g", "7h", "7h+sp", "7h0", "REVIEW", "7i", "7j", "7k",
+                     "7k+sp", "7k+sp0", "7l", "7l+sp", "7l+dark", "7l+both",
                      "7m0", "7m1", "7m1+sp", "7m1+auto", "7mc", "7mw",
                      "7n0", "7n1", "7n1+sp", "7n1+auto", "7n1cl", "7n1no",
-                     "7n2", "7n2+sp", "7n2+auto", "7n3", "7nd", "7nmc")
+                     "7n2", "7n2+sp", "7n2+auto", "7n3", "7nd", "7nmc",
+                     "7nw0", "7nw1+auto")
     #: Nuclei ▸ the Tissue outline (an option, off by default), busy /
     #: idle (the larger counts):
     #:   7h0      Anywhere before a result (above): the outline card's
@@ -2555,14 +2586,20 @@ class TestTheAddPageAfterRebuild:
     #: The derive states' tallest stays 7d / 7nd, 740.)
     #: (2026-11-22, later: the hint line stays over a result too -- live,
     #: a result is on screen from the first click on: 7nmc 652 -> 701.)
-    NUC_OUTLINE_MEASURED = {"7h0": 647, "7n0": 696, "7n1": 579,
+    #: (2026-11-24: Inside each cell no longer refuses at the never-set
+    #: spacing, so its 138-character refusal left the longest S1 an Inside
+    #: state can show: 7h0 647 -> 635 (7h, unpinned, measured 568 / 618).)
+    #: (2026-11-24, one region rule: Anywhere runs on a whole patch with its
+    #: Tissue outline card: 7nw0 = 7n0 on a whole patch with the slow-patch
+    #: amber at its longest; 7nw1+auto = 7n1+auto there.)
+    NUC_OUTLINE_MEASURED = {"7h0": 635, "7n0": 696, "7n1": 579,
                             "7n1+sp": 640, "7n1+auto": 665, "7n1cl": 579,
                             "7n1no": 527, "7n2": 562, "7n2+sp": 623,
                             "7n2+auto": 648, "7n3": 738, "7nd": 740,
-                            "7nmc": 701}
+                            "7nmc": 701, "7nw0": 685, "7nw1+auto": 654}
     NUC_OUTLINE_STATES = ("7n0", "7n1", "7n1+sp", "7n1+auto", "7n1cl",
                           "7n1no", "7n2", "7n2+sp", "7n2+auto", "7n3", "7nd",
-                          "7nmc")
+                          "7nmc", "7nw0", "7nw1+auto")
     #: Nuclei ▸ At the markers I place, busy / idle (the larger counts):
     #:   7m0      the markers picked, Markers open, no marker yet (the
     #:            Nuclei click help shown), S1 at its longest
@@ -2614,8 +2651,11 @@ class TestTheAddPageAfterRebuild:
     #: no marker and did not move.)
     #: (2026-11-22, later: the hint line stays over a result too -- live,
     #: a result is on screen from the first click on: 7mc 652 -> 701.)
+    #: (2026-11-24, one region rule: the Tissue outline card is offered on
+    #: a whole patch too, so 7mw shows its closed chevron, and Anywhere's
+    #: whole-patch refusal left its longest S1: 7mw 694 -> 715.)
     MARKERS_MEASURED = {"7m0": 608, "7m1": 640, "7m1+sp": 701,
-                        "7m1+auto": 726, "7mc": 701, "7mw": 694}
+                        "7m1+auto": 726, "7mc": 701, "7mw": 715}
     MARKERS_STATES = ("7m0", "7m1", "7m1+sp", "7m1+auto", "7mc", "7mw")
     #: Cells, measured 2026-11-12 the same way, busy / idle -- see
     #: CELLS_MEASURED below; the page's tallest state stays 7f+dark.  The
@@ -2623,13 +2663,19 @@ class TestTheAddPageAfterRebuild:
     #: spacing; the dark tick off with no outline; both): the derive note
     #: keeps the ONE amber slot and the others move to the Advanced help
     #: slot.
-    CELLS_STATES = ("7i", "7j", "7k", "7l", "7l+sp", "7l+dark", "7l+both")
+    #: 7k+sp / 7k+sp0: a Cells whole patch at the default spacing runs as a
+    #: box does and shows the spacing note -- in the Advanced help slot
+    #: while the derive note holds the one amber slot (7k+sp), under S1
+    #: when no derive note is up (7k+sp0).
+    CELLS_STATES = ("7i", "7j", "7k", "7k+sp", "7k+sp0", "7l", "7l+sp",
+                    "7l+dark", "7l+both")
 
     @staticmethod
     def _longest_cells_s1():
         """The longest S1 a Cells box or whole patch can show before a
         result: the whole patch's ready line, every refusal and transient
-        of the outline, the spacing and the solver, the box limit."""
+        of the outline and the solver, the box limit (the spacing refuses
+        nothing)."""
         from packages.epicycle_annotator import add_preview as AP
 
         longest_item = max((AP.ADD_OUTLINE_CLEARED, AP.ADD_OUTLINE_SHRINK,
@@ -2638,7 +2684,7 @@ class TestTheAddPageAfterRebuild:
                                                  m="999.9", p=100),
                     AP.over_limit_line((999, 9999, 9999)),
                     AP.whole_too_big_line(999_999_999),
-                    AP.ADD_WHOLE_NEEDS_NUMBA, AP.ADD_S1_NEEDS_SPACING_BOXED,
+                    AP.ADD_WHOLE_NEEDS_NUMBA,
                     AP.ADD_WHOLE_NEEDS_NUMBA_CACHE,
                     AP.ADD_S1_WHOLE_PICK_RUN, AP.ADD_S1_WHOLE_NO_RUN,
                     # Click markers on a whole patch: its ready line
@@ -2666,11 +2712,19 @@ class TestTheAddPageAfterRebuild:
                     AP.ADD_S1_STOPPED, AP.ADD_S1_FAILED,
                     AP.ADD_S1_BUSY_REFUSED, AP.ADD_S1_PARKED_REFUSED,
                     AP.ADD_S1_INPUTS_CHANGED,
-                    # "Update as I click" over the box limit / a whole patch
+                    # "Update as I click" over the live limit / not run as
+                    # you click, on a box or a whole patch
                     AP.ADD_S1_LIVE_OVER_GATE_BOX.format(
                         n=AP.voxel_limit_words(
                             AP.ADD_LIVE_CELLS_MAX_VOXELS)),
-                    AP.ADD_S1_LIVE_OVER_GATE_PATCH),
+                    AP.ADD_S1_LIVE_OVER_GATE_PATCH_SIZE.format(
+                        n=AP.voxel_limit_words(
+                            AP.ADD_LIVE_CELLS_MAX_VOXELS)),
+                    AP.ADD_S1_LIVE_OVER_GATE_PATCH,
+                    AP.ADD_S1_LIVE_STEPPED_ASIDE_BOX,
+                    AP.ADD_S1_LIVE_STEPPED_ASIDE_SPACING_BOX,
+                    AP.ADD_S1_LIVE_STEPPED_ASIDE_SPACING_PATCH,
+                    AP.ADD_S1_LIVE_PREPARING),
                    key=len)
 
     @staticmethod
@@ -2686,12 +2740,19 @@ class TestTheAddPageAfterRebuild:
                     AP.ADD_AMBER_OUTLINE_DROPS_CLEARED.format(p=100),
                     AP.ADD_NOTE_PATCH_SLOW_STEPS.format(
                         m="999.9", t=AP.wait_phrase(999)),
+                    AP.ADD_NOTE_BOX_SLOW_STEPS.format(
+                        m="999.9", t=AP.wait_phrase(999)),
+                    # a whole patch filled as you click, at the live limit
+                    AP.ADD_NOTE_PATCH_SLOW_LIVE_CELLS.format(
+                        m=AP.millions(AP.ADD_LIVE_CELLS_MAX_VOXELS)),
                     # the longest ridge note a whole patch can show: at the
                     # fill's ceiling, with the longer ridge name
                     AP.ridges_whole_line(
                         "Thin-faint ridges",
                         int(_R.WHOLE_FILL_MAX_VOXELS), "meijering"),
-                    AP.ADD_NOTE_RIDGES_BOX.format(kind="Thin-faint ridges")),
+                    AP.ADD_NOTE_RIDGES_BOX.format(kind="Thin-faint ridges"),
+                    AP.ADD_NOTE_RIDGES_BOX_ONCE.format(
+                        kind="Thin-faint ridges")),
                    key=len)
 
     def _cells_state(self, widget, state, one_channel=False):
@@ -2722,7 +2783,7 @@ class TestTheAddPageAfterRebuild:
              (AP.ADD_ITEM_NUCLEI, True, ("nuclei_masks", None))),
             (AP.ADD_ITEM_CLICKS, True, ("paint", None)),
         ]
-        whole = state in ("7i", "7k")
+        whole = state.startswith(("7i", "7k"))
         widget.update_add_ui_state(marker_sources=items, box_active=True,
                                    voxel_size_known=True, whole_patch=whole,
                                    cleared_in_force=True,
@@ -2750,6 +2811,9 @@ class TestTheAddPageAfterRebuild:
             if state in ("7l+sp", "7l+both"):
                 # the spacing note's condition
                 widget.update_add_ui_state(default_spacing=True)
+        if state in ("7k+sp", "7k+sp0"):
+            # a whole patch at the default spacing: it runs, with the note
+            widget.update_add_ui_state(default_spacing=True)
         if state in ("7i", "7j"):
             ids = list(range(400, 412))
             widget.update_add_ui_state(candidate_small_ids={401, 402})
@@ -2767,7 +2831,8 @@ class TestTheAddPageAfterRebuild:
             widget.update_add_ui_state(
                 candidate_ids=[], candidate_sizes={},
                 candidate_edge_ids=set(),
-                derive_note=self._longest_cells_amber())
+                derive_note=("" if state == "7k+sp0"
+                             else self._longest_cells_amber()))
             s1 = self._longest_cells_s1()
         widget.update_add_ui_state(status_text=s1, busy=False)
         widget.resize(340, 350)
@@ -2851,7 +2916,7 @@ class TestTheAddPageAfterRebuild:
         widget.update_add_ui_state(look_for_items=items, box_active=True,
                                    voxel_size_known=True)
         widget.add_look_for_combo.setCurrentIndex(
-            1 if state in ("7g", "7h", "REVIEW") else 0)
+            1 if state in ("7g", "7h", "7h+sp", "REVIEW") else 0)
         if state in ("7d", "7h0"):
             widget.update_add_ui_state(histogram_data={
                 "values": list(np.linspace(0.0, 1.0, 500)), "n_bins": 32})
@@ -2895,7 +2960,13 @@ class TestTheAddPageAfterRebuild:
         else:
             widget.update_add_ui_state(candidate_ids=[], candidate_sizes={},
                                        candidate_edge_ids=set())
-            if state == "7h":
+            if state == "7h+sp":
+                # the spacing amber alone in the slot (no derive note)
+                widget.update_add_ui_state(inside_count=(), derive_note="",
+                                           default_spacing=True)
+                widget._add_source_note = self._longest_inside_help()
+                widget._apply_add_visibility()
+            elif state == "7h":
                 widget.update_add_ui_state(
                     inside_count=(), derive_note=max(
                         (AP.ADD_NOTE_HALFSIZE_BOXED,
@@ -2911,11 +2982,10 @@ class TestTheAddPageAfterRebuild:
                 widget._apply_add_visibility()
             else:
                 widget.update_add_ui_state(derive_note="")
-            s1 = max((AP.ADD_S1_NEEDS_SPACING_BOXED, AP.ADD_S1_INSIDE_NO_CELLS,
+            s1 = max((AP.ADD_S1_INSIDE_NO_CELLS,
                       AP.ADD_S1_INSIDE_NO_CELLS_PATCH,
                       AP.ADD_S1_INSIDE_UNUSABLE,
                       AP.ADD_S1_INSIDE_CHANNEL_UNUSABLE, AP.ADD_S1_RUN_LOADING,
-                      AP.ADD_S1_WHOLE_ANYWHERE,
                       AP.ADD_S1_PATCH_PLAIN.format(z=999, y=9999, x=9999,
                                                    m="999.9", p=100),
                       AP.ADD_S1_PICK_CHANNEL), key=len)
@@ -2958,9 +3028,11 @@ class TestTheAddPageAfterRebuild:
         tick on or off."""
         from packages.epicycle_annotator import add_preview as AP
 
-        return max((AP.nuclei_patch_slow_line(n, live=live) for n in (
-            AP.ADD_SLOW_PATCH_VOXELS + 1, 99_999_999, 999_999_999,
-            9_999_999_999) for live in (False, True)), key=len)
+        return max((AP.nuclei_patch_slow_line(n, live=live, anywhere=any_)
+                    for n in (AP.ADD_SLOW_PATCH_VOXELS + 1, 99_999_999,
+                              999_999_999, 9_999_999_999)
+                    for live in (False, True) for any_ in (False, True)),
+                   key=len)
 
     def _markers_state(self, widget, state):
         """7m0 / 7m1 / 7m1+sp / 7m1+auto / 7mc / 7mw: Nuclei ▸ At the
@@ -3037,7 +3109,6 @@ class TestTheAddPageAfterRebuild:
                              else ""))
             if whole:
                 s1 = max((self._longest_markers_s1(),
-                          AP.ADD_S1_WHOLE_ANYWHERE,
                           AP.box_line((999, 9999, 9999), preset="nuclei",
                                       n_clicks=12, n_ticked=11,
                                       look_for=AP.LOOK_MARKERS,
@@ -3066,7 +3137,7 @@ class TestTheAddPageAfterRebuild:
         widget.add_markers_btn.setChecked(False)
 
     @staticmethod
-    def _longest_nuc_outline_s1(markers):
+    def _longest_nuc_outline_s1(markers, whole=False):
         """The longest S1 Nuclei ▸ Anywhere (or the markers) can show on a
         box before a result with a Tissue outline chosen: its own lines, the
         outline's refusals and waits, the shared transients."""
@@ -3079,6 +3150,14 @@ class TestTheAddPageAfterRebuild:
                    AP.ADD_S1_MEASURING, AP.ADD_S1_PICK_CHANNEL,
                    AP.box_line((999, 9999, 9999), preset="nuclei",
                                empty_share=1.0))
+        if whole:
+            # Anywhere on a whole patch: its ready line, its size refusal
+            # and the patch's own transients
+            own += (AP.ADD_S1_PATCH_PLAIN.format(z=999, y=9999, x=9999,
+                                                 m="999.9", p=100),
+                    AP.whole_too_big_line(9_999_999_999),
+                    AP.ADD_S1_MEASURING_PATCH, AP.ADD_S1_STOPPED_PATCH,
+                    AP.ADD_S1_FAILED_PATCH)
         return max(own + (AP.ADD_S1_NUCLEI_ALL_OUTSIDE,
                           AP.ADD_S1_NUCLEI_ALL_OUTSIDE_CLEARED,
                           AP.ADD_S1_OUTLINE_FAILED_NUCLEI,
@@ -3121,10 +3200,13 @@ class TestTheAddPageAfterRebuild:
         items = [(AP.look_inside_text(name, "cells", curated=False),
                   True, (AP.LOOK_INSIDE, "r"), False)]
         markers = state.startswith(("7n2", "7n3"))
-        closed = state in ("7n0", "7n3")
+        # 7nw*: Anywhere on a whole patch -- the same card as a box, plus
+        # the slow-patch amber at its longest
+        whole = state.startswith("7nw")
+        closed = state in ("7n0", "7n3", "7nw0")
         widget.update_add_ui_state(look_for_items=items, box_active=True,
                                    voxel_size_known=True,
-                                   cleared_in_force=True)
+                                   cleared_in_force=True, whole_patch=whole)
         keys = list(widget._add_look_keys)
         widget.add_look_for_combo.setCurrentIndex(keys.index(
             (AP.LOOK_MARKERS, None) if markers
@@ -3150,10 +3232,12 @@ class TestTheAddPageAfterRebuild:
             widget.update_add_ui_state(default_spacing=True)
         if closed or state.endswith("+auto"):
             widget.update_add_ui_state(brightness_flat=True)
-        widget.update_add_ui_state(candidate_ids=[], candidate_sizes={},
-                                   candidate_edge_ids=set(), derive_note="")
         widget.update_add_ui_state(
-            status_text=self._longest_nuc_outline_s1(markers), busy=False)
+            candidate_ids=[], candidate_sizes={}, candidate_edge_ids=set(),
+            derive_note=(self._longest_nuclei_slow_line() if whole else ""))
+        widget.update_add_ui_state(
+            status_text=self._longest_nuc_outline_s1(markers, whole),
+            busy=False)
         widget.resize(340, 350)
         for _ in range(3):
             QApplication.processEvents()
@@ -3206,6 +3290,10 @@ class TestTheAddPageAfterRebuild:
                         self._longest_inside_help())
                     assert not widget._add_inside_count.isHidden()
                     assert not widget._add_derive_note.isHidden()
+                if state == "7h+sp":
+                    assert widget.add_look_inside()
+                    assert widget._add_derive_note.isHidden()
+                    assert not widget.add_spacing_note.isHidden()
                 if state == "7h0":
                     # the how-to is the grey item's tooltip only
                     assert widget._add_inside_help.isHidden()
@@ -3217,10 +3305,10 @@ class TestTheAddPageAfterRebuild:
                     assert not widget._add_review_container.isHidden()
                     assert widget._add_tune_container.isHidden()
                     assert widget.add_pieces_list.count() == 12
-                if state in ("7i", "7k"):
-                    # a whole patch: Grow by hidden (it fills to the walls),
-                    # the run's count shown
-                    assert widget._add_grow_row.isHidden()
+                if state.startswith(("7i", "7k")):
+                    # a whole patch: Grow by shown (the user's pick there
+                    # too), the run's count shown
+                    assert not widget._add_grow_row.isHidden()
                     assert not widget.add_run_count_label.isHidden()
                     from packages.epicycle_annotator.add_preview import (
                         ADD_HELP_WHOLE,
@@ -3236,7 +3324,7 @@ class TestTheAddPageAfterRebuild:
                     assert widget._add_outline_help.isHidden()
                 if state.startswith("7l"):
                     assert not widget._add_outline_help.isHidden()
-                if state in ("7k",) or state.startswith("7l"):
+                if state in ("7k", "7k+sp") or state.startswith("7l"):
                     assert not widget._add_derive_note.isHidden()
                     assert widget._add_derive_note.text() == (
                         self._longest_cells_amber())
@@ -3249,8 +3337,23 @@ class TestTheAddPageAfterRebuild:
                                           widget._add_derive_note)
                               if not w.isHidden()]
                     assert len(ambers) == (
-                        1 if state == "7k" or state.startswith("7l")
+                        1 if state.startswith(("7k", "7l"))
                         else 0), (state, [w.text() for w in ambers])
+                if state == "7k+sp0":
+                    # a whole patch at the default spacing, no derive note:
+                    # the spacing note under S1, as on a box
+                    assert widget._add_derive_note.isHidden()
+                    assert not widget.add_spacing_note.isHidden()
+                if state == "7k+sp":
+                    # the derive note keeps the slot: the spacing note is
+                    # in the Advanced help slot
+                    from packages.epicycle_annotator import (
+                        add_preview as _AP,
+                    )
+
+                    assert widget.add_spacing_note.isHidden()
+                    assert _AP.ADD_NOTE_DEFAULT_SPACING_BOXED in (
+                        widget._add_advanced_help.text())
                 if state in ("7l+sp", "7l+both"):
                     # the spacing note moved to the Advanced help slot
                     from packages.epicycle_annotator import (
@@ -3293,10 +3396,10 @@ class TestTheAddPageAfterRebuild:
                 if state in self.MARKERS_STATES + ("7h0",) and (
                         hasattr(widget, "add_nuc_outline_btn")):
                     # the Tissue outline card: its chevron, closed, before
-                    # a result on a box; never over candidates or on a
-                    # whole patch
+                    # a result on a box or a whole patch; never over
+                    # candidates
                     assert (widget.add_nuc_outline_btn.isHidden()
-                            is (state in ("7mc", "7mw")))
+                            is (state == "7mc"))
                     assert widget._add_nuc_outline_container.isHidden()
                 if state in self.NUC_OUTLINE_STATES:
                     out_btn = widget.add_nuc_outline_btn
@@ -3308,18 +3411,27 @@ class TestTheAddPageAfterRebuild:
                         assert not widget._add_result_container.isHidden()
                         assert widget.add_spacing_note.isHidden()
                     else:
-                        closed = state in ("7n0", "7n3")
+                        closed = state in ("7n0", "7n3", "7nw0")
                         assert not out_btn.isHidden()
                         assert body.isHidden() is closed
                         # an open Nuclei card folds the histogram (the
                         # markers fold it anyway)
-                        assert plot.isHidden() is (state != "7n0")
+                        assert plot.isHidden() is (
+                            state not in ("7n0", "7nw0"))
+                        if state.startswith("7nw"):
+                            # the whole patch: the same card as a box, and
+                            # its slow-patch amber
+                            assert not widget._add_derive_note.isHidden()
                         # the help line is off the page (the take-off)
                         assert widget._add_nuc_outline_help.isHidden()
                         legend = widget._add_nuc_show_outline_legend
+                        # (on a whole patch the slow-patch amber holds
+                        # the one amber slot: the spacing note moves into
+                        # the Advanced help slot)
                         assert (widget.add_spacing_note.isHidden()
-                                is not (closed or state.endswith(
-                                    ("+sp", "+auto"))))
+                                is not ((closed or state.endswith(
+                                    ("+sp", "+auto")))
+                                        and not state.startswith("7nw")))
                         if closed:
                             # Show and its legend live in the card's body:
                             # with the card closed neither is on screen
@@ -3383,6 +3495,7 @@ class TestTheAddPageAfterRebuild:
                 widget.add_look_for_combo.setCurrentIndex(0)
                 widget.update_add_ui_state(busy=False, derive_note="",
                                            whole_patch=False,
+                                           default_spacing=False,
                                            review_active=False, piece_ids=[],
                                            piece_sizes={}, piece_chips={},
                                            piece_tips={})
@@ -3462,7 +3575,8 @@ class TestTheAddPageAfterRebuild:
             self._nuc_outline_state(widget, "7n1")
             assert widget.add_nuc_outline_btn.isChecked()
             widget.update_add_ui_state(whole_patch=True)
-            assert widget.add_nuc_outline_btn.isHidden()
+            # the card stays on a whole patch, as on a box
+            assert not widget.add_nuc_outline_btn.isHidden()
             keys = list(widget._add_look_keys)
             widget.add_look_for_combo.setCurrentIndex(
                 keys.index((AP.LOOK_MARKERS, None)))
@@ -3502,18 +3616,29 @@ class TestTheAddPageAfterRebuild:
     #: idle and busy), with two image channels and with one ("1").  Measured
     #: 2026-11-15 offscreen at 312 px on the untouched page; a state may get
     #: shorter, never taller.
+    #: 7k+sp (2026-11-24) is new: a Cells whole patch at the never-set
+    #: spacing used to refuse; it runs now, and with the derive note holding
+    #: the amber slot the spacing note sits in the Advanced help slot.  It
+    #: had no earlier height, so it is held under the tallest Advanced-open
+    #: whole patch pinned below (7f-whole adv, 995 px).
     CELLS_WHOLE_ADV_BEFORE = {"7k busy": 893, "7k idle": 931,
                               "7i busy": 973, "7i idle": 973,
                               "7k1 busy": 893, "7k1 idle": 931,
-                              "7i1 busy": 973, "7i1 idle": 973}
-    #: the same states as the page draws them now: 31 px shorter each --
-    #: the whole-patch line (three lines) replaces Grow by, Wall cost and
-    #: Growth limit (three rows)
-    CELLS_WHOLE_ADV_MEASURED = {"7k busy": 862, "7k idle": 900,
-                                "7i busy": 942, "7i idle": 942,
-                                "7k1 busy": 862, "7k1 idle": 900,
-                                "7i1 busy": 942, "7i1 idle": 942}
-    CELLS_WHOLE_ADV_STATES = ("7k", "7i", "7k1", "7i1")
+                              "7i1 busy": 973, "7i1 idle": 973,
+                              "7k+sp busy": 995, "7k+sp idle": 995}
+    #: the same states as the page draws them now.  The whole-patch line
+    #: (three lines) had replaced Grow by, Wall cost and Growth limit (three
+    #: rows), 31 px shorter each; 7k+sp (measured 2026-11-24): 7k plus the
+    #: spacing note in the Advanced help slot, 59 px over 7k.  Grow by came
+    #: back on a whole patch (owner ruling 2026-11-24; Fill picked, so Wall
+    #: cost and Growth limit stay hidden): +26 px each, still 5 px (7k, 7i)
+    #: and 10 px (7k+sp) under the heights above; no ceiling raised.
+    CELLS_WHOLE_ADV_MEASURED = {"7k busy": 888, "7k idle": 926,
+                                "7i busy": 968, "7i idle": 968,
+                                "7k1 busy": 888, "7k1 idle": 926,
+                                "7i1 busy": 968, "7i1 idle": 968,
+                                "7k+sp busy": 947, "7k+sp idle": 985}
+    CELLS_WHOLE_ADV_STATES = ("7k", "7i", "7k1", "7i1", "7k+sp")
 
     def test_add_cells_whole_patch_advanced_open(self, widget):
         """Cells ▸ Whole patch with Advanced open: no state taller than it
@@ -3521,19 +3646,30 @@ class TestTheAddPageAfterRebuild:
         heights = {}
         for state in self.CELLS_WHOLE_ADV_STATES:
             one = state.endswith("1")
-            self._cells_state(widget, state[:2], one_channel=one)
+            self._cells_state(widget, state[:-1] if one else state,
+                              one_channel=one)
             try:
                 widget._add_advanced_toggle.setChecked(True)
                 assert not widget._add_advanced_container.isHidden()
                 assert not widget._add_cells_adv.isHidden()
                 # what a whole patch shows under Advanced: the line that
-                # says what fills it and Include membrane; never Grow by,
-                # Wall cost or Growth limit
-                for row in (widget._add_grow_row, widget._add_wall_cost_row,
+                # says what fills it, Grow by (the user's pick there too)
+                # and Include membrane; on Fill never Wall cost or Growth
+                # limit
+                assert not widget._add_grow_row.isHidden()
+                for row in (widget._add_wall_cost_row,
                             widget._add_growth_limit_row):
                     assert row.isHidden()
                 assert not widget._add_whole_fill_label.isHidden()
                 assert not widget.add_include_membrane_cb.isHidden()
+                if state == "7k+sp":
+                    from packages.epicycle_annotator import (
+                        add_preview as _AP,
+                    )
+
+                    assert _AP.ADD_NOTE_DEFAULT_SPACING_BOXED in (
+                        widget._add_advanced_help.text())
+                    assert not widget._add_advanced_help.isHidden()
                 busy, idle = self._derive_heights(widget)
                 heights[state + " busy"] = busy
                 heights[state + " idle"] = idle
@@ -3574,8 +3710,31 @@ class TestTheAddPageAfterRebuild:
     #: ceiling): 942 / 980 px -- the marker list's rows over 7k's 862 /
     #: 900.  It moved 980 -> 995 (957 / 995 px) when "Update as I click"
     #: came to Cells ▸ Click markers (its row under Advanced, 2026-11-22);
-    #: no ceiling was raised.
-    CELLS_WHOLE_CLICKS_MEASURED = {"7f-whole": 705, "7f-whole adv": 995}
+    #: no ceiling was raised.  It moved 995 -> 1036 (998 / 1036 px) on
+    #: 2026-11-24: Grow by back on a whole patch (+26 px) and the "Always
+    #: update as I click" tick under the live tick (+15 px); 7f-whole with
+    #: Advanced closed is unchanged (705), no ceiling was raised.
+    #: "7f-whole adv note" (2026-11-24) is 7f-whole adv with the grey line
+    #: under "Update as I click" shown at its longest (a click not run as
+    #: you click here; the line is a row only in those states): measured
+    #: 1023 / 1061 px, +25 px over 7f-whole adv -- every reason of 54-60
+    #: characters wraps to two lines at the 312 px viewport ("Preparing
+    #: the fill…" is one).  A measured pin, outside the ceiling as every
+    #: Advanced-open state; 7f-whole and 7f-whole adv are unchanged, no
+    #: ceiling was raised.
+    CELLS_WHOLE_CLICKS_MEASURED = {"7f-whole": 705, "7f-whole adv": 1036,
+                                   "7f-whole adv note": 1061}
+
+    @staticmethod
+    def _longest_live_note():
+        from packages.epicycle_annotator import add_preview as AP
+
+        return max((AP.ADD_LIVE_NOTE_OVER.format(n=AP.voxel_limit_words(
+                        AP.ADD_LIVE_CELLS_MAX_VOXELS)),
+                    AP.ADD_LIVE_NOTE_WALLS, AP.ADD_LIVE_NOTE_GROW,
+                    AP.ADD_LIVE_NOTE_FLAT, AP.ADD_LIVE_NOTE_SPACING,
+                    AP.ADD_LIVE_NOTE_OFF, AP.ADD_LIVE_NOTE_PREPARING),
+                   key=len)
 
     def _state_7f_whole(self, widget):
         from qtpy.QtWidgets import QApplication
@@ -3646,7 +3805,23 @@ class TestTheAddPageAfterRebuild:
             heights["7f-whole adv"] = max(busy, idle)
             print("[ADD-HEIGHT] 7f-whole Advanced open: busy {} / idle {} "
                   "px".format(busy, idle))
+            # the line under the live tick, at its longest
+            assert widget._add_live_note.isHidden()
+            width_before = _slots(widget, "Add")["content"].minimumSizeHint(
+            ).width()
+            widget.update_add_ui_state(
+                live_tick_note=self._longest_live_note())
+            assert not widget._add_live_note.isHidden()
+            busy, idle = self._busy_and_idle(widget)
+            heights["7f-whole adv note"] = max(busy, idle)
+            print("[ADD-HEIGHT] 7f-whole Advanced open, the live tick's "
+                  "line: busy {} / idle {} px".format(busy, idle))
+            # it wraps: the page is no wider with it than without it
+            width = _slots(widget, "Add")["content"].minimumSizeHint(
+            ).width()
+            assert width == width_before, (width, width_before)
         finally:
+            widget.update_add_ui_state(live_tick_note="")
             widget._add_advanced_toggle.setChecked(False)
             widget.update_add_ui_state(click_count=0, click_markers=[])
             self._undo_cells_state(widget)

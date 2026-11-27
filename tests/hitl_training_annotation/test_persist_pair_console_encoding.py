@@ -75,6 +75,14 @@ def _make_fake_controller(ws):
     )
     fake._current_round = lambda: 0
     fake._current_round_key = lambda: "lateral"
+    # Where Step 2 may write is the controller's own rule, read from disk.
+    fake._step2_write_target = (
+        lambda: TrainingAnnotationController._step2_write_target(fake))
+    fake._step2_state_file_readable = (
+        lambda path: TrainingAnnotationController._step2_state_file_readable(fake, path))
+    # A pair that goes through clears this workspace's "already said" refusals.
+    fake._forget_said_refusals = (
+        lambda *names: TrainingAnnotationController._forget_said_refusals(fake, *names))
     return fake
 
 
@@ -111,6 +119,9 @@ def v3_workspace(tmp_path):
         ),
         encoding="utf-8",
     )
+    # The active run has its folder (Step 2 writes nothing for a run
+    # without one).
+    p.run_root(ws, "default").mkdir(parents=True)
     return ws
 
 

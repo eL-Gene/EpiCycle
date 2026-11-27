@@ -400,7 +400,7 @@ def test_the_whole_patch_fill_is_described():
     from packages.epicycle_annotator import add_preview as AP
 
     body = _body_without_what_changed()
-    for text in (AP.ADD_HELP_WHOLE_FILL, AP.ADD_AMBER_ONE_CHANNEL_WHOLE,
+    for text in (AP.ADD_HELP_WHOLE_FILL,
                  AP.ADD_HELP_GROWTH_LIMIT, AP.ADD_HELP_GROW,
                  AP.ADD_WHOLE_TIP, AP.ADD_NOTE_DARK_OFF_LEAK_WHOLE,
                  AP.ADD_S1_WARMING, AP.ADD_WHOLE_NEEDS_NUMBA,

@@ -55,8 +55,15 @@ def _rows(ctrl):
 
 
 def _save_ws(path, records):
+    """A workspace with one active run holding ``records`` (Step 2 saves
+    nothing in a folder with no run)."""
+    from napari_epicycle.hitl_training_annotation import _run_management as RM
     path.mkdir(parents=True, exist_ok=True)
-    _stub(path, records)._save_internal_state()
+    RM.create_run_on_disk(path, "pilot", display_name="pilot")
+    RM.add_run_to_state_json(path, "pilot", activate=True)
+    stub = _stub(path, records)
+    stub.active_run_id = "pilot"
+    assert stub._save_internal_state() == "saved-v3"
 
 
 def _switch(ctrl, path):

@@ -833,6 +833,8 @@ class TestSeamG:
         c._effective_stack_path = lambda: "/ws/patches"
         c._load_patch = lambda *a, **k: calls.append(("load", a, k))
         c._select_patch_item = lambda *a, **k: calls.append(("select", a))
+        # past the run gate: the seam under test is what Open loads
+        c._require_run = lambda _action: True
         try:
             c._launch_multiview_annotator()
         except Exception:

@@ -36,6 +36,8 @@ __all__ = [
     "step2_has_runs",
     "step3_pre_v3",
     "MSG_NO_TRAINED_MODEL",
+    "MSG_NO_TRAINED_MODEL_TIP",
+    "advisory_tooltip",
     "MSG_STEP2_LEGACY_LAYOUT",
     "MSG_STEP2_NO_RUN",
     "MSG_STEP3_PRE_V3",
@@ -550,10 +552,28 @@ _MSG_OTHER_NONE = "Set a workspace in Project Setup before running this step."
 _MSG_MISSING = ("That workspace folder is no longer where it was. "
                 "Use Browse to find it.")
 #: The Step 3/4 round advisory, in the user's language (no "HITL", no
-#: "artifacts") — it says what is missing and what to do about it.
+#: "artifacts") — it says what is missing and what to do about it.  A
+#: Cellpose built-in or a model file works without a Step 2 round, so it
+#: names the Model card's picker by its on-screen words (the card title and
+#: its button).  The strip does not wrap: the line must fit the default
+#: dock (measured 448 px with the strip's padding, Segoe UI 11 px, against
+#: a 578 px dock); the longer explanation is the strip's tooltip.
 MSG_NO_TRAINED_MODEL = (
-    "No trained 2D model in this workspace yet. You can continue, but there "
-    "is nothing to reconstruct with until Step 2 trains a round.")
+    "No trained 2D model yet: pick one under Model ▸ Change…, or train a "
+    "round in Step 2.")
+MSG_NO_TRAINED_MODEL_TIP = (
+    "No trained 2D model in this workspace yet. You can continue: pick a "
+    "model under Model ▸ Change… (a Cellpose built-in, or a model file "
+    "under Browse external paths), or train a round in Step 2.")
+
+#: An advisory's tooltip when it says more than the strip has room for;
+#: any other advisory's tooltip is its own text.
+_ADVISORY_TOOLTIPS = {MSG_NO_TRAINED_MODEL: MSG_NO_TRAINED_MODEL_TIP}
+
+
+def advisory_tooltip(advisory: str) -> str:
+    """The tooltip of an advisory strip, or "" for the strip's own text."""
+    return _ADVISORY_TOOLTIPS.get(advisory, "")
 
 
 #: Advisories that are an INVITATION, not a warning.  A brand-new project has

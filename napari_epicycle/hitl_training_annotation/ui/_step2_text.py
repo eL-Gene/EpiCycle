@@ -147,7 +147,19 @@ RUN_SUMMARY_FOOT = (
     "in Diagnostics.")
 RUN_SUMMARY_EMPTY_LINES = (
     "No workspace yet.",
-    "Pick one above; a new workspace starts with the run \"default\".")
+    "Pick one above, then make a run with New Run in Curation.")
+#: the card's run word when the workspace has no active run (a new
+#: workspace has none until New Run makes one), an old-layout folder's single
+#: run, and the three run lists Step 2 cannot use (one word per kind: a run
+#: list that cannot be read, old-layout data beside a folder of runs, run
+#: folders with no list)
+RUN_SUMMARY_NO_RUN = "No run yet"
+RUN_SUMMARY_LEGACY = "{run} (legacy layout)"
+RUN_SUMMARY_UNREADABLE = "Run list unreadable"
+RUN_SUMMARY_UNREADABLE_MIXED = "Old layout, update with Browse"
+RUN_SUMMARY_UNREADABLE_MISSING = "Run folders without a run list"
+RUN_SUMMARY_LOCKED = "Run list busy"
+RUN_SUMMARY_NONE_ACTIVE = "None active"
 RUN_SUMMARY_PAIRS_UNIT = "pairs"
 #: the pair count is only known for the ACTIVE bucket (the controller scans
 #: that bucket's rounds); the other column says so instead of showing a 0
@@ -225,6 +237,9 @@ CUR_MANAGE_RUNS_ACTION = "Manage runs…"
 CUR_MANAGE_CAPTION = "Bring training pairs into this run"
 CUR_IMPORT_PAIRS_ACTION = "Import pairs from another run…"
 CUR_IMPORT_EXTERNAL_ACTION = "Import external pairs…"
+#: the same two actions as a box names them ("press Import pairs again")
+CUR_IMPORT_PAIRS_WORD = "Import pairs"
+CUR_IMPORT_EXTERNAL_WORD = "Import external pairs"
 
 CUR_VIEW_HEADER = "View"
 CUR_VIEW_DESC = (
@@ -291,6 +306,134 @@ RUN_PICKER_ROUNDS = "lat {lat} · ax {ax}"
 RUN_PICKER_PAIRS = "{n} pair"
 RUN_PICKER_PAIRS_MANY = "{n} pairs"
 RUN_PICKER_NO_ROUND = "—"
+
+# -- No run yet ---------------------------------------------------------------
+# Step 2 keeps every slice, pair and model in a run, and a folder with no run
+# gets no Step 2 file.  An action that needs a run says which of these four
+# states the folder is in, then offers New Run (never for an unreadable list).
+#: the same sentence the shell's banner shows (``ui_shell._workspace_facts``
+#: holds the banner's copy; a test pins the two together)
+MSG_STEP2_NO_RUN = "No run yet — click New Run to start training."
+RUN_NEED_WORKSPACE = "Pick a workspace first."
+RUN_NONE_ACTIVE = (
+    "No run is active — pick a run in the Run picker, or click New Run.")
+#: the Run picker's own top line when runs exist but none is active
+RUN_PICKER_NONE_ACTIVE = "No run is active — pick one below, or click New Run."
+RUN_LIST_UNREADABLE = (
+    "Step 2 could not read this project's list of runs, so it saves nothing "
+    "here. Nothing was deleted; keep the folder as it is and ask for help.")
+#: the two other run lists Step 2 cannot use: old-layout data beside a folder
+#: of runs with no list (Browse offers the update), and run folders with no list
+RUN_LIST_MIXED = (
+    "This project has old-layout Step 2 data beside a folder of runs, so Step "
+    "2 saves nothing here. Press Browse and pick this same folder to update "
+    "it.")
+#: the run list could not be OPENED when the project was opened (a lock held
+#: by another program): every write is refused until it opens again
+RUN_LIST_LOCKED = (
+    "The run list could not be opened just now (another program may hold "
+    "it); close and reopen the project, or press Browse and pick it again.")
+RUN_LIST_MISSING = (
+    "This project has Step 2 run folders but no list of runs, so Step 2 saves "
+    "nothing here. Nothing was deleted; keep the folder as it is and ask for "
+    "help.")
+#: the box an action without a run shows ({action} = the button's own word)
+RUN_ASK_TITLE = "No run yet"
+#: the same box when the project has runs but none is active
+RUN_ASK_TITLE_PICK = "No run is active"
+RUN_ASK_BODY = (
+    "Step 2 keeps your slices and models in a run; make one, then press "
+    "{action} again.")
+RUN_ASK_BODY_PICK = (
+    "Step 2 keeps your slices and models in a run; pick a run in the Run "
+    "picker (your slices from before are not kept there), or click New Run "
+    "to keep them, then press {action} again.")
+RUN_ASK_NEW_RUN = "New Run…"
+RUN_ASK_NOT_NOW = "Not now"
+RUN_NEED_WORKSPACE_TITLE = "No workspace yet"
+RUN_UNREADABLE_TITLE = "Step 2 cannot save in this project"
+#: New Run was pressed and the run was not made (or not switched to)
+NEW_RUN_FAILED_TITLE = "The run was not made"
+NEW_RUN_EXISTS = (
+    "A folder for the run '{handle}' is already there. Pick another name.")
+NEW_RUN_FAILED = "The run could not be made: {error}."
+NEW_RUN_SWITCH_FAILED = (
+    "The run '{handle}' was made, but Step 2 could not switch to it: "
+    "{error}. Pick it in the Run picker.")
+#: a run switch that was refused or failed (the screen is left as it is)
+RUN_SWITCH_FAILED_TITLE = "The run was not switched"
+RUN_SWITCH_SAVE_FAILED = (
+    "Step 2 could not save the current run, so the switch was cancelled: "
+    "{error}; check that the workspace folder is still there.")
+#: picking an existing run while none is active, with slices or a patch on
+#: screen that belong to no run
+RUN_SWITCH_NO_RUN_TITLE = "Switch to the run '{name}'?"
+RUN_SWITCH_NO_RUN_BODY = (
+    "Your slices from before a run was active are not kept; make a New Run "
+    "to keep them, or switch and lose them.")
+RUN_SWITCH_NO_RUN_GO = "Switch"
+#: the second button of a switch cancelled by a drawing that could not be
+#: saved (its cause may not go away: the run's folder was moved)
+RUN_SWITCH_ANYWAY = "Switch anyway (the drawing is lost)"
+#: leaving a workspace with a drawing that could not be saved
+STATE_LEFT_DRAWING_LOST = (
+    "A drawing that could not be saved was not kept.")
+RUN_FOLDER_GONE = "The run '{name}' has no folder any more. Pick another run."
+RUN_SWITCH_FAILED = "The switch to the run '{name}' failed: {error}."
+#: a training round launched where the run list cannot be read
+TRAIN_NO_RUN_LIST = (
+    "Training could not read this project's list of runs, so nothing was "
+    "trained. Your staged slices are unchanged.")
+#: a slice whose image and mask could not be written into the run
+PAIR_NOT_SAVED_TITLE = "The slice was not saved"
+PAIR_NOT_SAVED = (
+    "This slice could not be saved, so it is only on screen. Press {action} "
+    "again; if it fails again, check that the workspace folder is still "
+    "there.")
+PAIR_NOT_SAVED_DRAWING = (
+    "Your drawing could not be saved, so it is only on screen; check that "
+    "the workspace folder is still there.")
+#: a save of the run's state that failed (the state stays in memory)
+STATE_NOT_SAVED_TITLE = "Step 2 could not save"
+STATE_NOT_SAVED = (
+    "Step 2 could not save its state just now; your work is still open. It "
+    "will try again at your next change.")
+#: the busy line while the first run of a folder is made and switched to
+RUN_MAKING = "Making the run '{name}' …"
+#: the busy line of any other run switch
+RUN_SWITCHING = "Switching to '{name}' …"
+#: a refused drawing save cancels a run switch, as a refused state save does
+RUN_SWITCH_DRAWING_FAILED = (
+    "Step 2 could not save your drawing, so the switch was cancelled: "
+    "{error}; check that the workspace folder is still there.")
+#: Train when a drawing could not be saved before the round
+TRAIN_DRAWING_NOT_SAVED = (
+    "Step 2 could not save your drawing, so nothing was trained: {error}; "
+    "check that the workspace folder is still there.")
+#: a no-run question that cannot be shown (no screen): nothing is switched
+RUN_SWITCH_NO_RUN_UNASKED = (
+    "The run '{name}' was not switched to: the slices on screen belong to no "
+    "run and could not be asked about.")
+#: Train when the save before the round was refused
+TRAIN_SAVE_REFUSED_TITLE = "Training did not start"
+TRAIN_SAVE_REFUSED = (
+    "Step 2 could not save before training, so nothing was trained: {error}. "
+    "Press Train again; if it fails again, check the workspace folder.")
+#: New Run when the run list could not be written just now (a lock)
+NEW_RUN_LIST_LOCKED = (
+    "Another program had the run list open for a moment, so nothing was "
+    "made. Press New Run again.")
+#: why a drawing could not be saved, as the cancelled switch says it
+DRAWING_CAUSE_FOLDER = "the run's folder could not be used"
+DRAWING_CAUSE_NO_RUN = "there is no run to save it in"
+DRAWING_CAUSE_OTHER = "the write failed (the console says why)"
+#: leaving a workspace (Browse) whose state could not be saved
+STATE_LEFT_RESCUED = (
+    "Step 2 could not save the project you left, so its unsaved state was "
+    "put in {path}.")
+STATE_LEFT_LOST = (
+    "Step 2 could not save the project you left, and the rescue copy failed "
+    "too; its unsaved changes are lost.")
 
 # The one hint line above the accordion (the shell's flow title).
 FLOW_HINT = ("Select a patch → curate slices in the active view → finalize → "

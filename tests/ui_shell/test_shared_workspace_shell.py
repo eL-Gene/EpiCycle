@@ -697,6 +697,11 @@ class TestBanner:
         assert shell.guidance_label._color_key == "green"
         assert shell.advisory_label._color_key == "amber"
         assert shell.advisory_label._text.startswith("No trained 2D model")
+        # the short line's longer words are its tooltip
+        from napari_epicycle.ui_shell import _workspace_facts as facts
+        assert shell.advisory_label._text == facts.MSG_NO_TRAINED_MODEL
+        assert shell.advisory_label.toolTip() == (
+            facts.MSG_NO_TRAINED_MODEL_TIP)
 
     def test_advisory_is_gone_when_rounds_exist_on_disk(self, app, tmp_path):
         shell = _make_shell(app)

@@ -44,7 +44,6 @@ def test_the_micron_knobs_read_the_session_spacing(monkeypatch):
     kw, why = h._add_gather_preview()
     assert why is None
     assert tuple(kw["spacing"]) == HALF == tuple(h._refine_spacing())
-    assert kw["params"]["spacing_known"] is True
     assert kw["params"]["nuc_radius_um"] == 2.5          # microns, unchanged
 
 
@@ -122,7 +121,9 @@ def test_a_cells_whole_patch_fills_at_the_session_spacing(monkeypatch):
     except _Stop:
         pass
     assert seen == [("fill_with_background", (1.6, 0.8, 0.8))]
-    # an unknown spacing: refused before anything is read
+    # a spacing never set: the whole patch runs as a box does, on the
+    # spacing it has (the page shows the amber default-spacing note)
     h.ctx["spacing_source"] = "unknown"
     kw, why = h._add_gather_preview()
-    assert kw is None and why == AP.ADD_S1_NEEDS_SPACING_BOXED
+    assert why is None, why
+    assert kw is not None and kw["params"]["whole_patch"] is True

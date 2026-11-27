@@ -30,7 +30,7 @@ Loading a patch swaps every image and label layer in the viewer, which takes a c
 
 ## Opening the annotator
 
-With a patch loaded, press "Open 2D annotator" (the amber button at the foot of the right column). It opens the XY / XZ / YZ side views with the drawing tools and the slice navigator. If you press it with no patch loaded you are asked to pick one first.
+With a patch loaded, press "Open 2D annotator" (the amber button at the foot of the right column). It opens the XY / XZ / YZ side views with the drawing tools and the slice navigator. If you press it with no patch loaded you are asked to pick one first; if the project has no run yet, you are asked to make one with New Run first.
 
 ## Where patches come from
 

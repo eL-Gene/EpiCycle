@@ -1186,6 +1186,170 @@ def test_the_console_line_says_the_flat_pairs(monkeypatch):
 FLAT_PAIR_DIFF_CEILING = 8          # measured: 0 (160 clicks, 2026-11-22)
 
 
+def test_a_low_patch_pair_floods_whole_once_not_at_every_later_click(
+        monkeypatch):
+    """Two clicks whose balls share a flat patch at the lowest wall value
+    flood the whole box (their order is the full flood's).  A later click
+    far from them is a window again -- before, that pair made every later
+    click flood the whole box for the rest of the session (8 s a click on a
+    5 M patch, in the owner's hands).  The answers equal the full flood."""
+    from packages.epicycle_annotator.reshape.walls import build_elevation
+
+    INC.warm_kernel()
+    shape = (36, 96, 96)
+    spec = AP.cells_spec(_cells_params(dark=True))
+    img, kept, cells = _patch(shape, n_cells=40, seed=107, n_kept=2)
+    roi = tuple(slice(0, n) for n in shape)
+    elev = build_elevation("membrane", img, np.ones(shape, bool),
+                           spacing=SP, clip=0.01, smooth=1.0,
+                           ridge=False)[0].astype(np.float32)
+    chans = {"mem": img}
+    dt = R.patch_dark_threshold(chans, spacing=SP, stride=1)
+    kw = dict(roi=roi, dark_channels=chans, dark_threshold=dt, spacing=SP,
+              elevation=elev)
+    win, refusal = INC.prepare(kept, {"membrane": img}, spec, **kw)
+    assert refusal is None, refusal
+    full, _r = INC.prepare(kept, {"membrane": img}, spec, **kw)
+    # two clicks on one of the stage's own flat patches at the lowest wall
+    # value (the darkest 1 % of a normalised picture), at least five voxels
+    # apart, in free space and not on a patch the outside or a kept core
+    # holds; a third click far away in another cell
+    free_mask = (cells > 0) & (kept == 0)
+    low = win._low
+    a = b = None
+    pids, counts = np.unique(low[(low > 0) & free_mask], return_counts=True)
+    for pid, _c in sorted(zip(pids, counts), key=lambda t: -t[1]):
+        if int(pid) in win._low_other:
+            continue
+        vox = np.argwhere((low == pid) & free_mask)
+        for p in vox:
+            d = np.abs(vox - p).sum(axis=1)
+            j = int(np.argmax(d))
+            if d[j] >= 5:
+                a = tuple(int(v) for v in p)
+                b = tuple(int(v) for v in vox[j])
+                break
+        if a is not None:
+            break
+    assert a is not None, "no low patch wide enough in this picture"
+    free = np.argwhere(free_mask)
+
+    def _off_every_low_patch(p):
+        bb = INC._ball_box(tuple(int(v) for v in p), win._click_r,
+                           win.spacing, win.shape)
+        return bb is not None and not low[INC._slices(bb)].any()
+
+    far = next(tuple(int(v) for v in p) for p in free[::-1]
+               if cells[tuple(p)] != cells[a]
+               and abs(int(p[1]) - a[1]) + abs(int(p[2]) - a[2]) > 40
+               and _off_every_low_patch(p))
+    whole = int(np.prod(shape))
+    pts, ids = [a], [1]
+    win.step(pts, ids)
+    pts, ids = [a, b], [1, 2]
+    st = win.step(pts, ids)
+    assert st.window_voxels == whole, "the shared low patch: the whole box"
+    pts, ids = [a, b, far], [1, 2, 3]
+    st = win.step(pts, ids)
+    assert st.window_voxels < whole // 4, \
+        "a click far from the pair is a window again"
+    with monkeypatch.context() as m:
+        m.setattr(INC, "WINDOW_WHOLE_SHARE", 0.0)
+        full.step(pts, ids)
+    assert np.array_equal(win.raw_result(), full.raw_result())
+
+
+@pytest.mark.parametrize("mode", ["box", "whole_dark", "whole_nodark"])
+def test_a_low_patch_pair_then_far_clicks_against_the_full_flood(
+        mode, monkeypatch):
+    """Random sessions that start with two clicks on one of the stage's own
+    lowest-value flat patches, then clicks and removals elsewhere; the
+    windowed raw cells against a full flood of the same clicks after every
+    step.  The pair is flooded whole once, not at every later click; the
+    full flood's order among equal markers can shift with a far click, so
+    the two may swap voxels on their patch.  Pinned: with the box faces or
+    the dark outside as markers no step differs (measured 0 of 528 each);
+    on a whole patch with the dark tick off a few steps differ by a cell's
+    worth at most (measured 3 of 264, 127 voxels).  Printed: the counts."""
+    from packages.epicycle_annotator.reshape.walls import build_elevation
+
+    INC.warm_kernel()
+    shape = (36, 96, 96)
+    dark = mode != "whole_nodark"
+    pp = _cells_params(dark=dark)
+    if mode != "box":
+        pp.update(whole_patch=True, box_rule=True)
+    spec = AP.cells_spec(pp)
+    n_steps = n_diff = worst = 0
+    for seed in range(100, 106):
+        img, kept, cells = _patch(shape, n_cells=40, seed=seed, n_kept=2)
+        roi = tuple(slice(0, n) for n in shape)
+        elev = build_elevation("membrane", img, np.ones(shape, bool),
+                               spacing=SP, clip=0.01, smooth=1.0,
+                               ridge=False)[0].astype(np.float32)
+        chans = {"mem": img}
+        dt = R.patch_dark_threshold(chans, spacing=SP, stride=1)
+        kw = dict(roi=roi, dark_channels=chans if dark else None,
+                  dark_threshold=dt, spacing=SP, elevation=elev)
+        win, refusal = INC.prepare(kept, {"membrane": img}, spec, **kw)
+        if refusal is not None:
+            continue
+        full, _r = INC.prepare(kept, {"membrane": img}, spec, **kw)
+        free_mask = (cells > 0) & (kept == 0)
+        low = win._low
+        a = b = None
+        pids, counts = np.unique(low[(low > 0) & free_mask],
+                                 return_counts=True)
+        for pid, _c in sorted(zip(pids, counts), key=lambda t: -t[1]):
+            if int(pid) in win._low_other:
+                continue
+            vox = np.argwhere((low == pid) & free_mask)
+            for p in vox:
+                d = np.abs(vox - p).sum(axis=1)
+                j = int(np.argmax(d))
+                if d[j] >= 5:
+                    a = tuple(int(v) for v in p)
+                    b = tuple(int(v) for v in vox[j])
+                    break
+            if a is not None:
+                break
+        if a is None:
+            continue
+        rng = np.random.default_rng(7 * seed)
+        free = np.argwhere(free_mask)
+        pts, ids, nid = [a, b], [1, 2], 3
+        win.step(pts, ids)
+        with monkeypatch.context() as m:
+            m.setattr(INC, "WINDOW_WHOLE_SHARE", 0.0)
+            full.step(pts, ids)
+        for _k in range(10):
+            if len(pts) > 2 and rng.random() < 0.3:
+                j = int(rng.integers(2, len(pts)))
+                pts.pop(j)
+                ids.pop(j)
+            else:
+                pts.append(tuple(int(v) for v in
+                                 free[rng.integers(len(free))]))
+                ids.append(nid)
+                nid += 1
+            win.step(pts, ids)
+            with monkeypatch.context() as m:
+                m.setattr(INC, "WINDOW_WHOLE_SHARE", 0.0)
+                full.step(pts, ids)
+            d = int(np.count_nonzero(win.raw_result() != full.raw_result()))
+            n_steps += 1
+            n_diff += d > 0
+            worst = max(worst, d)
+    print("\n[ADD-INC-LOWPAIR] {}: {} of {} steps differed from the full "
+          "flood, the most voxels {}".format(mode, n_diff, n_steps, worst))
+    assert n_steps >= 30
+    if mode == "whole_nodark":
+        assert n_diff <= n_steps // 10, (n_diff, n_steps)
+        assert worst <= 400, worst
+    else:
+        assert n_diff == 0, (n_diff, worst)
+
+
 def test_the_windowed_answer_stays_near_the_full_flood_with_flat_pairs(
         monkeypatch):
     """Membrane boxes with 1 to 20 coincidental flat pairs per 100,000
@@ -1443,6 +1607,78 @@ def test_a_refused_seed_is_one_more_step_on_the_same_stage(monkeypatch):
     assert steps == [[1, 2, 3], [1, 3]]
     assert holder.get("stage") is not None
     assert "faint=n/a (by click)" in inc.log_line()
+
+
+def test_a_refused_seed_stays_out_of_the_next_clicks(monkeypatch, capsys):
+    """After B (#500) was refused, a further click D in A's cell runs ONE
+    step without B (the refusal is remembered on the stage) and answers as
+    the full run does.  Handing B in again at every click put a change at
+    its place each time, and the click fill's one window grew to span every
+    refused seed (the whole patch, seconds a click, in the owner's hands).
+    A removed marker (the old list no longer a prefix) judges every seed
+    again."""
+    INC.warm_kernel()
+    A, B, C, D = (10, 15, 7), (10, 10, 22), (10, 20, 22), (10, 8, 10)
+    holder = {}
+    _two_cells_run([A, C], [500, 501], holder)
+    if holder.get("stage") is None:
+        pytest.skip("this box keeps the full run")
+    _two_cells_run([A, B, C], [500, 500, 501], holder)
+    assert holder.get("apart") and holder["apart"][1] == {(B, 500)}
+    steps = _count_steps(monkeypatch)
+    capsys.readouterr()
+    full = _two_cells_run([A, B, C, D], [500, 500, 501, 502])
+    inc = _two_cells_run([A, B, C, D], [500, 500, 501, 502], holder)
+    assert full.ok and inc.ok, (full.refusal, inc.refusal)
+    assert inc.by_click
+    assert steps == [[1, 3, 4]], "one step, B left out from the start"
+    assert "refused last time stay out: [500]" in capsys.readouterr().out
+    assert inc.seed_why == full.seed_why == [None, "apart", None, None]
+    assert inc.apart_ids == full.apart_ids == [500]
+    assert np.array_equal(inc.result, full.result)
+    assert inc.ids == full.ids and inc.sizes == full.sizes
+    assert holder["apart"][1] == {(B, 500)}
+    # a marker removed: the list is no longer the old one plus new
+    # clicks, so every seed is judged again (B refused once more)
+    steps = _count_steps(monkeypatch)
+    inc2 = _two_cells_run([A, B, D], [500, 500, 502], holder)
+    assert inc2.ok and inc2.apart_ids == [500]
+    assert len(steps) == 2 and steps[0] == [1, 2, 3]
+
+
+def test_a_remembered_refusal_is_placement_time_judgement(monkeypatch):
+    """The corner the memo decides differently from one run of every
+    seed at once (pinned so a change is seen): B (#500) refused in the other
+    cell, then t a second seed of #501 placed BEYOND B as seen from C.  One
+    run with every seed present refuses B and t together (B's cell stood
+    between t and C's), and never judges t again; click by click B was never
+    there, so t touches and is kept.  The memo gives placement-time
+    judgement (a seed refused when placed stays refused), the stated rule
+    ("as if that seed had never been placed"); the one-go difference is
+    recorded for the owner."""
+    INC.warm_kernel()
+    A, B, C, t = (10, 15, 7), (10, 10, 22), (10, 20, 22), (10, 8, 22)
+    holder = {}
+    _two_cells_run([A, C], [500, 501], holder)
+    if holder.get("stage") is None:
+        pytest.skip("this box keeps the full run")
+    _two_cells_run([A, B, C], [500, 500, 501], holder)
+    full = _two_cells_run([A, B, C, t], [500, 500, 501, 501])
+    inc = _two_cells_run([A, B, C, t], [500, 500, 501, 501], holder)
+    assert full.ok and inc.ok
+    assert inc.seed_why == [None, "apart", None, None]
+    assert inc.apart_ids == [500]
+    assert full.seed_why == [None, "apart", None, "apart"], \
+        "the one-go run refuses t too (recorded); if this changed, the " \
+        "two paths may agree now -- update the rule's words"
+    # the memo is valid for the stage that judged it only: a new stage
+    # object (the labels changed under the same key) judges every seed
+    old = holder["stage"]
+    holder["apart"] = (holder["apart"][0], holder["apart"][1], object())
+    steps = _count_steps(monkeypatch)
+    again = _two_cells_run([A, B, C, t], [500, 500, 501, 501], holder)
+    assert again.ok and holder["stage"] is old
+    assert len(steps) >= 2 and steps[0] == [1, 2, 3, 4], "B judged again"
 
 
 def test_a_grouped_run_falls_back_whole_when_the_stage_fails(monkeypatch,

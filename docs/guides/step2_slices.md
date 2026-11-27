@@ -56,7 +56,7 @@ An empty view says "No slices in this view yet." and "Open the 2D annotator and 
 They sit at the foot of the right-hand column, always in view, and they act on the highlighted slices:
 
 * **Open 2D annotator** is the one amber button; it opens the side-view annotator for the loaded patch.
-* **Accept** keeps the selected slices' masks and saves each pair.
+* **Accept** keeps the selected slices' masks and saves each pair. If a pair cannot be saved (the workspace folder went away, the disk is full), the slice keeps the status it had and a box says "This slice could not be saved, so it is only on screen. Press Accept again; if it fails again, check that the workspace folder is still there." The same holds for Finalize accepted and for Predict; with no run yet, you are asked to make one first.
 * **Finalize accepted** queues the accepted slices of the current view for the next round.
 * **Discard** drops the prediction for the selected slices.
 * **Revert** takes selected finalized slices back to accepted. A slice that is already trained asks before it is reopened.

@@ -150,6 +150,10 @@ def test_the_real_box_shows_the_landed_value_to_its_decimals(panel, qapp):
 # F3 -- the dark help goes with the dark tick
 # --------------------------------------------------------------------------- #
 def test_the_dark_help_is_hidden_when_the_dark_tick_is_off(panel):
+    # No outline picked: the dark tick decides what is outside (the
+    # default outline decides it instead and says so)
+    panel.add_outline_combo.setCurrentIndex(
+        AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
     assert not panel._add_dark_help.isHidden()
     panel.add_dark_outside_cb.setChecked(False)
     assert panel._add_dark_help.isHidden()

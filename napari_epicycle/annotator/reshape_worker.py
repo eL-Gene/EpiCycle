@@ -74,7 +74,7 @@ STAGE_TEXT = {
     "add_walls": "Drawing the wall picture...",
     "add_balls": "Drawing the markers...",
     "add_info_patch": "Measuring the patch...",
-    # Cells ▸ Click markers: the click fill's first update of a box, and of
+    # Cells > Click markers: the click fill's first update of a box, and of
     # a whole patch filled as you click (the page picks it)
     "add_prepare": "Preparing the box...",
     "add_prepare_patch": "Preparing the patch...",

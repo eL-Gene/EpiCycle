@@ -5,6 +5,8 @@
   ``model_provenance`` slot.
 * Reconstruct: ``extra_manifest`` carries the block and the prediction
   manifest's workspace-relative path, with R2c's extras intact.
+  ``run_real`` gets the axes the prediction manifest records (the order
+  Cellpose was handed), null without that record.
 * The rows: the "made by" chip under the shape line (the reconstruction
   manifest's copy first), amber-bordered "— not the active model" when it
   is not the active model, the unknown sentence for an old patch; the
@@ -304,6 +306,159 @@ def test_run_real_gets_the_merged_extras(full, monkeypatch, fake_segment):
     assert extra["prediction_manifest"].endswith("a_prediction_manifest.json")
     assert extra["seg_config_source"] == "prediction"
     assert "cell_width_um" in extra
+
+
+# ------------------------------------------------------------ the axes
+
+def _predict_4d(c, folder, name, axes, shape):
+    """Predict a two-channel patch whose TIFF says *axes*; the global
+    fallback handed in is the OTHER order, so only the per-patch value
+    can reach the record."""
+    import tifffile
+    tifffile.imwrite(str(folder / name), np.zeros(shape, np.uint8),
+                     metadata={"axes": axes})
+    c._predict_single_patch(
+        patch_name=name, stack_path=str(folder / name),
+        lateral_path="cyto3", axial_path="cyto3",
+        seg_config=S.with_channels(c._collect_seg_config(), [1, 0]),
+        axes="ZCYX" if axes == "CZYX" else "CZYX",
+        model_provenance=_block("cyto3"))
+
+
+def _reconstruct_axes(c, monkeypatch, folder, name):
+    seen = {}
+
+    def run_real(**kw):
+        seen.update(kw)
+        return {}
+
+    monkeypatch.setattr(c.reconstruction_service, "run_real", run_real)
+    c._reconstruct_single_patch(
+        patch_name=name, stack_path=str(folder / name),
+        working_dir=c.working_dir, lateral_path="cyto3", axial_path="cyto3",
+        seg_config=c._collect_seg_config(), recon_config=None,
+        cell_width_um=8.0)
+    assert "axes" in seen, "Reconstruct must pass the axes it records"
+    return seen["axes"]
+
+
+def test_reconstruct_records_the_axes_its_prediction_used(
+        full, monkeypatch, fake_segment):
+    w, c, folder = full
+    _predict_4d(c, folder, "p.tif", "CZYX", (2, 6, 8, 8))
+    pm = MP.read_manifest(S.prediction_manifest_path(
+        c._prediction_cache_dir(), "p.tif"))
+    assert pm["axes"] == "CZYX"
+    assert _reconstruct_axes(c, monkeypatch, folder, "p.tif") == "CZYX"
+
+
+def test_czyx_and_zcyx_patches_each_record_their_own(
+        full, monkeypatch, fake_segment):
+    w, c, folder = full
+    _predict_4d(c, folder, "cz.tif", "CZYX", (2, 6, 8, 8))
+    _predict_4d(c, folder, "zc.tif", "ZCYX", (6, 2, 8, 8))
+    assert _reconstruct_axes(c, monkeypatch, folder, "zc.tif") == "ZCYX"
+    assert _reconstruct_axes(c, monkeypatch, folder, "cz.tif") == "CZYX"
+
+
+def test_a_one_channel_patch_records_zyx(full, monkeypatch, fake_segment):
+    w, c, folder = full
+    c._predict_single_patch(
+        patch_name="a.tif", stack_path=str(folder / "a.tif"),
+        lateral_path="cyto3", axial_path="cyto3",
+        seg_config=c._collect_seg_config(), axes="CZYX",
+        model_provenance=_block("cyto3"))
+    assert _reconstruct_axes(c, monkeypatch, folder, "a.tif") == "ZYX"
+
+
+def test_a_recorded_order_says_where_it_came_from(
+        full, monkeypatch, fake_segment):
+    """``axes_from: "prediction"`` rides the extra keys when the axes come
+    from the prediction manifest, so a recorded order can be told from an
+    old constant ``"ZCYX"``; no word when the axes are null."""
+    w, c, folder = full
+    _predict_4d(c, folder, "p.tif", "CZYX", (2, 6, 8, 8))
+    seen = {}
+    monkeypatch.setattr(c.reconstruction_service, "run_real",
+                        lambda **kw: seen.update(kw) or {})
+    c._reconstruct_single_patch(
+        patch_name="p.tif", stack_path=str(folder / "p.tif"),
+        working_dir=c.working_dir, lateral_path="cyto3", axial_path="cyto3",
+        seg_config=c._collect_seg_config(), recon_config=None,
+        cell_width_um=8.0)
+    assert seen["axes"] == "CZYX"
+    assert seen["extra_manifest"]["axes_from"] == "prediction"
+    # the prediction manifest without axes: null, and no word
+    pm_path = S.prediction_manifest_path(c._prediction_cache_dir(), "p.tif")
+    data = json.loads(Path(pm_path).read_text(encoding="utf-8"))
+    data.pop("axes", None)
+    S.write_json_atomic(pm_path, data)
+    seen.clear()
+    c._reconstruct_single_patch(
+        patch_name="p.tif", stack_path=str(folder / "p.tif"),
+        working_dir=c.working_dir, lateral_path="cyto3", axial_path="cyto3",
+        seg_config=c._collect_seg_config(), recon_config=None,
+        cell_width_um=8.0)
+    assert seen["axes"] is None
+    assert "axes_from" not in seen["extra_manifest"]
+
+
+def test_reconstruct_reads_the_prediction_manifest_once(
+        full, monkeypatch, fake_segment):
+    import napari_epicycle.fusion_reconstruction.controller as C
+    w, c, folder = full
+    _predict_4d(c, folder, "p.tif", "CZYX", (2, 6, 8, 8))
+    monkeypatch.setattr(c.reconstruction_service, "run_real",
+                        lambda **kw: {})
+    reads = []
+    real = C._mp.read_manifest
+
+    def spy(path):
+        reads.append(Path(str(path)).name)
+        return real(path)
+
+    monkeypatch.setattr(C._mp, "read_manifest", spy)
+    c._reconstruct_single_patch(
+        patch_name="p.tif", stack_path=str(folder / "p.tif"),
+        working_dir=c.working_dir, lateral_path="cyto3", axial_path="cyto3",
+        seg_config=c._collect_seg_config(), recon_config=None,
+        cell_width_um=8.0)
+    assert reads.count("p_prediction_manifest.json") == 1, reads
+
+
+def test_reconstruct_with_no_prediction_manifest_records_null_axes(
+        full, monkeypatch, fake_segment):
+    w, c, folder = full
+    _predict_4d(c, folder, "p.tif", "CZYX", (2, 6, 8, 8))
+    pm_path = S.prediction_manifest_path(c._prediction_cache_dir(), "p.tif")
+    os.remove(pm_path)
+    assert c._try_restore_prediction_cache("p.tif") is not None
+    assert _reconstruct_axes(c, monkeypatch, folder, "p.tif") is None
+
+
+@pytest.mark.parametrize("bad", [{"axes": ""}, {"axes": 4}, {"axes": None},
+                                 {}])
+def test_a_prediction_manifest_without_usable_axes_records_null(
+        full, monkeypatch, fake_segment, bad):
+    """An old or backfilled prediction manifest: no axes string, no
+    guess -- the record says null."""
+    w, c, folder = full
+    _predict_4d(c, folder, "p.tif", "CZYX", (2, 6, 8, 8))
+    pm_path = S.prediction_manifest_path(c._prediction_cache_dir(), "p.tif")
+    data = json.loads(Path(pm_path).read_text(encoding="utf-8"))
+    data.pop("axes", None)
+    data.update(bad)
+    S.write_json_atomic(pm_path, data)
+    assert _reconstruct_axes(c, monkeypatch, folder, "p.tif") is None
+
+
+def test_an_unreadable_prediction_manifest_records_null(
+        full, monkeypatch, fake_segment):
+    w, c, folder = full
+    _predict_4d(c, folder, "p.tif", "CZYX", (2, 6, 8, 8))
+    pm_path = S.prediction_manifest_path(c._prediction_cache_dir(), "p.tif")
+    Path(pm_path).write_text("{not json", encoding="utf-8")
+    assert _reconstruct_axes(c, monkeypatch, folder, "p.tif") is None
 
 
 # ------------------------------------------------------------ the chip

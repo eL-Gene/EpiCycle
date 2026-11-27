@@ -212,3 +212,91 @@ def test_same_spacing_to_half_a_spin_box_step():
     b = {"zyx": [1.0, 0.108, 0.108], "source": "user"}
     assert M.same_spacing(a, b)
     assert not M.same_spacing(a, {"zyx": [1.0, 0.109, 0.109]})
+
+
+# ------------------------------------------------- an assumed Z, on the rows
+
+
+def _assumed_state(flag=True, typed="detected"):
+    st = _step1_state(voxel=(0.5, 0.5, 0.5))
+    st["sources"][0].update(voxel_size_source=typed, voxel_z_from_xy=flag)
+    return st
+
+
+def _scan_step1_patch(tmp_path, state):
+    from napari_epicycle.data_preparation._paths import step1_state_path
+    ws = tmp_path / "ws"
+    _tiff(ws / "patches" / "p1.tif")
+    path = step1_state_path(str(ws))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
+    ctrl = controller(ws)
+    ctrl._scan_stacks_directory(str(ws / "patches"), persist=True)
+    return ctrl
+
+
+def test_an_assumed_z_shows_step4s_words_and_the_record_gains_no_key(
+        tmp_path):
+    ctrl = _scan_step1_patch(tmp_path, _assumed_state())
+    rec = ctrl.state_manager.get_record("p1.tif")
+    assert rec["spacing"] == {"zyx": [0.5, 0.5, 0.5], "source": "step1"}
+    rows = {r["name"]: r for r in ctrl._build_rows()}
+    row = rows["p1.tif"]
+    want = T.ROW_SPACING_STEP1_Z_ASSUMED.format(z="0.50", y="0.50", x="0.50")
+    assert row["spacing_text"] == want and row["line3"] == want
+    assert row["line3_warn"] is True and row["vox_warn"] is True
+    assert row["in_voxels"] is False          # it still has a voxel size
+    # the stored record is untouched
+    assert ctrl.state_manager.get_record("p1.tif")["spacing"] == {
+        "zyx": [0.5, 0.5, 0.5], "source": "step1"}
+
+
+@pytest.mark.parametrize("flag,typed", [(False, "detected"), (True, "user")])
+def test_no_mark_without_an_assumed_z(tmp_path, flag, typed):
+    ctrl = _scan_step1_patch(tmp_path, _assumed_state(flag, typed))
+    row = {r["name"]: r for r in ctrl._build_rows()}["p1.tif"]
+    assert row["spacing_text"] == T.ROW_SPACING_STEP1.format(
+        z="0.50", y="0.50", x="0.50")
+    assert row["line3_warn"] is False
+
+
+def test_a_user_value_on_the_stack_is_not_marked(tmp_path):
+    ctrl = _scan_step1_patch(tmp_path, _assumed_state())
+    ctrl.state_manager.update_record(
+        "p1.tif", spacing={"zyx": [0.5, 0.5, 0.5], "source": "user"})
+    row = {r["name"]: r for r in ctrl._build_rows()}["p1.tif"]
+    assert "Z assumed" not in row["spacing_text"]
+
+
+def test_an_assumed_row_carries_its_tooltip(tmp_path):
+    ctrl = _scan_step1_patch(tmp_path, _assumed_state())
+    row = {r["name"]: r for r in ctrl._build_rows()}["p1.tif"]
+    assert row["row_tip"] == T.ROW_SPACING_Z_ASSUMED_TIP
+    assert row["spacing_text"].startswith("Z assumed")
+    plain = _scan_step1_patch(tmp_path / "b", _assumed_state(flag=False))
+    prow = {r["name"]: r for r in plain._build_rows()}["p1.tif"]
+    assert "row_tip" not in prow and "z_assumed" not in prow
+
+
+def test_a_processed_patch_is_marked_only_when_its_value_is_the_rows(
+        tmp_path):
+    st = _assumed_state()
+    st["patches"][0]["source_kind"] = "processed"
+    ctrl = _scan_step1_patch(tmp_path, st)
+    ctrl.state_manager.update_record(
+        "p1.tif", spacing={"zyx": [0.5, 0.5, 0.5], "source": "step1"})
+    row = {r["name"]: r for r in ctrl._build_rows()}["p1.tif"]
+    assert row["spacing_text"].startswith("Z assumed")
+    ctrl.state_manager.update_record(
+        "p1.tif", spacing={"zyx": [2.0, 0.5, 0.5], "source": "step1"})
+    row = {r["name"]: r for r in ctrl._build_rows()}["p1.tif"]
+    assert "Z assumed" not in row["spacing_text"]
+    assert row["line3_warn"] is False
+
+
+def test_hovering_step4s_assumed_words_explains_them(tmp_path):
+    ctrl = _scan_step1_patch(tmp_path, _assumed_state())
+    row = {r["name"]: r for r in ctrl._build_rows()}["p1.tif"]
+    assert row["vox_tip"] == (row["vox_text"] + "\n"
+                              + T.ROW_SPACING_Z_ASSUMED_TIP)
+    assert "ImageJ's default depth of 1 unit" in row["vox_tip"]

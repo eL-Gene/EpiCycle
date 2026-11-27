@@ -1,5 +1,27 @@
 # EpiCycle release notes
 
+## 0.1.5 (2026-11-26)
+
+Step 3's Add page: clicking updates the cells on any region, and two slowdowns found while curating with 0.1.4 are gone.  A new project no longer falls back to the old folder layout or to made-up values: Step 2 asks for a run before it writes, Step 1 records the voxel size it read and says when Z was filled in, and Step 3 writes what it knows and nothing else.
+
+**Step 3, the Add page (3D annotator ▸ Advanced Features ▸ Add)**
+
+- **One rule for every region.** A whole patch and a box follow the same rules: Cells update as you click on a whole patch as on a box (up to 20 million voxels), Preview runs up to 100 million voxels on either, and the 1 and 4 million voxel limits boxes had are gone. Nuclei ▸ Anywhere in the box and Cells with Markers from Nuclei masks run on a whole patch too, and Grow by is offered there as well.
+- **No refusal for a missing voxel size.** When a patch has no voxel size recorded, the Add page runs at 1 µm a side and an amber line under the first line says so, pointing to Set spacing… in the Session list. Before, Cells on a whole patch refused to run until the spacing was set, without a word about why.
+- **Always update as I click.** A new tick under Advanced, off by default and not remembered between napari sessions. On, every click is drawn: where the quick fill would step aside (flat spots in the walls, Vessel ridges or Thin-faint ridges walls, Grow by Spread), the region is filled whole a moment after you stop clicking and the first line says how long it takes. Off, the page keeps its quick rules and a short grey line under Update as I click says why a click is not live and which control changes that.
+- **Clicking stays fast.** After a Shift+click whose seed landed in another cell, every later click grew slower until each took over ten seconds; and once two markers sat on the same dark flat spot, every later click anywhere re-filled the whole patch. Both are fixed.
+- **Stop, Undo and closing behave.** Stop drops a click that came in during a slow update and draws one placed while it winds down; unticking Update as I click, changing the preset or the markers' source cuts a slow update short; an Undo in the review refreshes what the next Preview reuses; a Preview cut off by Close box no longer holds its inputs in memory for the rest of the session.
+- **Words and figures.** The wait figures under the first line come from timed runs of the right kind; the line under the tick stands down where Preview is grey; a Nuclei whole patch shows the default-spacing note when a Tissue outline is chosen.
+
+**A new project (Steps 1 to 3)**
+
+- **Step 2 writes nothing until you make a run.** A new project used to be written in the old folder layout (`hitl_state.json`, `training_data/`) the moment you opened a patch, and then showed a run called "default" that did not exist. Now a new project has no run until you press New Run; until then Accept, Finalize accepted, Train, Open 2D annotator, the imports and History ask you to make one, and nothing is written. Making the first run keeps the patch you have open, what you drew and your settings. A save that fails is said in a box and the work stays on screen; on close (or when you browse to another project) what could not be saved is written to `artifacts/step2/rescue/`. A project whose run list cannot be read is never overwritten and never offered a new run. A file briefly held by another program (a backup or antivirus tool) is a "try again", never a verdict on the project.
+- **Step 1 records the voxel size it read.** The size read from the image file is recorded when you select the source or extract the first patch, so Steps 3 and 4 see it; before, a size that was only shown was never saved and the patches reached Step 3 with none. When the file gives no Z step (an XY-only header, or a Fiji stack saved with no slice spacing, which ImageJ records as a depth of 1), Z is filled in and the row says so in amber in Steps 3 and 4 ("Z assumed"); hover it for why, press Enter in Step 1's Z box to confirm the value as yours, or type the real Z step. A header pixel size over 50 µm (a print resolution read as a size) is shown with a warning and never recorded; type the real values.
+- **Step 3 writes what it knows.** A run with no channels saved shows its model's channels instead of a stored default; an unknown voxel size is written as unknown, not as 1 µm; the reconstruction manifest records the axes the prediction used. Features measured with no voxel size are marked "voxel units" and the out-of-date notice says so when a size arrives.
+- **Step 3's words.** The "no trained 2D model" line now says you can pick a model under Model ▸ Change… (hover it for the model-file route), and Step 3's run is labelled "Step 3 run" so it is not mistaken for the Step 2 run.
+
+**Known limits.** After a Shift+click, each later click on a large patch pays about two seconds for the join of the seeds and the smoothing of every cell; a click that lands against a large cell can re-fill most of the patch once (six to eight seconds on five million voxels). The tissue outline is measured once per patch over the whole patch, so the first box on a large patch waits for it. The Add page on a whole patch at the default spacing runs at 1 µm a side; set the real spacing in the Session list for sizes in µm.
+
 ## 0.1.4 (2026-11-23)
 
 Install fix, from a fresh install on a new NVIDIA card, and EpiCycle reopens your last workspace.

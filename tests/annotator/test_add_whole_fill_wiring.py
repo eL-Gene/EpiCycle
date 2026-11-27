@@ -114,9 +114,12 @@ def test_routing(monkeypatch, hidden):
     h._start_add_whole()
     assert h._add_whole_patch
     info, preview, kw = _engine_growth(h, seen)
-    assert info == "fill_with_background"
-    assert preview == "fill_with_background"
-    assert AP.cells_growth(kw["params"]) == "fill_with_background"
+    # a whole patch: Fill is the fill with a background marker, Spread is
+    # Spread (Grow by is the user's pick there too)
+    whole = "fill_with_background" if hidden == "flood" else "compete"
+    assert info == whole
+    assert preview == whole
+    assert AP.cells_growth(kw["params"]) == whole
     # a box: the Grow by pick, whatever it is
     h.place_box((slice(0, 12), slice(0, 20), slice(0, 20)))
     h._add_whole_patch = False
@@ -142,7 +145,7 @@ def test_cells_growth():
     assert AP.GROW_PATCH == "fill_with_background"
     for g in ("flood", "compete"):
         assert AP.cells_growth({"whole_patch": True, "growth": g}) == (
-            AP.GROW_PATCH)
+            AP.GROW_PATCH if g == "flood" else AP.GROW_SPREAD)
         assert AP.cells_growth({"growth": g}) == g
         assert AP.cells_growth({"whole_patch": False, "growth": g}) == g
     assert AP.cells_growth({}) == AP.GROW_FLOOD
@@ -252,6 +255,14 @@ def test_the_live_rule_swaps_the_line_and_hides_the_membrane_tick(widget):
         assert w.add_include_membrane_cb.isEnabled()
         assert AP.ADD_SUM_ADVANCED_FILL_LIVE in _title(w)
         assert "membrane" not in _title(w)
+        # the click fill stepped aside from the patch (S1: press Preview):
+        # the line says Preview fills it, still the way a box is
+        w.update_add_ui_state(live_whole_ok=False)
+        assert w._add_whole_fill_label.text() == (
+            AP.ADD_HELP_WHOLE_FILL_PREVIEW)
+        assert w.add_include_membrane_cb.isHidden()
+        w.update_add_ui_state(live_whole_ok=True)
+        assert w._add_whole_fill_label.text() == AP.ADD_HELP_WHOLE_FILL_LIVE
         w.update_add_ui_state(live_whole_rule=False)
         assert w._add_whole_fill_label.text() == AP.ADD_HELP_WHOLE_FILL
         assert not w.add_include_membrane_cb.isHidden()
@@ -285,20 +296,31 @@ def test_advanced_card(widget):
         assert not w.add_include_membrane_cb.isHidden()
         assert w._add_whole_fill_label.isHidden()
         assert "spreading" in _title(w)
-        # the whole patch: the three rows hidden, the box's pick kept
+        # the whole patch: Grow by stays, Spread's rows with it, the pick
+        # kept; the line at the top says Spread fills the patch
         w.update_add_ui_state(whole_patch=True)
         assert not w._add_cells_adv.isHidden()
-        assert w._add_grow_row.isHidden()
-        assert w._add_wall_cost_row.isHidden()
-        assert w._add_growth_limit_row.isHidden()
+        assert not w._add_grow_row.isHidden()
+        assert not w._add_wall_cost_row.isHidden()
+        assert not w._add_growth_limit_row.isHidden()
         assert not w.add_include_membrane_cb.isHidden()
         assert not w._add_whole_fill_label.isHidden()
+        assert w._add_whole_fill_label.text() == (
+            AP.ADD_HELP_WHOLE_FILL_SPREAD)
         assert w.get_add_grow() == AP.GROW_SPREAD
+        assert "spreading" in _title(w)
+        assert AP.ADD_SUM_ADVANCED_FILL not in _title(w)
+        # Fill on the whole patch: the fill's line, rows and summary
+        w.add_grow_combo.setCurrentIndex(AP.GROW_KEYS.index(AP.GROW_FLOOD))
+        assert w._add_wall_cost_row.isHidden()
+        assert w._add_growth_limit_row.isHidden()
+        assert w._add_whole_fill_label.text() == AP.ADD_HELP_WHOLE_FILL
         assert AP.ADD_SUM_ADVANCED_FILL in _title(w)
         assert "spreading" not in _title(w)
         w.add_include_membrane_cb.setChecked(False)
         assert AP.ADD_SUM_ADVANCED_FILL_NO_MEMBRANE in _title(w)
         w.add_include_membrane_cb.setChecked(True)
+        w.add_grow_combo.setCurrentIndex(AP.GROW_KEYS.index(AP.GROW_SPREAD))
         # back to a box: Spread is still the pick
         w.update_add_ui_state(whole_patch=False)
         assert not w._add_grow_row.isHidden()
@@ -310,9 +332,10 @@ def test_advanced_card(widget):
         assert w._add_wall_cost_row.isHidden()
         assert w._add_growth_limit_row.isHidden()
         assert w.add_include_membrane_cb.isHidden()
-        # a whole patch never forces Spread: Fill stays the pick, hidden
+        # a whole patch never forces Spread: Fill stays the pick, shown
         w.update_add_ui_state(whole_patch=True)
         assert w.get_add_grow() == AP.GROW_FLOOD
+        assert not w._add_grow_row.isHidden()
         assert not w.add_include_membrane_cb.isHidden()
         g = w.add_grow_combo
         assert g.itemText(0) == AP.ADD_GROW_FLOOD
@@ -334,9 +357,18 @@ def test_the_help_slot_on_a_whole_patch(widget):
         w.add_dark_outside_cb.setChecked(False)
         w.add_grow_combo.setCurrentIndex(AP.GROW_KEYS.index(AP.GROW_SPREAD))
         assert AP.ADD_NOTE_SPREAD_OPEN in w._add_advanced_help.text()
-        # ... and never on a whole patch, with the same pick kept
+        # ... and on a whole patch, where Spread grows the patch too (its
+        # untouched outline would be the shrink-wrap: none again) -- there
+        # in the amber slot, which the dark-off note would otherwise hold
+        # with a sentence that disagrees; not said twice
         w.update_add_ui_state(whole_patch=True)
+        w.add_outline_combo.setCurrentIndex(
+            AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
         assert w.get_add_grow() == AP.GROW_SPREAD
+        assert w.add_dark_off_note.text() == AP.ADD_NOTE_SPREAD_OPEN
+        assert AP.ADD_NOTE_SPREAD_OPEN not in w._add_advanced_help.text()
+        # Fill there: the background stops a cell, not the growth limit
+        w.add_grow_combo.setCurrentIndex(AP.GROW_KEYS.index(AP.GROW_FLOOD))
         assert AP.ADD_NOTE_SPREAD_OPEN not in w._add_advanced_help.text()
     finally:
         _undo_page(w)
@@ -475,9 +507,11 @@ def test_one_channel(monkeypatch):
     assert res.status == "ok", (res.refusal, res.messages)
     assert AP.cells_growth(kw["params"]) == "fill_with_background"
     # the whole-patch amber
-    assert h._add_cells_note_text() == AP.ADD_AMBER_ONE_CHANNEL_WHOLE
+    # (Grow by and Wall cost are on a whole patch too: the box's words)
+    assert h._add_cells_note_text() == AP.one_channel_note(
+        spread=False, shrink=h._add_outline_mode() == "shrink", whole=True)
     assert AP.one_channel_note(spread=True, shrink=True, whole=True) == (
-        AP.ADD_AMBER_ONE_CHANNEL_WHOLE)
+        AP.one_channel_note(spread=True, shrink=True))
     # a box with the run's markers
     h.place_box((slice(0, 12), slice(0, 24), slice(0, 24)))
     h._add_whole_patch = False
@@ -537,21 +571,26 @@ class _NoRead(np.ndarray):
 
 
 def test_the_whole_too_big_line():
+    """The ceiling is named in words, as a box's line names the same
+    limit ("100 million")."""
     assert AP.whole_too_big_line(150_000_000) == (
         "This patch is 150.0 million voxels; a whole patch can be filled up "
-        "to 100.0 million. Press S, M or L for a box.")
+        "to 100 million. Press S, M or L for a box.")
     # one voxel over the ceiling never reads as the ceiling itself
     assert AP.whole_too_big_line(R.WHOLE_FILL_MAX_VOXELS + 1) == (
         "This patch is 100.1 million voxels; a whole patch can be filled up "
-        "to 100.0 million. Press S, M or L for a box.")
+        "to 100 million. Press S, M or L for a box.")
+    assert "the limit for cells is 100 million" in AP.over_limit_line(
+        (1, 1, R.WHOLE_FILL_MAX_VOXELS + 1))
 
 
-def test_the_whole_too_big_line_names_any_ceiling_in_millions(monkeypatch):
+def test_the_whole_too_big_line_names_any_ceiling_in_words(monkeypatch):
     monkeypatch.setattr(R, "WHOLE_FILL_MAX_VOXELS", 19_199)
     line = AP.whole_too_big_line(19_200)
     assert "0.019199" not in line
     assert line == AP.ADD_S1_WHOLE_TOO_BIG.format(
-        m=AP.millions(19_200), k=AP.millions(19_199))
+        m=AP.millions(19_200), k=AP.voxel_limit_words(19_199))
+    assert "up to 19,199." in line
 
 
 def test_size_and_parked(monkeypatch):

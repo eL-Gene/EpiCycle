@@ -133,6 +133,10 @@ def _cells(widget, **kw):
     reset_add(widget)
     widget.set_add_preset("cells", silent=True)
     widget.update_add_ui_state(**kw)
+    # No outline picked: the dark tick decides what is outside (the
+    # default outline decides it instead and greys the tick)
+    widget.add_outline_combo.setCurrentIndex(
+        AP.OUTLINE_KEYS.index(AP.OUTLINE_NONE))
 
 
 def test_the_dark_off_note_shows_on_cells_with_the_tick_off(widget):

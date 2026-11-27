@@ -114,8 +114,7 @@ def test_whole_patch_offers_runs_and_click_markers(widget, monkeypatch):
         full = [t for t, _e, _k in ENTRIES]
         assert _texts(widget) == full
         widget.update_add_ui_state(whole_patch=True)
-        assert _texts(widget) == [ENTRIES[0][0], ENTRIES[2][0]], (
-            "the other runs and Click markers")
+        assert _texts(widget) == full, "every source a box takes"
         assert widget.get_add_marker_source() == CLICKS, "kept picked"
         assert len(clears) == 1
         # the same flag again, a push without it, the box pushed again:
@@ -149,8 +148,8 @@ def test_whole_patch_offers_runs_and_click_markers(widget, monkeypatch):
 @pytest.mark.parametrize("other_run", [True, False])
 @pytest.mark.parametrize("pick", [1, 2])        # nuclei masks, clicks
 def test_box_pick_comes_back(widget, monkeypatch, pick, other_run):
-    """Nuclei masks are set aside on a whole patch (blank) and come back
-    on a box; Click markers stay picked on the whole patch."""
+    """Every source picked on the box stays picked on the whole patch, and
+    on the next box."""
     entries = ENTRIES if other_run else NO_RUN_ENTRIES
     _cells_box(widget, entries)
     combo = widget.add_marker_source_combo
@@ -163,18 +162,15 @@ def test_box_pick_comes_back(widget, monkeypatch, pick, other_run):
         assert widget.get_add_marker_source() == key
         calls.clear()
         widget.update_add_ui_state(whole_patch=True)
-        if key == CLICKS:
-            # Click markers fill a whole patch: kept picked
-            assert widget.get_add_marker_source() == CLICKS
-        else:
-            assert combo.currentIndex() == -1, (
-                "a whole patch never pre-selects")
-            assert widget.get_add_marker_source() == BLANK
+        # nuclei masks and Click markers fill a whole patch: kept picked
+        assert widget.get_add_marker_source() == key
         if not other_run:
-            # the grey item (never selected) and Click markers
-            assert combo.count() == 2
+            # the grey item (never selected), the nuclei masks and Click
+            # markers, as on a box
+            assert combo.count() == 3
             assert not widget._add_source_enabled(0)
             assert widget._add_source_enabled(1)
+            assert widget._add_source_enabled(2)
         widget.update_add_ui_state(whole_patch=False)
         assert widget.get_add_marker_source() == key
         assert calls == []
@@ -211,17 +207,17 @@ def test_box_pick_survives_close_box_and_preset_switch(widget, monkeypatch,
         assert widget.get_add_marker_source() == NUCLEI
         hh._start_add_whole()                     # Whole on the box row
         assert hh._add_whole_patch
-        assert widget.get_add_marker_source() == BLANK
+        assert widget.get_add_marker_source() == NUCLEI
         hh._add_secondary()                       # Close box
         assert not hh._add_running
         assert widget.get_add_marker_source() == NUCLEI
         hh._start_add_whole()                     # Whole patch, no box
         assert hh._add_running and hh._add_whole_patch
-        assert widget.get_add_marker_source() == BLANK
+        assert widget.get_add_marker_source() == NUCLEI
         widget.add_preset_combo.setCurrentIndex(0)            # Nuclei
         widget.add_preset_combo.setCurrentIndex(1)            # Cells
         assert hh._add_whole_patch, "a preset switch keeps the whole patch"
-        assert widget.get_add_marker_source() == BLANK
+        assert widget.get_add_marker_source() == NUCLEI
         hh._set_add_box_size_fraction(1.0 / 8.0)  # S
         assert not hh._add_whole_patch
         assert widget.get_add_marker_source() == NUCLEI
@@ -249,7 +245,7 @@ def test_a_run_picked_on_the_whole_patch_stays(widget, monkeypatch,
         hh._start_add()
         widget.add_marker_source_combo.setCurrentIndex(1)     # nuclei masks
         hh._start_add_whole()
-        assert widget.get_add_marker_source() == BLANK
+        assert widget.get_add_marker_source() == NUCLEI
         widget.add_marker_source_combo.setCurrentIndex(0)     # the user: run
         assert widget.get_add_marker_source() == RUN
         assert hh._add_run_state == "loading", "the picked run is read"
@@ -270,7 +266,7 @@ def test_close_box_from_whole_fires_no_source_callback(widget, monkeypatch,
         combo.setCurrentIndex(1)                              # nuclei masks
         widget.clear_add_touched()                            # untouched
         hh._start_add_whole()
-        assert widget.get_add_marker_source() == BLANK
+        assert widget.get_add_marker_source() == NUCLEI
         seen = []
         monkeypatch.setattr(widget, "_on_add_source_cb", seen.append,
                             raising=False)
@@ -378,10 +374,18 @@ def test_blank_run_reads_nothing(widget, monkeypatch, tmp_path):
     hh, _cells = _cells_page_with_a_run(widget, monkeypatch, tmp_path)
     try:
         hh._start_add()
-        # nuclei masks are set aside on a whole patch: the combo is blank
-        # (Click markers would stay picked)
         widget.add_marker_source_combo.setCurrentIndex(1)     # nuclei masks
         hh._start_add_whole()
+        assert widget.get_add_marker_source() == NUCLEI
+        # a blank From on the whole patch (a run is never picked for the
+        # user there): nothing is read
+        combo = widget.add_marker_source_combo
+        combo.blockSignals(True)
+        try:
+            combo.setCurrentIndex(-1)
+        finally:
+            combo.blockSignals(False)
+        hh._on_add_source_changed(widget.get_add_marker_source())
         assert widget.get_add_marker_source() == BLANK
         assert hh._add_run_guide is None and hh._add_run_state is None
         loads = []
@@ -516,8 +520,10 @@ def _case_b_no_box_after_a_box(widget, _mp):
 
 
 def _case_b_whole(widget, _mp):
+    # Anywhere is measured on a whole patch as on a box
     assert _page_brightness(widget, [dict(box_active=True, whole_patch=True,
-                                          brightness_auto=NAN)]) is None
+                                          brightness_auto=NAN)]) == (
+        AP.ADD_AUTO_PENDING)
 
 
 def _case_b_measuring(widget, _mp):
@@ -566,7 +572,8 @@ def _case_b_orch_whole(widget, mp):
     try:
         hh._start_add_whole()
         assert hh._add_whole_patch
-        assert _brightness(widget) is None, "a whole patch measures nothing"
+        # Anywhere is measured on a whole patch as on a box
+        assert _brightness(widget) == AP.ADD_AUTO_PENDING
     finally:
         hh._reject_add()
         _leave(widget)
@@ -600,11 +607,10 @@ def _case_m_no_box(widget, _mp):
 def _case_m_whole_belt(widget, mp):
     _cells_nuclei_page(widget)
     widget.update_add_ui_state(nuclei_auto=NAN)
-    # the whole patch never offers nuclei masks; if the source were still
-    # nuclei masks there, nothing would measure it
-    mp.setattr(widget, "get_add_marker_source", lambda: NUCLEI)
+    # the nuclei masks are measured on a whole patch as on a box
     widget.update_add_ui_state(whole_patch=True)
-    assert _markers(widget) == AP.ADD_HELP_NUCLEI_MASKS
+    assert widget.get_add_marker_source() == NUCLEI
+    assert _markers(widget) == AP.ADD_AUTO_PENDING
 
 
 def _case_m_measuring(widget, _mp):
@@ -836,7 +842,7 @@ def test_a_closed_whole_patch_does_not_filter_the_next_box(
     hh, _cells = _cells_page_with_a_run(widget, monkeypatch, tmp_path)
     try:
         hh._start_add_whole()
-        assert _texts(widget) == [ENTRIES[0][0], ENTRIES[2][0]]
+        assert _texts(widget) == [t for t, _e, _k in ENTRIES]
         hh._add_secondary()                                   # Close box
         assert not hh._add_running
         assert widget._add_ui.get("whole_patch") is False
@@ -899,7 +905,7 @@ def test_a_clear_drops_the_stale_zero_markers_line(monkeypatch):
 _RULE_STATES = [
     # (preset, From pick on the box, Look for nuclei)
     ("cells", 0, None),            # a run: kept on the whole patch
-    ("cells", 1, None),            # nuclei masks: set aside -> blank
+    ("cells", 1, None),            # nuclei masks: kept on the whole patch
     ("cells", 2, None),            # Click markers: kept on the whole patch
     ("nuclei", 1, "anywhere"),
     ("nuclei", 1, "inside"),
@@ -915,9 +921,11 @@ def test_one_whole_patch_rule(widget, monkeypatch, tmp_path, preset, pick,
     assert AP.whole_measures_nothing("cells", AP.SOURCE_RUN,
                                      AP.LOOK_ANYWHERE) is False
     assert AP.whole_measures_nothing("cells", AP.SOURCE_NUCLEI,
+                                     AP.LOOK_INSIDE) is False
+    assert AP.whole_measures_nothing("cells", "other",
                                      AP.LOOK_INSIDE) is True
     assert AP.whole_measures_nothing("nuclei", AP.SOURCE_RUN,
-                                     AP.LOOK_ANYWHERE) is True
+                                     AP.LOOK_ANYWHERE) is False
     assert AP.whole_measures_nothing("nuclei", AP.SOURCE_CLICKS,
                                      AP.LOOK_INSIDE) is False
     # markers are measured on a whole patch: Click markers on Cells, the

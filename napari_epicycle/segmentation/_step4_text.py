@@ -100,6 +100,14 @@ ROW_SPACING_STEP1 = "{z} × {y} × {x} µm (from Step 1)"
 ROW_SPACING_FILE = "{z} × {y} × {x} µm (from the file)"
 ROW_SPACING_USER = "{z} × {y} × {x} µm (set by you)"
 ROW_SPACING_NONE = "voxels"
+#: a Step 1 voxel size whose Z the image file did not give (Step 1 set Z
+#: equal to the pixel size): usable, said first and in amber, with a tooltip
+ROW_SPACING_STEP1_Z_ASSUMED = "Z assumed · {z} × {y} × {x} µm (from Step 1)"
+ROW_SPACING_Z_ASSUMED_TIP = (
+    "The file gave no Z step, so Z was filled in (the pixel size, or "
+    "ImageJ's default depth of 1 unit). If that is right, press Enter in "
+    "the Z box of the source in Step 1 to confirm it; if your slices are "
+    "further apart, type the Z step there, or here with Set spacing….")
 ROW_WIDE_LINE2 = "{axes} · {c} ch · {spacing}"
 ROW_WARN_CHANNELS = (
     "Channels don’t fit this model: it needs {n}, this stack has {k}.")

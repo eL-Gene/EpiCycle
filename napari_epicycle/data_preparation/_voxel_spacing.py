@@ -110,6 +110,17 @@ def _read_voxel_spacing(path) -> Optional[Tuple[float, float, float]]:
         return None
 
 
+def _recordable(zyx) -> bool:
+    """Step 1's one rule for a value read from a file or a store."""
+    try:
+        from napari_epicycle.data_preparation._state import (
+            detected_recordable,
+        )
+        return bool(detected_recordable(zyx))
+    except Exception:      # noqa: BLE001
+        return True
+
+
 def _rel_to(path: str, workspace: str) -> Optional[str]:
     try:
         rel = os.path.relpath(str(path), str(workspace))
@@ -167,7 +178,10 @@ def resolve_stack_spacing(record: Optional[Dict[str, Any]],
                     if read_file and store:
                         zyx = _real(_read_voxel_spacing(
                             str(Path(workspace) / store)))
-                        if zyx is not None:
+                        # a store an older version baked at a print
+                        # resolution is no voxel size (the same rule as
+                        # Step 1's recorded values, from the same package)
+                        if zyx is not None and _recordable(zyx):
                             return {"zyx": zyx, "source": "step1"}
                 else:
                     zyx = _real(info.get("voxel_size"))

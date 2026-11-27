@@ -268,3 +268,169 @@ def test_write_is_atomic_through_the_shared_writer(tmp_path, monkeypatch):
     assert data["downsample_factor"] == 1
     assert read_extraction_context(csv)["spacing"] == [2.0, 0.5, 0.5]
     assert not [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+
+
+# ---------------------------------------------------------------------------
+# An unknown voxel size is written as unknown: ``"spacing": null`` plus the
+# word saying where the spacing came from, and every reader takes ``null`` as
+# "measured in voxel units".
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_spacing_is_written_as_null_with_its_word(tmp_path):
+    csv = tmp_path / "p01_features.csv"
+    write_extraction_context(csv, spacing=None, spacing_source="unknown",
+                             downsample_factor=1)
+    data = json.loads((tmp_path / "p01_extraction_context.json")
+                      .read_text(encoding="utf-8"))
+    assert "spacing" in data and data["spacing"] is None
+    assert data["spacing_source"] == "unknown"
+    assert data["downsample_factor"] == 1
+    assert "extracted_at" in data
+
+
+def test_no_source_given_writes_no_source_key(tmp_path):
+    """A direct write without the word keeps the three keys of an
+    extraction and nothing else (the atomic-write test pins the same)."""
+    csv = tmp_path / "p01_features.csv"
+    write_extraction_context(csv, spacing=(2, 0.5, 0.5), downsample_factor=1)
+    data = read_extraction_context(csv)
+    assert set(data) == {"spacing", "downsample_factor", "extracted_at"}
+    write_extraction_context(csv, spacing=None, downsample_factor=1)
+    data = read_extraction_context(csv)
+    assert set(data) == {"spacing", "downsample_factor", "extracted_at"}
+    assert data["spacing"] is None
+
+
+def test_a_known_spacing_writes_its_word(tmp_path):
+    csv = tmp_path / "p01_features.csv"
+    write_extraction_context(csv, spacing=(2, 0.5, 0.5),
+                             spacing_source="step1", downsample_factor=1)
+    data = read_extraction_context(csv)
+    assert data["spacing"] == [2.0, 0.5, 0.5]
+    assert data["spacing_source"] == "step1"
+
+
+def test_a_pairing_key_cannot_overwrite_the_source(tmp_path):
+    csv = tmp_path / "p01_features.csv"
+    write_extraction_context(
+        csv, spacing=None, spacing_source="unknown", downsample_factor=1,
+        pairing={"spacing_source": "x", "spacing": [9, 9, 9],
+                 "match_run": "nuclei"})
+    data = read_extraction_context(csv)
+    assert data["spacing_source"] == "unknown"
+    assert data["spacing"] is None
+    assert data["match_run"] == "nuclei"
+
+
+def test_a_null_spacing_compares_as_voxel_units():
+    stored = {"spacing": None, "spacing_source": "unknown",
+              "downsample_factor": 1}
+    assert stale_reason(stored, current_spacing=(1, 1, 1),
+                        current_downsample=1) is None
+    assert stale_reason(stored, current_spacing=(2, 0.5, 0.5),
+                        current_downsample=1) == \
+        "spacing changed from voxel units to (2.0, 0.5, 0.5)"
+
+
+def test_a_null_spacing_still_flags_a_downsample_change():
+    stored = {"spacing": None, "spacing_source": "unknown",
+              "downsample_factor": 2}
+    assert stale_reason(stored, current_spacing=(1, 1, 1),
+                        current_downsample=1) == \
+        "downsample factor changed from 2 to 1"
+
+
+def test_a_known_spacing_keeps_its_reason_words():
+    stored = {"spacing": [2.0, 0.5, 0.5], "spacing_source": "step1",
+              "downsample_factor": 1}
+    assert stale_reason(stored, current_spacing=(4, 1, 1),
+                        current_downsample=1) == \
+        "spacing changed from (2.0, 0.5, 0.5) to (4.0, 1.0, 1.0)"
+
+
+def test_spacing_source_cannot_be_set_by_update(tmp_path):
+    from napari_epicycle.fusion_reconstruction._qc_extraction_context import (
+        update_extraction_context,
+    )
+    csv = tmp_path / "p01_features.csv"
+    write_extraction_context(csv, spacing=None, spacing_source="unknown",
+                             downsample_factor=1)
+    assert update_extraction_context(csv, spacing_source="user",
+                                     match_values_predate_edits=True)
+    data = read_extraction_context(csv)
+    assert data["spacing_source"] == "unknown"
+    assert data["spacing"] is None
+    assert data["match_values_predate_edits"] is True
+
+
+def test_an_old_1_1_1_sidecar_reads_as_before():
+    """A sidecar written before the word existed: ``[1, 1, 1]`` and no
+    ``spacing_source`` -- read back as that list, compared as before."""
+    from napari_epicycle.fusion_reconstruction._qc_extraction_context import (
+        VOXEL_UNITS, measured_zyx,
+    )
+    old = {"spacing": [1.0, 1.0, 1.0], "downsample_factor": 1}
+    assert measured_zyx(old) == [1.0, 1.0, 1.0]
+    assert stale_reason(old, current_spacing=(2, 0.5, 0.5),
+                        current_downsample=1) == \
+        "spacing changed from (1.0, 1.0, 1.0) to (2.0, 0.5, 0.5)"
+    assert tuple(VOXEL_UNITS) == (1.0, 1.0, 1.0)
+
+
+def test_measured_zyx_reads_null_as_voxel_units_and_absent_as_unknown():
+    from napari_epicycle.fusion_reconstruction._qc_extraction_context import (
+        measured_zyx,
+    )
+    assert measured_zyx({"spacing": [2, 0.5, 0.5]}) == [2.0, 0.5, 0.5]
+    assert measured_zyx({"spacing": None}) == [1.0, 1.0, 1.0]
+    assert measured_zyx({}) is None
+    assert measured_zyx({"spacing": "1,1,1"}) is None
+    assert measured_zyx({"spacing": [1, 2]}) is None
+    assert measured_zyx(None) is None
+    # a fresh list every call: a caller may change it
+    a = measured_zyx({"spacing": None})
+    a[0] = 9.0
+    assert measured_zyx({"spacing": None}) == [1.0, 1.0, 1.0]
+
+
+def test_an_unknown_current_size_is_named_voxel_units():
+    """The CURRENT side unknown (``None``) compares as voxel units and is
+    named so: never "(1.0, 1.0, 1.0)", a size nobody entered."""
+    stored = {"spacing": [3.0, 1.0, 1.0], "spacing_source": "qc_settings",
+              "downsample_factor": 1}
+    assert stale_reason(stored, current_spacing=None,
+                        current_downsample=1) == \
+        "spacing changed from (3.0, 1.0, 1.0) to voxel units"
+    # both unknown: nothing changed
+    unknown = {"spacing": None, "spacing_source": "unknown",
+               "downsample_factor": 1}
+    assert stale_reason(unknown, current_spacing=None,
+                        current_downsample=1) is None
+    # an old [1, 1, 1] sidecar was voxel units too: nothing changed
+    old = {"spacing": [1.0, 1.0, 1.0], "downsample_factor": 1}
+    assert stale_reason(old, current_spacing=None,
+                        current_downsample=1) is None
+    # the downsample factor is still compared
+    assert stale_reason(dict(unknown, downsample_factor=2),
+                        current_spacing=None, current_downsample=1) == \
+        "downsample factor changed from 2 to 1"
+
+
+def test_pairing_fields_never_carry_an_extraction_key_into_the_file(
+        tmp_path):
+    """With NO source word given, a pairing field named like an extraction
+    key (``spacing_source``, ``downsample_factor``, ``extracted_at``) must
+    not reach the file: the source key stays absent and the others are the
+    extraction's own."""
+    csv = tmp_path / "p01_features.csv"
+    write_extraction_context(
+        csv, spacing=[2.0, 0.5, 0.5], downsample_factor=1,
+        pairing={"spacing_source": "x", "downsample_factor": 9,
+                 "extracted_at": "never", "match_run": "nuclei"})
+    data = read_extraction_context(csv)
+    assert "spacing_source" not in data
+    assert data["downsample_factor"] == 1
+    assert data["extracted_at"] != "never"
+    assert data["spacing"] == [2.0, 0.5, 0.5]
+    assert data["match_run"] == "nuclei"

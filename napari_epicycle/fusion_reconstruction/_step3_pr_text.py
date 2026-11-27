@@ -168,6 +168,44 @@ S3_LOG_NEW_RUN_CHANNELS = (
 S3_LOG_NEW_RUN_PICK = (
     "[SETTINGS] New run {run}: its model does not record its channels; pick "
     "the channel to segment.")
+#: a run with no channels saved and no prediction or reconstruction: its
+#: boxes are filled from its model, as a new run's are (shown, not saved
+#: until a channel is changed).  Each line is ``{head}`` + its own words;
+#: the head names the run by its display name.  One head for every case:
+#: the run's model and Start from are saved even when its channels are not.
+#: "not predicted yet" also covers a run whose prediction / reconstruction
+#: records all lack valid channels -- the seed reads such a record as no
+#: record; the shorter words were kept on purpose
+S3_LOG_SEED_HEAD = (
+    "[SETTINGS] Step 3 run {run}: no channels saved for this run yet, and "
+    "not predicted yet")
+#: the channels its model was trained on
+S3_LOG_SEED_CHANNELS = (
+    "{head}, so the channels are the ones its model was trained on — "
+    "channel to segment {seg}, helper {helper}. They follow the model "
+    "until you change them or predict.")
+#: ... a blank box: the model records no channels (a Cellpose built-in,
+#: or no training config beside either view's weights)
+S3_LOG_SEED_PICK = (
+    "{head}, and its model does not record its channels; pick the channel "
+    "to segment.")
+#: ... the two views' models were trained on different channels
+S3_LOG_SEED_DISAGREE = (
+    "{head}, and its lateral and axial models were trained on different "
+    "channels; pick the channel to segment.")
+#: ... one view's model records its channels, the other's does not;
+#: ``{with_view}`` / ``{without_view}`` are "lateral" / "axial"
+S3_LOG_SEED_MIXED = (
+    "{head}, and its {with_view} model records its channels but its "
+    "{without_view} model does not; pick a trained model for the "
+    "{without_view} view, or pick the channel to segment.")
+#: ... a view has no model
+S3_LOG_SEED_NO_MODEL = "{head}; pick a model for both views first."
+#: the run's saved specks, put back while its channels come from its
+#: model (the seed line says where those come from)
+S3_LOG_RUN_SPECKS = (
+    "[SETTINGS] This run’s settings: Remove specks smaller than {n} "
+    "voxels.")
 S3_LOG_NUCLEI_SPECKS = (
     "[SETTINGS] EpiCycle defaults for the nuclei model: Remove specks "
     "smaller than {n} voxels.")
@@ -228,7 +266,9 @@ S3_BROWSE_CONFIRM_BODY = (
 S3_BROWSE_CONFIRM = "Change folder"
 
 # ── The run row ────────────────────────────────────────────────────────────
-S3_RUN_LABEL = "Run:"
+#: "Step 3 run", not a bare "Run": a new project's run is "Default", and
+#: Step 2 has runs of its own
+S3_RUN_LABEL = "Step 3 run:"
 S3_NEW_RUN_BTN = "New Run"
 S3_MANAGE_RUNS_BTN = "Manage"
 
@@ -737,6 +777,16 @@ S3_ROW_SPACING_NONE = "voxels"
 S3_ROW_SPACING_BY_SOURCE = {"step1": S3_ROW_SPACING_STEP1,
                             "file": S3_ROW_SPACING_FILE,
                             "user": S3_ROW_SPACING_USER}
+#: a Step 1 value whose Z the file did not give (Step 1 set Z equal to the
+#: pixel size): usable, but said -- first, so a narrow row keeps it -- in
+#: amber on Session's and Curation's rows
+S3_ROW_SPACING_STEP1_Z_ASSUMED = "Z assumed · {z} × {y} × {x} µm (from Step 1)"
+#: the tooltip of such a row
+S3_ROW_SPACING_Z_ASSUMED_TIP = (
+    "The file gave no Z step, so Z was filled in (the pixel size, or "
+    "ImageJ's default depth of 1 unit). If that is right, press Enter in "
+    "the Z box of the source in Step 1 to confirm it; if your slices are "
+    "further apart, type the Z step there, or here with Set spacing….")
 #: the row's tooltip on the amber word
 S3_ROW_SPACING_NONE_TIP = (
     "No voxel size — features are measured in voxels. Set spacing… gives "
@@ -829,9 +879,26 @@ def spacing_row_text(spacing: Optional[Dict[str, Any]]) -> str:
         z, y, x = (float(v) for v in zyx)
     except (TypeError, ValueError):
         return S3_ROW_SPACING_NONE
-    tpl = S3_ROW_SPACING_BY_SOURCE.get(spacing.get("source"),
-                                       S3_ROW_SPACING_FILE)
+    if spacing_z_assumed(spacing):
+        tpl = S3_ROW_SPACING_STEP1_Z_ASSUMED
+    else:
+        tpl = S3_ROW_SPACING_BY_SOURCE.get(spacing.get("source"),
+                                           S3_ROW_SPACING_FILE)
     return tpl.format(z=_number(z), y=_number(y), x=_number(x))
+
+
+def spacing_z_assumed(spacing: Optional[Dict[str, Any]]) -> bool:
+    """True for a Step 1 value marked as having an assumed Z (display
+    only: the mark is added when Session's rows are built, never stored)."""
+    return (isinstance(spacing, dict) and spacing.get("source") == "step1"
+            and spacing.get("z_assumed") is True)
+
+
+def spacing_row_warn(spacing: Optional[Dict[str, Any]]) -> bool:
+    """Whether the voxel-size line is amber: no voxel size, or a Step 1
+    value with an assumed Z."""
+    return (spacing_row_text(spacing) == S3_ROW_SPACING_NONE
+            or spacing_z_assumed(spacing))
 
 
 # ── S1: one voxel size per patch ─────

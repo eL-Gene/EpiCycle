@@ -29,11 +29,14 @@ from ._state import (
     empty_state, all_patches,
     resolve_box_style, set_patch_box_style, set_source_box_style,
     set_corrupt_state_hook,
+    fill_unset_voxel, set_voxel_flag_if_value, check_user_row_header,
+    voxel_z_assumed, _fillable_voxel, detected_over_ceiling,
+    detected_recordable, drop_unrecordable_detected, DETECTED_MAX_XY_UM,
 )
 from packages.epicycle_largedata.multiscale import (
     convert_to_ome_zarr, open_multiscale, read_store_source, sampled_file_sha,
 )
-from packages.epicycle_largedata.axes import read_voxel_spacing
+from packages.epicycle_largedata.axes import read_voxel_spacing_detail
 from packages.epicycle_largedata.exceptions import ConvertCancelled
 # Step-1 preprocessing engine (Brick 2a — pure, napari-free).  Referenced
 # through the MODULE GLOBALS below (not called by dotted path) so a test can
@@ -514,6 +517,8 @@ class _ExtractWorker(QObject):
                         source_display_name=job.persist["source_display_name"],
                         source_axes=job.persist["source_axes"],
                         voxel_size=job.persist["voxel_size"],
+                        voxel_size_source=job.persist.get("voxel_size_source"),
+                        voxel_z_from_xy=job.persist.get("voxel_z_from_xy"),
                         source_kind=job.source_kind,
                         source_from=job.persist.get("source_from"),
                     )
@@ -2312,10 +2317,18 @@ class DataPreparationController:
         # NOT trigger a restore (belt-and-suspenders — `addItem` never
         # auto-selects and `clear` yields current=None, both already safe).
         self._suspend_source_restore = False
-        # `read_voxel_spacing` memo keyed by normalized path -> (mtime, voxel),
-        # so arrowing a folder (or arrow-back) opens each source header at MOST
-        # once (grill FIX A); a mtime change re-detects.  A "user"-override source
-        # never reaches it (short-circuited in `_resolve_voxel_for_source`).
+        # Header-read memo keyed by normalized path -> (mtime, voxel,
+        # z_from_xy), so arrowing a folder (or arrow-back) opens each source
+        # header at MOST once (grill FIX A); a mtime change re-detects.  A
+        # "user"-override source never reaches it on select (short-circuited
+        # in `_resolve_voxel_for_source`).
+        # Which file the voxel spins currently describe (set wherever they are
+        # filled); an extract of a DIFFERENT, loaded file does not take them.
+        self._voxel_spins_source = None
+        self._voxel_baseline_recorded = False
+        # Whether the detected value in the spins has a Z not measured by the
+        # file (what the label says); an extract stores it with that value.
+        self._voxel_spins_z_assumed = False
         self._voxel_detect_cache = {}
         # Debounced save-on-edit.  Edits stage an `upsert_source`
         # kwargs dict into `_pending_source_edits` (captured with the workspace
@@ -2839,6 +2852,14 @@ class DataPreparationController:
         # A recipe edited before any source was picked is adopted here (unless
         # this source already has one of its own) - see the helper.
         self._adopt_pending_recipe_for(path, row)
+        # The header size of a source the user already worked with (it has a
+        # row) is RECORDED now, typed "detected", when the row has none --
+        # never a new row, never over a set value.  A failure never blocks
+        # the select.
+        try:
+            self._record_detected_voxel_at_select(path, row)
+        except Exception as exc:   # noqa: BLE001 -- best-effort
+            self._log("STEP1-RESTORE", f"voxel record at select skipped: {exc}")
         # "Worked-with" persistence: a PASSIVE select does NOT write
         # to disk.  The source's registry row is created (path-keyed) on the
         # FIRST genuine action — an alias/voxel/axes EDIT, Prepare, or Extract —
@@ -3387,6 +3408,10 @@ class DataPreparationController:
         if stub.get("voxel_size") and stub.get("voxel_size_source") == "user":
             winner["voxel_size"] = stub["voxel_size"]
             winner["voxel_size_source"] = "user"
+            # a typed value stays the user's: no header check retypes it
+            if stub.get("voxel_header_checked") is True:
+                winner["voxel_header_checked"] = True
+            winner["voxel_z_from_xy"] = False
 
     def _relink_row_for(self, state, path, workspace):
         """Re-point an EXISTING registry row at *path* when *path* is plainly the
@@ -3606,15 +3631,7 @@ class DataPreparationController:
         self._apply_detected_axes_for_source(path)
 
         # --- voxel ---------------------------------------------------------
-        try:
-            effective, eff_src, baseline, _base_src = self._resolve_voxel_for_source(
-                path, row)
-            if hasattr(w, "set_detected_voxel_size"):
-                w.set_detected_voxel_size(*baseline)   # the reset target
-            if hasattr(w, "apply_voxel_size"):
-                w.apply_voxel_size(*effective, source=eff_src)
-        except Exception as exc:   # noqa: BLE001 — voxel restore is best-effort
-            self._log("STEP1-RESTORE", f"voxel restore skipped: {exc}")
+        self._show_voxel_for_row(path, row)
 
         # --- preprocessing recipe -------------------------------------
         # Load the saved recipe verbatim into the ② columns (an empty/absent
@@ -3627,6 +3644,169 @@ class DataPreparationController:
                 w.set_recipe_from_json(row.get("recipe") if row else None)
             except Exception as exc:   # noqa: BLE001 — recipe restore best-effort
                 self._log("STEP1-RESTORE", f"recipe restore skipped: {exc}")
+
+    def _show_voxel_for_row(self, path, row):
+        """Fill the voxel spins, the ↺ baseline and the label for *path* from
+        its registry *row* (or the header).  Best-effort; never raises."""
+        w = self.widget
+        try:
+            effective, eff_src, baseline, _base_src = self._resolve_voxel_for_source(
+                path, row)
+            if hasattr(w, "set_detected_voxel_size"):
+                w.set_detected_voxel_size(*baseline)   # the reset target
+            if hasattr(w, "apply_voxel_size"):
+                w.apply_voxel_size(*effective, source=eff_src)
+            # The spins now describe THIS file -- an extract of a different,
+            # loaded file must not take them (`_gather_persist_params`).
+            self._voxel_spins_source = path
+            self._push_voxel_notes(w, path, row, eff_src, _base_src, baseline)
+        except Exception as exc:   # noqa: BLE001 — voxel restore is best-effort
+            self._log("STEP1-RESTORE", f"voxel restore skipped: {exc}")
+
+    def _detected_voxel_flag_cached(self, path):
+        """Whether *path*'s header gave no measured Z -- Z was filled in from
+        its XY size, or is ImageJ's default depth of 1 unit (a stack saved with no
+        slice spacing) -- from the same memoized read as
+        :meth:`_detected_voxel_cached`; ``None`` when the header gives no voxel
+        size.  This is what the row's ``voxel_z_from_xy`` stores: "Z not
+        measured by the file" (the key keeps its first name)."""
+        val = self._detected_voxel_cached(path)
+        if val is None:
+            return None
+        hit = self._voxel_detect_cache.get(_norm_path(path))
+        return bool(hit is not None and len(hit) > 3 and (hit[2] or hit[3]))
+
+    @staticmethod
+    def _select_fill_value(zyx):
+        """``[z, y, x]`` when a header size may be recorded as detected (a real
+        value and an XY no larger than the print-resolution ceiling), else
+        ``None``."""
+        fill = _fillable_voxel(zyx)
+        if fill is None or not detected_recordable(fill):
+            return None
+        return fill
+
+    def _detected_imagej_default_cached(self, path):
+        """Whether *path*'s header Z is ImageJ's default depth of 1 unit (a
+        stack ImageJ saved with no slice spacing), from the memoized read."""
+        if self._detected_voxel_cached(path) is None:
+            return False
+        hit = self._voxel_detect_cache.get(_norm_path(path))
+        return bool(hit is not None and len(hit) > 3 and hit[3])
+
+    def _detected_imagej_unit_cached(self, path):
+        """The unit an ImageJ default depth is in (as the file names it), or
+        ``None``."""
+        if not self._detected_imagej_default_cached(path):
+            return None
+        hit = self._voxel_detect_cache.get(_norm_path(path))
+        return hit[4] if hit is not None and len(hit) > 4 else None
+
+    def _header_z_not_measured(self, path, zyx):
+        """True when *zyx* is *path*'s header value (at spin precision) and
+        the header measured no Z (filled from XY, or ImageJ's default)."""
+        try:
+            det = self._detected_voxel_cached(path)
+            return bool(det is not None
+                        and self._same_at_spin_precision(det, zyx)
+                        and self._detected_voxel_flag_cached(path))
+        except Exception:      # noqa: BLE001 -- a label nicety
+            return False
+
+    def _record_detected_voxel_at_select(self, path, row):
+        """Record what the panel shows for a selected source that HAS a row.
+
+        The value comes from *path*'s own header read (memoized: the restore
+        just read it), never from the spins, so a select of one file can never
+        record another's size.  Three cases, all queued through the guarded
+        flush (each re-checks the row as it stands at the flush):
+
+        * an unset row (no voxel size, or 1/1/1) takes the header size typed
+          ``"detected"`` with its ``voxel_z_from_xy`` -- unless the XY size is
+          over the print-resolution ceiling (shown, not recorded; the label
+          says so);
+        * a ``"detected"`` row recorded before the flag existed gets the flag
+          when the header still gives the recorded value;
+        * a ``"user"`` row not yet checked has its header read ONCE: equal at
+          the spins' precision -> retyped ``"detected"`` with the flag;
+          either way it is marked checked so no later select opens it.
+
+        A row-less source writes nothing.  Selecting is blocked while an
+        extract or Prepare runs (``_set_step1_busy`` locks the source list), so
+        no fill is queued mid-run by a select; a fill landing mid-run is still
+        guarded by the unset rule and the run's own fill writes the same value."""
+        if not row or not path:
+            return
+        dec = self._voxel_spin_decimals()
+        if _classify_voxel_source(row.get("voxel_size")) == "unknown":
+            det = self._detected_voxel_cached(path)
+            if det is None or self._is_unit_voxel(det):
+                return
+            fill = self._select_fill_value(det)
+            if fill is None:
+                self._log("STEP1-RESTORE",
+                          f"header voxel {tuple(det)} not recorded at select "
+                          f"(XY over {DETECTED_MAX_XY_UM:g} um or out of range)")
+                return
+            self._queue_source_save(
+                path=path, voxel_size=fill, voxel_size_source="detected",
+                voxel_z_from_xy=bool(self._detected_voxel_flag_cached(path)),
+                _fill_unset=True)
+            return
+        vtype = row.get("voxel_size_source")
+        if vtype == "detected" and not detected_recordable(
+                row.get("voxel_size")):
+            # An older version typed a baked print resolution "detected":
+            # the value is dropped (the row becomes unknown, its flag goes).
+            try:
+                zyx = [float(v) for v in row.get("voxel_size") or ()]
+            except (TypeError, ValueError):
+                return
+            self._queue_source_save(
+                path=path, recorded_zyx=zyx, decimals=dec,
+                _fill_unset="drop_detected")
+            name = row.get("display_name") or os.path.splitext(
+                os.path.basename(str(path)))[0]
+            self._log("STEP1-RESTORE",
+                      f"the voxel size recorded earlier for {name} "
+                      f"({max(zyx[1:]):.4g} \u00b5m) looks like a print "
+                      "resolution and was dropped; its patches now measure in "
+                      "voxels until you type the real values")
+            return
+        if vtype == "detected":
+            flag = row.get("voxel_z_from_xy")
+            if flag is True:
+                return
+            if flag is False and not self._detected_imagej_default_cached(path):
+                return       # a False the header agrees with (cheap: memo)
+            rec = self._recorded_detected(row)
+            det = self._detected_voxel_cached(path)
+            if rec is None or det is None or not self._same_at_spin_precision(
+                    det, rec):
+                return
+            self._queue_source_save(
+                path=path, recorded_zyx=list(rec),
+                flag=bool(self._detected_voxel_flag_cached(path)),
+                decimals=dec, _fill_unset="flag")
+            return
+        if vtype == "user" and row.get("voxel_header_checked") is not True:
+            try:
+                uv = [float(v) for v in row.get("voxel_size") or ()]
+            except (TypeError, ValueError):
+                return
+            if len(uv) != 3:
+                return
+            det = self._detected_voxel_cached(path)     # the ONE open
+            hdr = (list(det) if det is not None
+                   and detected_recordable(det) else None)
+            flag = bool(self._detected_voxel_flag_cached(path))
+            self._queue_source_save(
+                path=path, user_zyx=uv, header_zyx=hdr, header_z_from_xy=flag,
+                decimals=dec, _fill_unset="user_check")
+            if hdr is not None and self._same_at_spin_precision(hdr, uv):
+                # The panel follows what will be stored: the header's value.
+                self._show_voxel_for_row(path, dict(
+                    row, voxel_size_source="detected", voxel_z_from_xy=flag))
 
     def _detected_voxel_cached(self, path):
         """``read_voxel_spacing(path)`` MEMOIZED per ``(normalized path, mtime)``
@@ -3643,9 +3823,163 @@ class DataPreparationController:
         hit = cache.get(key)
         if hit is not None and hit[0] == mtime:
             return hit[1]
-        val = read_voxel_spacing(path)
-        cache[key] = (mtime, val)
+        # ONE header open gives both the value and whether its Z was filled
+        # from XY (kept for `_header_z_from_xy`, so the label never re-opens).
+        detail = read_voxel_spacing_detail(path)
+        val = detail.get("zyx") if isinstance(detail, dict) else None
+        cache[key] = (mtime, val,
+                      bool(isinstance(detail, dict) and detail.get("z_from_xy")),
+                      bool(isinstance(detail, dict)
+                           and detail.get("z_imagej_default")),
+                      (detail.get("z_imagej_unit")
+                       if isinstance(detail, dict) else None))
         return val
+
+    def _voxel_spin_decimals(self):
+        """The decimals the voxel spins keep (read from the widget, so the
+        comparison below cannot drift from the panel); 3 when unknown."""
+        try:
+            d = int(self.widget.voxel_z_spin.decimals())
+            return d if 0 <= d <= 12 else 3
+        except Exception:      # noqa: BLE001 -- a fake / older widget
+            return 3
+
+    def _same_at_spin_precision(self, a, b):
+        """True when two ``(z, y, x)`` agree at the precision the spins show.
+
+        An extract records the spins' value (rounded to their decimals) while
+        the file's header keeps full precision, so 0.208 recorded from a
+        0.20756646 header is the SAME spacing, not a changed file."""
+        try:
+            d = self._voxel_spin_decimals()
+            return all(round(float(u), d) == round(float(v), d)
+                       for u, v in zip(a, b)) and len(tuple(a)) == len(tuple(b))
+        except Exception:      # noqa: BLE001
+            return False
+
+    def _header_z_from_xy(self, path, zyx):
+        """True when *zyx* is *path*'s header spacing and that header recorded
+        no Z, so Z was filled from the XY pixel size.
+
+        A filled Z always EQUALS the X (or Y) value, so a spacing whose Z
+        differs from both is answered at once.  Otherwise the answer comes from
+        the memoized header read (:meth:`_detected_voxel_cached` keeps it from
+        the same single open).  Never raises; ``False`` when unsure."""
+        try:
+            z, y, x = (float(v) for v in zyx)
+            if not (self._same_at_spin_precision((z,), (x,))
+                    or self._same_at_spin_precision((z,), (y,))):
+                return False
+            det = self._detected_voxel_cached(path)   # memoized
+            if det is None or not self._same_at_spin_precision(det, (z, y, x)):
+                return False                           # not the header value
+            hit = self._voxel_detect_cache.get(_norm_path(path))
+            return bool(hit is not None and len(hit) > 2 and hit[2])
+        except Exception:      # noqa: BLE001 -- a label nicety, never fatal
+            return False
+
+    @staticmethod
+    def _recorded_detected(row):
+        """The ``(z, y, x)`` a ``"detected"`` registry row RECORDED (a real,
+        positive, non-1/1/1 value), else ``None``."""
+        if not row or row.get("voxel_size_source") != "detected":
+            return None
+        try:
+            v = tuple(float(x) for x in row.get("voxel_size") or ())
+        except (TypeError, ValueError):
+            return None
+        if len(v) != 3 or not all(x > 0 for x in v):
+            return None
+        if all(abs(x - 1.0) < 1e-9 for x in v):
+            return None
+        if not detected_recordable(v):
+            return None     # an older version's print DPI: not a voxel size
+        return v
+
+    def _push_voxel_notes(self, w, path, row, eff_src, base_src, baseline):
+        """The two small notes on the "detected" label, after the spins were
+        filled for *path*.
+
+        * A ``"detected"`` row shows its RECORDED value (what Steps 3 and 4
+          read).  Its header is then read ONCE (memoized per path + mtime) to
+          say whether the file still agrees: no readable spacing (the file
+          moved or lost its tags) -> "recorded for this source"; a different
+          one -> "file now says ..., ↺ to use it".
+        * "Z assumed" when the shown detected value is the header's and the
+          header measured no Z (never for a user value: no header is opened
+          for one)."""
+        rec = self._recorded_detected(row) if eff_src == "detected" else None
+        note = None
+        file_over = False
+        if rec is not None:
+            hdr = self._detected_voxel_cached(path)
+            if hdr is None or self._is_unit_voxel(hdr):
+                note = "recorded"
+            elif not detected_recordable(hdr):
+                # the file now gives a print resolution, which ↺ would
+                # refuse: say so instead of offering it
+                note = "recorded"
+                file_over = True
+            elif not self._same_at_spin_precision(hdr, rec):
+                note = tuple(float(v) for v in hdr)
+        # ↺ on a recorded value re-reads the file (`on_voxel_reset`).
+        self._voxel_baseline_recorded = rec is not None
+        if rec is not None and isinstance(row.get("voxel_z_from_xy"), bool):
+            # A recorded value says what was recorded with it (what Steps 3
+            # and 4 read), even when the file moved or changed since.
+            assumed = voxel_z_assumed(row)
+        else:
+            # Asked whatever the note: a value that IS the header's (at spin
+            # precision) keeps its "Z assumed".
+            assumed = (eff_src == "detected" and base_src == "detected"
+                       and self._header_z_not_measured(path, baseline))
+        self._voxel_spins_z_assumed = bool(assumed)
+        if hasattr(w, "set_voxel_z_assumed"):
+            w.set_voxel_z_assumed(assumed)
+        # A header that gives a print DPI, not a voxel size: the spins do not
+        # take it (the resolver leaves them unknown), the line says why.  And
+        # a Z that is ImageJ's default depth (the file has no spacing).
+        z_out = None
+        if hasattr(w, "set_voxel_over_ceiling"):
+            over = file_over
+            if eff_src == "user":
+                # a typed value is kept; a print-resolution-sized one is said
+                # (the typed form of the line) only on a row an older version
+                # saved -- a value typed now has no ceiling and no note
+                over = (detected_over_ceiling((row or {}).get("voxel_size"))
+                        and (row or {}).get("voxel_header_checked") is not True)
+            elif rec is None and eff_src == "unknown":
+                hdr0 = self._detected_voxel_cached(path)
+                over = (hdr0 is not None and detected_over_ceiling(hdr0))
+                if (not over and row
+                        and row.get("voxel_size_source") == "detected"):
+                    over = detected_over_ceiling(row.get("voxel_size"))
+                if (not over and hdr0 is not None
+                        and not self._is_unit_voxel(hdr0)
+                        and not detected_recordable(hdr0)):
+                    z_out = hdr0[0]          # XY fine, Z out of the range
+            w.set_voxel_over_ceiling(over)
+        if hasattr(w, "set_voxel_z_out_of_range"):
+            w.set_voxel_z_out_of_range(z_out)
+        if hasattr(w, "set_voxel_z_default_depth"):
+            hdr = self._detected_voxel_cached(path) if (
+                eff_src == "detected") else None
+            default = (hdr is not None
+                       and self._same_at_spin_precision(hdr, baseline)
+                       and self._detected_imagej_default_cached(path))
+            try:
+                w.set_voxel_z_default_depth(
+                    default, unit=self._detected_imagej_unit_cached(path))
+            except TypeError:          # an older widget without the unit
+                w.set_voxel_z_default_depth(default)
+        if hasattr(w, "set_voxel_detected_note"):
+            # what the file says now, and whether ITS Z was measured
+            note_assumed = (isinstance(note, tuple)
+                            and bool(self._detected_voxel_flag_cached(path)))
+            try:
+                w.set_voxel_detected_note(note, z_assumed=note_assumed)
+            except TypeError:          # an older widget
+                w.set_voxel_detected_note(note)
 
     def _resolve_voxel_for_source(self, path, row, store_meta=None):
         """The effective voxel + its honest source (A7 precedence).
@@ -3655,12 +3989,16 @@ class DataPreparationController:
         restores.  Precedence:
 
           1. registry ``voxel_size`` when ``voxel_size_source == "user"`` — the
-             SOLE authority for the spins + export;
+             SOLE authority for the spins + export; likewise a ``"detected"``
+             row's recorded value (shown as "detected"; what is RECORDED is
+             what the panel shows, so Steps 3 and 4 never read a value the
+             panel does not show — ↺ is how a changed file is followed);
           2. the store NGFF level-0 ``scale`` (only when non-unit) — display-only;
           3. ``read_voxel_spacing`` header detect (only when non-unit, MEMOIZED);
           4. unknown ``(1, 1, 1)``.
 
-        PERF (grill FIX A): a ``"user"`` override SHORT-CIRCUITS the header
+        PERF (grill FIX A): a ``"user"`` override (and a recorded
+        ``"detected"`` row) SHORT-CIRCUITS the header
         detect entirely — ``read_voxel_spacing`` is never called for a
         user-overridden source (the detect would be discarded by precedence
         anyway), so selecting such a source opens ZERO file headers.  A
@@ -3672,7 +4010,10 @@ class DataPreparationController:
         store_baseline = None
         if store_meta is not None:
             v = self._voxel_from_store_meta(store_meta)
-            if v is not None and not self._is_unit_voxel(v):
+            # a store an older version baked at a print resolution is no
+            # voxel size: the boxes do not take it (the line says why)
+            if (v is not None and not self._is_unit_voxel(v)
+                    and detected_recordable(v)):
                 store_baseline = v
 
         # (1) USER override wins the spins AND short-circuits the header detect:
@@ -3689,12 +4030,20 @@ class DataPreparationController:
             except (TypeError, ValueError):
                 pass
 
-        # No user override -> detected baseline: (2) store scale, else (3) the
+        # A RECORDED "detected" value is shown as recorded, header-free: what
+        # Steps 3 and 4 read is what the panel shows (and ↺ restores it).
+        rec = self._recorded_detected(row)
+        if rec is not None:
+            return rec, "detected", rec, "detected"
+
+        # No recorded value -> detected baseline: (2) store scale, else (3) the
         # MEMOIZED header detect, else (4) unknown.
         baseline = store_baseline
         if baseline is None:
             v = self._detected_voxel_cached(path)
-            if v is not None and not self._is_unit_voxel(v):
+            # a print resolution (XY over the ceiling) is no usable header:
+            # the spins keep the unknown default and the line says why
+            if v is not None and detected_recordable(v):
                 baseline = v
         baseline_source = "detected" if baseline is not None else "unknown"
         if baseline is None:
@@ -3787,8 +4136,17 @@ class DataPreparationController:
         try:
             state = load_state(ws)   # fresh — never clobber a concurrent write
             for kw in edits:
+                # A COPY: the marker is popped from the copy only, so a failed
+                # save keeps the buffered edit WITH its marker (the retry is
+                # guarded again) and the stored row never carries the key.
+                kw = dict(kw)
+                guard = kw.pop("_fill_unset", None)
                 try:
-                    upsert_source(state, **kw)
+                    if guard:
+                        self._apply_guarded_voxel_edit(state, guard, kw)
+                        self._log_user_row_retyped(state, guard, kw)
+                    else:
+                        upsert_source(state, **kw)
                 except ValueError:
                     continue
             save_state(ws, state)
@@ -3837,6 +4195,45 @@ class DataPreparationController:
             self._log("STEP1-SAVE", f"source save succeeded after {fails} retries")
             self._state_save_fail_streak = 0
         self._clear_state_problem()
+
+    @staticmethod
+    def _apply_guarded_voxel_edit(state, guard, kw):
+        """Apply one guarded voxel edit queued at select onto the flush's
+        working *state* (the row as it stands after every earlier queued
+        edit, never a separate disk read).  None of them creates a row."""
+        path = kw.get("path")
+        if guard == "flag":
+            set_voxel_flag_if_value(state, path, kw.get("recorded_zyx"),
+                                    kw.get("flag"), kw.get("decimals", 3))
+        elif guard == "drop_detected":
+            drop_unrecordable_detected(state, path, kw.get("recorded_zyx"),
+                                       kw.get("decimals", 3))
+        elif guard == "user_check":
+            check_user_row_header(state, path, kw.get("user_zyx"),
+                                  kw.get("header_zyx"),
+                                  kw.get("header_z_from_xy"),
+                                  kw.get("decimals", 3))
+        else:
+            fill_unset_voxel(state, path, kw.get("voxel_size"),
+                             kw.get("voxel_size_source") or "detected",
+                             kw.get("voxel_z_from_xy"))
+
+    def _log_user_row_retyped(self, state, guard, kw):
+        """Say in the log when the one-time check retyped a typed value as
+        the file's header value."""
+        if guard != "user_check":
+            return
+        try:
+            row = self._find_source_row(state, kw.get("path"))
+            if not row or row.get("voxel_size_source") != "detected":
+                return
+            name = row.get("display_name") or os.path.splitext(
+                os.path.basename(str(kw.get("path") or "")))[0]
+            self._log("STEP1-RESTORE",
+                      f"{name}: the voxel size saved as typed equals the "
+                      "file's header; now marked as read from the file")
+        except Exception:   # noqa: BLE001 -- a log line
+            pass
 
     def on_display_name_edited(self):
         """``display_name_edit.editingFinished`` — persist the alias (last-wins)
@@ -4002,14 +4399,27 @@ class DataPreparationController:
         path = getattr(self, "_selected_source_path", None)
         if not path:
             return
+        self._voxel_spins_source = path
         v = self._prepare_voxel_size()   # (z, y, x) or None for the 1/1/1 default
+        self._voxel_spins_z_assumed = False
+        # A typed (or confirmed) value is the user's for good: marked checked
+        # so the one-time header check never retypes it.
         if v is None:
             self._queue_source_save(
-                path=path, voxel_size=[1.0, 1.0, 1.0], voxel_size_source="unknown")
+                path=path, voxel_size=[1.0, 1.0, 1.0], voxel_size_source="unknown",
+                voxel_z_from_xy=False, voxel_header_checked=True)
         else:
             self._queue_source_save(
-                path=path, voxel_size=list(v), voxel_size_source="user")
+                path=path, voxel_size=list(v), voxel_size_source="user",
+                voxel_z_from_xy=False, voxel_header_checked=True)
         self._reapply_display_physical_scale()
+
+    def on_voxel_z_confirmed(self):
+        """The user confirmed the Z step of a value whose Z was assumed (a key
+        or wheel event on the Z spin, then ``editingFinished``), even with the
+        same number: the value becomes the user's and the assumption is
+        cleared."""
+        self.on_voxel_edited()
 
     def on_voxel_reset(self):
         """``↺`` reset — CLEAR the user override: persist the DETECTED baseline
@@ -4033,26 +4443,67 @@ class DataPreparationController:
         if not path:
             return
         baseline = getattr(self.widget, "_detected_voxel_size", (1.0, 1.0, 1.0))
-        # Only ↺ (explicit) may open the header — and only when the select-time
-        # baseline is the unit placeholder (FIX A left it unit for a user row).
-        if self._is_unit_voxel(baseline):
+        # Only ↺ (explicit) may open the header — when the select-time baseline
+        # is the unit placeholder (FIX A left it unit for a user row), or is a
+        # RECORDED "detected" value (shown header-free): ↺ is how a file whose
+        # header changed is followed.  An unreadable header keeps the value.
+        recorded = (getattr(self, "_voxel_baseline_recorded", False)
+                    and _norm_path(getattr(self, "_voxel_spins_source", None)
+                                   or "") == _norm_path(path))
+        if self._is_unit_voxel(baseline) or recorded:
             detected = self._detected_voxel_cached(path)
-            if detected is not None and not self._is_unit_voxel(detected):
+            if (detected is not None and not self._is_unit_voxel(detected)
+                    and not detected_recordable(detected)):
+                if hasattr(self.widget, "set_voxel_over_ceiling"):
+                    self.widget.set_voxel_over_ceiling(True)
+            elif detected is not None and not self._is_unit_voxel(detected):
+                header_flag = bool(self._detected_voxel_flag_cached(path))
                 baseline = tuple(float(x) for x in detected)
+                self._voxel_baseline_recorded = False
+                self._voxel_spins_source = path
                 # Reflect the re-detected baseline back into the widget so the
                 # ↺ shows it: the reset target the widget restores + the spins.
                 try:
                     self.widget.set_detected_voxel_size(*baseline)
                     self.widget.apply_voxel_size(*baseline, source="detected")
+                    if hasattr(self.widget, "set_voxel_detected_note"):
+                        self.widget.set_voxel_detected_note(None)
+                    self._voxel_spins_z_assumed = header_flag
+                    if hasattr(self.widget, "set_voxel_z_default_depth"):
+                        default = self._detected_imagej_default_cached(path)
+                        try:
+                            self.widget.set_voxel_z_default_depth(
+                                default,
+                                unit=self._detected_imagej_unit_cached(path))
+                        except TypeError:    # an older widget
+                            self.widget.set_voxel_z_default_depth(default)
+                    if hasattr(self.widget, "set_voxel_z_assumed"):
+                        self.widget.set_voxel_z_assumed(header_flag)
                 except Exception:   # noqa: BLE001 — UI reflect is best-effort
                     pass
         if self._is_unit_voxel(baseline):
             self._queue_source_save(
-                path=path, voxel_size=[1.0, 1.0, 1.0], voxel_size_source="unknown")
+                path=path, voxel_size=[1.0, 1.0, 1.0], voxel_size_source="unknown",
+                voxel_z_from_xy=False)
+        elif not detected_recordable(baseline):
+            # A print resolution, not a voxel size: shown, never recorded as
+            # read from the file -- the row is left without a voxel size.
+            self._queue_source_save(
+                path=path, voxel_size=[1.0, 1.0, 1.0], voxel_size_source="unknown",
+                voxel_z_from_xy=False)
+            if hasattr(self.widget, "set_voxel_over_ceiling"):
+                self.widget.set_voxel_over_ceiling(True)
         else:
+            # The flag is written only when the header was read and gives the
+            # value being stored; otherwise (file moved, header changed) the
+            # row keeps its own flag (None is never written).
+            flag = None
+            det = self._detected_voxel_cached(path)
+            if det is not None and self._same_at_spin_precision(det, baseline):
+                flag = bool(self._detected_voxel_flag_cached(path))
             self._queue_source_save(
                 path=path, voxel_size=[float(x) for x in baseline],
-                voxel_size_source="detected")
+                voxel_size_source="detected", voxel_z_from_xy=flag)
         self._reapply_display_physical_scale()
 
     def _reapply_display_physical_scale(self):
@@ -4316,8 +4767,10 @@ class DataPreparationController:
                 # HONEST typing (grill FIX 5 principle): an orphan store's baked
                 # voxel is NOT a genuine user edit -> "detected" for a real value,
                 # "unknown" for 1/1/1 / absent (never silently "user").
-                v_source = ("detected"
-                            if _classify_voxel_source(v) == "user" else "unknown")
+                v_source = ("detected" if detected_recordable(v)
+                            else "unknown")
+                if v_source == "unknown":
+                    v = None             # 1/1/1, absent, or a print DPI
                 state.setdefault("sources", []).append({
                     "source_id": _next_source_id(state.get("sources", [])),
                     "path": prov.get("path"),
@@ -4326,6 +4779,9 @@ class DataPreparationController:
                     "source_axes": prov.get("source_axes"),
                     "voxel_size": v,
                     "voxel_size_source": v_source,
+                    # A store's baked size is not known to have an assumed Z.
+                    **({"voxel_z_from_xy": False}
+                       if v_source == "detected" else {}),
                     "prepared_store": rel,
                     "origin": ["prepared"],
                     "fingerprint": ({"size": prov.get("source_size"),
@@ -5558,11 +6014,25 @@ class DataPreparationController:
         path = src_path or getattr(self, "_largedata_src_path", None)
         ws = w.output_file_path.text().strip() if hasattr(w, "output_file_path") else ""
         row = self._find_source_row(load_state(ws), path) if (ws and os.path.isdir(ws)) else None
-        effective, eff_src, baseline, _ = self._resolve_voxel_for_source(
+        effective, eff_src, baseline, base_src = self._resolve_voxel_for_source(
             path, row, store_meta=meta)
         if hasattr(w, "set_detected_voxel_size"):
             w.set_detected_voxel_size(*baseline)
         w.apply_voxel_size(*effective, source=eff_src)
+        self._voxel_spins_source = path
+        # `set_detected_voxel_size` cleared the label's notes; put back the
+        # ones that still hold (a store prepared from an XY-only header keeps
+        # its "(Z assumed = XY)").
+        try:
+            self._push_voxel_notes(w, path, row, eff_src, base_src, baseline)
+            sv = self._voxel_from_store_meta(meta)
+            if (eff_src == "unknown" and sv is not None
+                    and not self._is_unit_voxel(sv)
+                    and not detected_recordable(sv)
+                    and hasattr(w, "set_voxel_over_ceiling")):
+                w.set_voxel_over_ceiling(True)
+        except Exception as exc:   # noqa: BLE001 — a label nicety
+            self._log("STEP1-PREP", f"voxel notes skipped: {exc}")
 
     def _connect_ndisplay_hook(self):
         """Connect (once) to the viewer's 2D<->3D switch so the 3D-detail pin is
@@ -6508,12 +6978,47 @@ class DataPreparationController:
         existing_row = self._find_source_row(state, src_path)
         existing_vsource = (existing_row or {}).get("voxel_size_source")
         voxel_kwargs = {}
-        if _classify_voxel_source(store_voxel) == "user":   # non-unit store voxel
+        drop_flag = False
+        if (_classify_voxel_source(store_voxel) == "user"
+                and existing_vsource != "user"
+                and not detected_recordable(store_voxel)):
+            # A print resolution baked into the store: never recorded as
+            # read from the file (the row keeps no voxel size of it).
+            self._log("STEP1-PREP",
+                      f"store voxel {list(store_voxel)} not recorded: XY over "
+                      f"{DETECTED_MAX_XY_UM:g} um")
+        elif _classify_voxel_source(store_voxel) == "user":   # non-unit store voxel
             voxel_kwargs = {
                 "voxel_size": list(store_voxel),
                 "voxel_size_source": (
                     "user" if existing_vsource == "user" else "detected"),
             }
+            if voxel_kwargs["voxel_size_source"] == "detected":
+                # As for the reset: the flag is written only when the header
+                # (read now, memoized) gives the value being stored.  A store
+                # holding the row's own recorded value keeps the row's flag
+                # (the file may have changed since it was recorded); any other
+                # value the header does not give is not an assumed Z.
+                try:
+                    det = self._detected_voxel_cached(src_path)
+                    rec = self._recorded_detected(existing_row)
+                    if det is not None and self._same_at_spin_precision(
+                            det, store_voxel):
+                        voxel_kwargs["voxel_z_from_xy"] = bool(
+                            self._detected_voxel_flag_cached(src_path))
+                    elif rec is not None and self._same_at_spin_precision(
+                            rec, store_voxel):
+                        pass
+                    elif det is not None:
+                        voxel_kwargs["voxel_z_from_xy"] = False
+                    elif rec is not None:
+                        # The header cannot be read and the stored value is
+                        # not the recorded one: the row's flag spoke of the
+                        # old value, so it is removed (absent reads as "not
+                        # assumed"), not carried onto the new value.
+                        drop_flag = True
+                except Exception:   # noqa: BLE001 -- a flag, never fatal
+                    pass
         upsert_source(
             state,
             path=src_path,
@@ -6526,6 +7031,12 @@ class DataPreparationController:
             origin=["prepared"],
             **voxel_kwargs,
         )
+        if drop_flag:
+            row = self._find_source_row(state, src_path)
+            if row is not None and row.pop("voxel_z_from_xy", None) is not None:
+                self._log("STEP1-PREP",
+                          f"{display_name}: the voxel size changed and the file "
+                          "cannot be read; its Z-assumed mark was removed")
         save_state(workspace, state)
         self._log("STEP1-PREP",
                   f"registry upsert: {display_name} source_axes="
@@ -9012,6 +9523,41 @@ class DataPreparationController:
             except Exception:
                 pass
 
+    def _voxel_of_source(self, workspace, path):
+        """``([z, y, x], type)`` for *path* as its own registry row / header
+        give it -- the value the panel would show for it -- or
+        ``(None, None)`` when unknown.  A user or recorded value is read from
+        the registry with no file opened; otherwise the memoized header read.
+        Never raises."""
+        try:
+            ws = (workspace or "").strip()
+            row = (self._find_source_row(load_state(ws), path)
+                   if ws and os.path.isdir(ws) else None)
+            eff, eff_src, _b, _bs = self._resolve_voxel_for_source(path, row)
+        except Exception as exc:   # noqa: BLE001 — never block an extract
+            self._log("STEP1-EXTRACT", f"voxel of loaded source skipped: {exc}")
+            return None, None
+        if eff_src in ("user", "detected") and not self._is_unit_voxel(eff):
+            return [float(v) for v in eff], eff_src
+        return None, None
+
+    def _voxel_flag_of_source(self, workspace, path):
+        """Whether the value :meth:`_voxel_of_source` gives for *path* has an
+        assumed Z: a recorded row's own flag, else its header's.  Never
+        raises; False when unsure."""
+        try:
+            ws = (workspace or "").strip()
+            row = (self._find_source_row(load_state(ws), path)
+                   if ws and os.path.isdir(ws) else None)
+            if self._recorded_detected(row) is not None and isinstance(
+                    row.get("voxel_z_from_xy"), bool):
+                return voxel_z_assumed(row)
+            eff, eff_src, _b, _bs = self._resolve_voxel_for_source(path, row)
+            return bool(eff_src == "detected"
+                        and self._header_z_not_measured(path, eff))
+        except Exception:   # noqa: BLE001
+            return False
+
     def _gather_persist_params(self) -> dict:
         """Read EVERY widget / self value the per-patch write needs, on the MAIN
         thread, into a plain dict the worker (or :meth:`_persist_patch_to_disk`)
@@ -9033,6 +9579,14 @@ class DataPreparationController:
         source_display_name = ""
         if hasattr(self.widget, "display_name_edit"):
             source_display_name = self.widget.display_name_edit.text().strip()
+        # The alias box, like the voxel spins, follows the SELECTED source; when
+        # that is not the loaded file, its alias is not this cut's (None: a new
+        # row then shows the file's own name).
+        _loaded = getattr(self, "_loaded_source_file", None)
+        _spins_src = getattr(self, "_voxel_spins_source", None)
+        if (_loaded and _spins_src
+                and _norm_path(_spins_src) != _norm_path(_loaded)):
+            source_display_name = None
 
         # Read the voxel spins, NORMALIZING the isotropic 1/1/1 default to None
         # (mirror `_prepare_voxel_size`): a raw [1,1,1] must NOT be persisted as
@@ -9048,6 +9602,37 @@ class DataPreparationController:
             if (vz, vy, vx) != (1.0, 1.0, 1.0) and vz > 0 and vy > 0 and vx > 0:
                 voxel_size = [vz, vy, vx]
 
+        # The type the panel shows for that spacing: "detected" (read from the
+        # file's header) or "user" (typed).  Stored with the value, so a header
+        # spacing is not recorded as the user's.  None (a 1/1/1 value, or a
+        # widget without the reader) leaves the value-based typing.
+        voxel_size_source = None
+        # Whether that spacing's Z was not measured by the file (filled in
+        # from XY, or ImageJ's default): stored with a "detected" value.
+        voxel_z_from_xy = None
+        loaded = getattr(self, "_loaded_source_file", None)
+        spins_src = getattr(self, "_voxel_spins_source", None)
+        if (loaded and spins_src
+                and _norm_path(spins_src) != _norm_path(loaded)):
+            # The spins describe ANOTHER file (a passive select after the
+            # load): the cut comes from the loaded one, so record ITS value.
+            voxel_size, voxel_size_source = self._voxel_of_source(
+                workspace, loaded)
+            if voxel_size_source == "detected":
+                voxel_z_from_xy = self._voxel_flag_of_source(workspace, loaded)
+        elif voxel_size is not None:
+            getter = getattr(self.widget, "voxel_source_type", None)
+            if callable(getter):
+                try:
+                    vtype = getter()
+                except Exception:   # noqa: BLE001 -- the type is a nicety
+                    vtype = None
+                if vtype in ("user", "detected"):
+                    voxel_size_source = vtype
+                if vtype == "detected":
+                    voxel_z_from_xy = bool(
+                        getattr(self, "_voxel_spins_z_assumed", False))
+
         # The source's on-disk order.  Prefer the store's HONEST on-disk order
         # (`_source_disk_axes`, B2-N3); for a raw TIFF load that is None and
         # `_source_axes_resolved` IS the on-disk order captured at load.
@@ -9061,6 +9646,8 @@ class DataPreparationController:
             "source_path": source_path,
             "source_display_name": source_display_name,
             "voxel_size": voxel_size,
+            "voxel_size_source": voxel_size_source,
+            "voxel_z_from_xy": voxel_z_from_xy,
             "source_axes": source_axes,
             # Brick 4a a4: honest provenance for patches cut while the original
             # image file could not be found -- the pixels came out of the
@@ -14728,6 +15315,8 @@ class DataPreparationController:
                 source_display_name=params["source_display_name"],
                 source_axes=params["source_axes"],
                 voxel_size=params["voxel_size"],
+                voxel_size_source=params.get("voxel_size_source"),
+                voxel_z_from_xy=params.get("voxel_z_from_xy"),
                 # Provenance: whether these pixels came from the raw
                 # source or the prepared processed store.  Stamped on the patch
                 # REGISTRY row, never the frozen sidecar.  Additive; defaults to

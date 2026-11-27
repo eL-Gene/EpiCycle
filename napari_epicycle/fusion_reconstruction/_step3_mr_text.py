@@ -239,8 +239,9 @@ MR_NEW_RUN_HINT = (
 MR_NEW_RUN_HINT_NONE = (
     "To try a model on the curated patches without touching them, make a "
     "New Run in Predict + Reconstruct and pick it there.")
-MR_RUN_LINE = "Run: ● {name} · trained models are kept with this run"
-MR_RUN_HEAD = "Run:"
+MR_RUN_LINE = (
+    "Step 3 run: ● {name} · trained models are kept with this run")
+MR_RUN_HEAD = "Step 3 run:"
 MR_RUN_NAME = "● {name}"
 MR_RUN_TAIL = " · trained models are kept with this run"
 

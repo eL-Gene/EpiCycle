@@ -294,10 +294,10 @@ def test_flow_2_whole_patch_clear_every_object_the_outline_follows(
     try:
         hh._start_add_whole()
         assert hh._add_whole_patch
-        # the page's own rules: a whole patch fills to the walls (Grow by
-        # hidden, the box's pick kept), and an untouched Tissue outline is
-        # the shrink-wrap (no Clear yet)
-        assert widget._add_grow_row.isHidden()
+        # the page's own rules: a whole patch shows Grow by (the box's pick
+        # kept), and an untouched Tissue outline is the shrink-wrap (no
+        # Clear yet)
+        assert not widget._add_grow_row.isHidden()
         assert widget.get_add_grow() == AP.GROW_FLOOD
         assert widget.get_add_outline() == AP.OUTLINE_SHRINK
         assert hh._add_outline_mode() == AP.OUTLINE_SHRINK

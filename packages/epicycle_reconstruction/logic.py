@@ -340,7 +340,7 @@ def build_real_manifest(
     labels_shape,
     num_cells_raw: int,
     num_cells_final: int,
-    axes: str,
+    axes: Optional[str],
     seg_config: Optional[SegmentationConfig],
     recon_config: ReconstructionConfig,
     extra_manifest: Optional[Dict[str, Any]] = None,
@@ -348,6 +348,8 @@ def build_real_manifest(
 ) -> Dict[str, Any]:
     """``manifest.json`` of a real reconstruction (version 2).
 
+    ``axes`` is written as given: the axis order Cellpose was handed, or
+    ``None`` (null) when no prediction manifest recorded it.
     ``seg_config`` is every ``SegmentationConfig`` field (``channels`` as a
     list, ``rescale`` the value Cellpose got, ``None`` included);
     ``recon_config`` every ``ReconstructionConfig`` field
@@ -405,7 +407,7 @@ class ReconstructionPipelineService:
         axial_model_path: str,
         seg_config: Optional[SegmentationConfig] = None,
         recon_config: Optional[ReconstructionConfig] = None,
-        axes: str = "ZCYX",
+        axes: Optional[str] = "ZCYX",
         cached_views: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
         progress_cb: Optional[Callable[[str, int, int], None]] = None,
         output_base: Optional[str] = None,
@@ -422,7 +424,10 @@ class ReconstructionPipelineService:
             axial_model_path: Path to Cellpose model for XZ/YZ views
             seg_config: Segmentation parameters
             recon_config: Reconstruction parameters
-            axes: Axis order of the input TIFF
+            axes: Axis order of the input TIFF -- the order Cellpose was
+                handed -- used to cut the views when ``cached_views`` is
+                None; recorded in ``manifest.json`` as given, ``None`` when
+                no prediction manifest recorded it (cached views only).
             cached_views: Pre-computed view predictions to skip segmentation
             progress_cb: Progress callback(stage, current, total)
             output_base: Legacy run_id-keyed output base (unchanged behavior).

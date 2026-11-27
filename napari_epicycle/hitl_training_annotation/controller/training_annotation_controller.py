@@ -170,9 +170,11 @@ class _AsyncPairWriter:
                 )
                 self._thread.start()
 
-    def submit(self, path: str, data: np.ndarray) -> None:
+    def submit(self, path: str, data: np.ndarray, on_done=None) -> None:
+        """Queue one write.  ``on_done(ok, error)`` is called on the writer
+        thread after it (it must only set plain values)."""
         self._ensure_thread()
-        self._q.put((str(path), data))
+        self._q.put((str(path), data, on_done))
 
     def _run(self):
         while True:
@@ -180,17 +182,27 @@ class _AsyncPairWriter:
             try:
                 if item is None:
                     return
-                path, data = item
+                path, data, on_done = item
                 try:
                     _atomic_imwrite(path, data)
                 except Exception as exc:
-                    # A failed write leaves no file (atomic), so the next
-                    # persist's `not file_exists` check forces a rewrite —
-                    # the in-memory sig optimism is self-healing.  Surfaced
-                    # so a dropped background write of the user's edit is
-                    # never fully silent.
+                    # A failed write leaves the OLD file (atomic): the
+                    # caller's signature is set only after a good write, so
+                    # the next persist writes again; the failure is handed
+                    # back (``on_done``) for the main thread to say.
                     print(f"[WARN] async training-pair write FAILED "
                           f"{path}: {exc!r}")
+                    if on_done is not None:
+                        try:
+                            on_done(False, exc)
+                        except Exception:      # noqa: BLE001 -- never kill the writer
+                            pass
+                else:
+                    if on_done is not None:
+                        try:
+                            on_done(True, None)
+                        except Exception:      # noqa: BLE001 -- never kill the writer
+                            pass
             finally:
                 self._q.task_done()
 
@@ -266,11 +278,11 @@ class _AbortFlag:
 # blocks (notably Python's logging chain and Cellpose's training loop).
 # See exceptions.py module docstring (cancel via BaseException bypasses `except Exception`).
 from packages.epicycle_training.exceptions import TrainingAbortedError
-# Release-hardening #3 (2026-09-07): shared atomic-write / quarantine
-# helpers (extracted from JSONStateStore.save_state).
+# Release-hardening #3 (2026-09-07): the shared atomic write (extracted
+# from JSONStateStore.save_state).  A run list Step 2 cannot read is never
+# moved aside or rewritten here; only a byte copy is set aside beside it.
 from packages.epicycle_io.state_store import (
     atomic_write_json as _atomic_write_json,
-    quarantine_corrupt_file as _quarantine_corrupt_file,
 )
 
 
@@ -365,6 +377,16 @@ _LEGACY_WORKSPACE_FALLBACK_KEYS = (
     "imported_curation_model_path",
     "curation_pretrained_model_type",
 )
+
+
+class _RunListBusyError(RuntimeError):
+    """New Run could not use the run list just now (another program held
+    it).  ``sentence`` is what the user reads; the error is for the log."""
+
+    def __init__(self, sentence: str, detail: str = ""):
+        super().__init__(f"{sentence} ({detail})" if detail else sentence)
+        self.sentence = sentence
+        self.detail = detail
 
 
 class TrainingAnnotationController:
@@ -2074,16 +2096,31 @@ class TrainingAnnotationController:
         # Run indicator (Phase 6 sub-D).  Reads self.active_run_id which is
         # set from the v3 step2_state.json peek in _load_internal_state.
         # Pre-Phase-8 always "default"; future multi-run UI updates this.
+        # The run word follows the one Step 2 rule (`_step2_write_target`):
+        # the active run, an old-layout folder's single run marked as such,
+        # or "No run yet" -- never a run that does not exist.
+        from ..ui import _step2_text as _T2
         try:
-            run_id = getattr(self, "active_run_id", None) or "default"
-            # Indicate if workspace is on legacy layout (no multi-run yet).
-            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-            if self.working_dir and not _step2_paths.is_new_layout_state(self.working_dir):
-                run_id_label = f"{run_id} (legacy layout)"
-            else:
+            run_id = str(getattr(self, "active_run_id", "") or "").strip()
+            target = self._step2_write_target() if self.working_dir else None
+            if target == "legacy":
+                run_id_label = _T2.RUN_SUMMARY_LEGACY.format(
+                    run=run_id or "default")
+            elif target == "run" and run_id:
                 run_id_label = run_id
-        except Exception:
-            run_id_label = "default"
+            elif target == "locked":
+                run_id_label = _T2.RUN_SUMMARY_LOCKED
+            elif target == "unreadable":
+                run_id_label = {
+                    "mixed": _T2.RUN_SUMMARY_UNREADABLE_MIXED,
+                    "runs-only": _T2.RUN_SUMMARY_UNREADABLE_MISSING,
+                }.get(self._unreadable_kind(), _T2.RUN_SUMMARY_UNREADABLE)
+            elif self._no_run_state(target) == "none-active":
+                run_id_label = _T2.RUN_SUMMARY_NONE_ACTIVE
+            else:
+                run_id_label = _T2.RUN_SUMMARY_NO_RUN
+        except Exception:      # noqa: BLE001 -- the plain word is the safe one
+            run_id_label = _T2.RUN_SUMMARY_NO_RUN
         self._safe_ui_set_text("status_run_value", run_id_label)
         by_view = getattr(self, "current_round_by_view", {})
         lat_r = by_view.get("lateral", 0)
@@ -2686,19 +2723,29 @@ class TrainingAnnotationController:
                 "staged_by_bucket": staged_by_bucket,
                 "workspace": self.working_dir or "",
                 "stack_dir": stack_dir,
-                "run_id": getattr(self, "active_run_id", None) or "default",
+                "run_id": str(getattr(self, "active_run_id", "") or ""),
             })
         except Exception as exc:      # noqa: BLE001 -- a hook must never break the refresh
             print(f"[STEP2-UI] on_session_patches failed: {exc}")
 
     def _stage_accepted_in_current_view(self):
+        if not self._require_run(self._step2_word("CUR_BTN_FINALIZE")):
+            return
         current_bucket = self._bucket_for_view(self.selected_view)
         changed = 0
-        for sample_id, record in self.sample_records.items():
+        refused = []
+        for sample_id in list(self.sample_records):
+            record = self.sample_records[sample_id]
             if record.get("bucket") == current_bucket and record.get("status") == "accepted":
+                prior = self._sample_record_before(sample_id)
                 self._touch_sample(sample_id, status="staged", view=record.get("view", self.selected_view))
-                self._persist_curated_training_pair(sample_id)
+                if self._pair_refused(self._persist_curated_training_pair(sample_id)):
+                    self._undo_refused_pair(sample_id, prior)
+                    refused.append(sample_id)
+                    continue
                 changed += 1
+        if refused:
+            self._say_pair_refused(self._step2_word("CUR_BTN_FINALIZE"), refused)
         self._sync_data_to_add_list()
         self._refresh_sample_queue()
         self._refresh_round_status()
@@ -2715,8 +2762,76 @@ class TrainingAnnotationController:
                 self._refresh_run_picker()
             except Exception as e:
                 pass
-        else:
+        elif not refused:
             self._append_ui_log(f"[QUEUE] No accepted samples to stage in {current_bucket}.")
+
+    @staticmethod
+    def _step2_word(name: str) -> str:
+        """A button's on-screen word from ``ui/_step2_text`` (the action a
+        no-run box or a refusal names)."""
+        from ..ui import _step2_text as _T2
+        return str(getattr(_T2, name))
+
+    #: the segmentation manager's per-slice caches a pair write reads; a
+    #: refused write puts them back with the record
+    _PAIR_CACHES = ("data_masks", "data_inputs", "data_inputs_rgb", "data_names")
+
+    def _sample_record_before(self, slice_label):
+        """What a refused pair write must put back for ``slice_label``: a
+        copy of its record (None if it has none) and its entries in the
+        segmentation manager's mask / image caches.  Taken BEFORE the caller
+        changes either, so a retry compares against what is really on disk
+        (a re-accept is not skipped as "unchanged", and a later Finalize never
+        writes a prediction that was not saved as the accepted pair)."""
+        import copy
+        record = (getattr(self, "sample_records", None) or {}).get(slice_label)
+        seg = getattr(self, "segmentation_manager", None)
+        caches = {}
+        for name in self._PAIR_CACHES:
+            table = getattr(seg, name, None)
+            if isinstance(table, dict):
+                caches[name] = (slice_label in table, table.get(slice_label))
+        return {"record": None if record is None else copy.deepcopy(record),
+                "caches": caches}
+
+    def _forget_said_refusals(self, *names):
+        """Drop this workspace's entries from the "already said" sets."""
+        ws = str(getattr(self, "working_dir", "") or "")
+        for name in names:
+            said = self.__dict__.get(name)
+            if isinstance(said, set):
+                for key in [k for k in said
+                            if isinstance(k, tuple) and k and k[0] == ws]:
+                    said.discard(key)
+
+    def _pair_refused(self, persisted) -> bool:
+        """True when the pair write just made was refused (no run, or the
+        run's folder could not be used) -- not when there was merely no
+        image or mask to write."""
+        return not persisted and bool(getattr(self, "_last_pair_refusal", None))
+
+    def _undo_refused_pair(self, slice_label, prior):
+        """The pair was not written: put the slice's record and its cached
+        mask / image back as they were, so neither claims a pair that is not
+        on disk.  What is drawn in the viewer is left alone."""
+        prior = prior if isinstance(prior, dict) and "caches" in prior else {
+            "record": prior, "caches": {}}
+        record = prior.get("record")
+        if record is None:
+            self.sample_records.pop(slice_label, None)
+        else:
+            self.sample_records[slice_label] = record
+        seg = getattr(self, "segmentation_manager", None)
+        for name, (had, value) in (prior.get("caches") or {}).items():
+            table = getattr(seg, name, None)
+            if not isinstance(table, dict):
+                continue
+            if had:
+                table[slice_label] = value
+            else:
+                table.pop(slice_label, None)
+        print(f"[STEP2-WRITE] {slice_label}: status left as "
+              f"{(record or {}).get('status', 'none')!r} (its pair was not saved)")
 
     def _persist_curated_training_pair(self, slice_label, async_write=False):
         """Persist the (image, mask) training pair for ``slice_label`` to disk.
@@ -2731,6 +2846,7 @@ class TrainingAnnotationController:
         the returned uris + record fields are set immediately; hard barriers
         (train / switch / shutdown) flush the async writer.
         """
+        self._last_pair_refusal = None
         if not self.working_dir:
             return {}
         input_stack = self.segmentation_manager.get_input_stack(slice_label)
@@ -2805,55 +2921,23 @@ class TrainingAnnotationController:
         # is exactly how two accepted pairs were written to the wrong
         # place on a v3 workspace.  Diagnostics are collected here and
         # emitted AFTER the try/except, where a raise is harmless.
+        # Where the pair goes is the one Step 2 rule (`_step2_write_target`):
+        # a run -> its round's accepted/ folder; an old-layout folder -> the
+        # old training_data/ folder; anything else (a fresh folder with no
+        # run, an unreadable run list) -> nothing is written.  A failure while
+        # working out the run's folder is a refusal too: an error never sends
+        # a pair into the old layout.  The refusal's cause is left in
+        # `_last_pair_refusal` ("no-run" / "folder") for the caller.
+        # NO print() inside the try: a print can RAISE (UnicodeEncodeError on
+        # a non-UTF-8 Windows console); diagnostics are emitted after it.
         _layout_diag = []
+        out_dir = None
+        refusal = None
+        target = self._step2_write_target()
         try:
             from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-            # User-bug fix 2026-05-24: if state JSON is missing but the
-            # workspace is otherwise eligible for new layout (UNKNOWN
-            # or already has runs/ dirs), AUTO-BOOTSTRAP the default
-            # run instead of silently falling back to legacy
-            # training_data/.  Without this, the first action on a
-            # fresh workspace (e.g., Accept) could create training_data/
-            # before the workspace-load bootstrap had a chance to run.
-            if not _step2_paths.is_new_layout_state(self.working_dir):
-                layout_v = _step2_paths.detect_layout_version(self.working_dir)
-                if layout_v == _step2_paths.LAYOUT_VERSION_UNKNOWN:
-                    _layout_diag.append(
-                        "[STEP2-WRITE] no state JSON + UNKNOWN layout - "
-                        "bootstrapping default run before write"
-                    )
-                    try:
-                        self._auto_bootstrap_default_run_if_fresh(self.working_dir)
-                        # Sync runtime active_run_id since the bootstrap
-                        # wrote it to disk but didn't update controller field
-                        if not getattr(self, "active_run_id", None):
-                            self.active_run_id = _step2_paths.DEFAULT_RUN_ID
-                        # Audit-fix 2026-05-24 (G): refresh the run picker
-                        # so the dropdown reflects the newly-created
-                        # default run.  Without this, the dropdown keeps
-                        # showing "(legacy layout)" synthetic entry until
-                        # user does something else that triggers a refresh.
-                        try:
-                            self._refresh_run_picker()
-                        except Exception as _refresh_err:
-                            _layout_diag.append(
-                                f"[STEP2-WRITE] post-bootstrap picker "
-                                f"refresh failed: {_refresh_err}"
-                            )
-                    except Exception as _boot_err:
-                        _layout_diag.append(
-                            f"[STEP2-WRITE] bootstrap failed: {_boot_err}"
-                        )
-                # Only LEGACY/MIXED stays on legacy path — those workspaces
-                # have pre-existing training_data/ and the migration prompt
-                # will handle the conversion on next session.
-            if _step2_paths.is_new_layout_state(self.working_dir):
-                active_run_id = getattr(
-                    self, "active_run_id", _step2_paths.DEFAULT_RUN_ID
-                )
-                if not active_run_id:
-                    active_run_id = _step2_paths.DEFAULT_RUN_ID
-                    self.active_run_id = active_run_id
+            if target == "run":
+                active_run_id = str(self.active_run_id).strip()
                 bucket = _step2_paths.bucket_for_view(view)
                 out_dir = _step2_paths.round_accepted_dir(
                     self.working_dir, active_run_id, bucket, round_idx
@@ -2863,8 +2947,9 @@ class TrainingAnnotationController:
                     f"layout: {view} -> {bucket} bucket / "
                     f"run='{active_run_id}' / round_{round_idx:02d}"
                 )
-            else:
-                # LEGACY/MIXED workspace — preserve legacy write path
+            elif target == "legacy":
+                # An old-layout folder keeps its old-layout writes until the
+                # owner migrates it (Browse offers the migration).
                 round_id = f"round_{round_idx:02d}"
                 target_dir = "spatial" if view == "XY" else "axial"
                 out_dir = Path(self.working_dir) / "training_data" / round_id / "accepted_pairs" / target_dir
@@ -2873,22 +2958,37 @@ class TrainingAnnotationController:
                     "layout (workspace has pre-existing training_data/; "
                     "migrate via Workspace > Browse to use new layout)"
                 )
+            else:
+                refusal = "no-run"
         except Exception as _e:
-            # Defensive: any path-resolution issue falls back to legacy
+            out_dir = None
+            refusal = "folder"
             _layout_diag.append(
-                f"[STEP2-WRITE] new-layout path resolution failed "
-                f"({type(_e).__name__}: {_e}), using legacy path"
+                f"[STEP2-WRITE] the run's folder for {slice_label} could not "
+                f"be worked out ({type(_e).__name__}: {_e}); nothing written"
             )
-            round_id = f"round_{round_idx:02d}"
-            target_dir = "spatial" if view == "XY" else "axial"
-            out_dir = Path(self.working_dir) / "training_data" / round_id / "accepted_pairs" / target_dir
 
         # Emit the collected diagnostics OUTSIDE the guarded region: a
         # raise here cannot redirect the write any more.
         for _line in _layout_diag:
             print(_line)
 
+        if out_dir is None:
+            self._last_pair_refusal = refusal or "no-run"
+            logged = self.__dict__.setdefault("_pair_refusals_logged", set())
+            _key = (str(self.working_dir or ""), self._last_pair_refusal)
+            if _key not in logged:
+                logged.add(_key)
+                print(f"[STEP2-WRITE] {slice_label} not saved to disk: "
+                      + ("no run yet" if self._last_pair_refusal == "no-run"
+                         else "the run's folder could not be used")
+                      + "; it stays on screen")
+            return {}
+
         out_dir.mkdir(parents=True, exist_ok=True)
+        # A pair goes through again: a later refusal in this workspace is a
+        # new event and is said again (console line and box).
+        self._forget_said_refusals("_pair_refusals_logged", "_pair_refusals_said")
 
         fname_base = f"{stack_id}_{view}_z{slice_index:04d}"
         img_path = out_dir / f"{fname_base}_img.tif"
@@ -2926,21 +3026,34 @@ class TrainingAnnotationController:
         # handed to either path are fresh `.astype()` copies (snapshots) so a
         # later main-thread edit can never race an in-flight write.  Hard
         # barriers (train / switch / shutdown) flush the async writer.  The
-        # in-memory sig is updated optimistically; a failed write leaves no
-        # file (atomic), so the next persist's `not file_exists` check forces a
-        # rewrite (self-healing).
+        # in-memory sig is set only after a write went through (below), so a
+        # failed write -- which leaves the old file, if any -- is written
+        # again by the next persist.
         if async_write and getattr(self, "_pair_writer", None) is None:
             self._pair_writer = _AsyncPairWriter()
 
-        def _emit(path, data):
+        failures = self.__dict__.setdefault("_pair_write_failures", {}).setdefault(
+            str(getattr(self, "working_dir", "") or ""), {})
+
+        def _emit(path, data, key, sig):
+            # The signature says "this file holds this content": set only
+            # after the write went through, so a failed background write is
+            # written again by the next persist instead of skipped.
             if async_write:
-                self._pair_writer.submit(str(path), data)
+                def _done(ok, error, _key=key, _sig=sig, _path=str(path)):
+                    # (writer thread: plain dict sets only)
+                    if ok:
+                        prior_sigs[_key] = _sig
+                        failures.pop((slice_label, _key), None)
+                    else:
+                        failures[(slice_label, _key)] = (_path, error)
+                self._pair_writer.submit(str(path), data, on_done=_done)
             else:
                 _atomic_imwrite(str(path), data)
+                prior_sigs[key] = sig
 
         if write_img:
-            _emit(img_path, arr_img.astype(np.float32))
-            prior_sigs["img"] = img_sig
+            _emit(img_path, arr_img.astype(np.float32), "img", img_sig)
         if write_mask:
             # 2026-05-28 (label-compaction-v2): compact the 2D mask's label IDs
             # to a dense 1..N range BEFORE writing to disk.  This breaks the
@@ -2956,8 +3069,7 @@ class TrainingAnnotationController:
             # .astype(np.int32) forces a fresh copy (snapshot) for the writer —
             # _compact_label_ids may return its input array on the fast paths.
             compact_mask = _compact_label_ids(arr_mask.astype(np.int32)).astype(np.int32)
-            _emit(mask_path, compact_mask)
-            prior_sigs["mask"] = mask_sig
+            _emit(mask_path, compact_mask, "mask", mask_sig)
 
         record = self.sample_records.get(slice_label, {})
         record["img_uri"] = str(img_path)
@@ -4228,9 +4340,9 @@ class TrainingAnnotationController:
             # auto-creating "default" (the previous behavior).  User wanted
             # control over the first run's name + an explicit intro.
             #
-            # The persist-path safety net (`_persist_curated_training_pair`
-            # auto-bootstraps on UNKNOWN layout) remains as a fallback in
-            # case the user dismisses the prompt + then triggers an action.
+            # If the user dismisses it, the folder has no run and Step 2
+            # writes nothing there (`_step2_write_target`) until New Run makes
+            # one; no run is ever made behind the user's back.
             self._maybe_prompt_first_run(dir_path)
             # An explicit Browse is the ONE thing that publishes a workspace
             # to the shell.
@@ -4285,6 +4397,10 @@ class TrainingAnnotationController:
         except Exception as e:
             print(f"[WARN] workspace-switch timer-flush failed "
                   f"(prior workspace state may not be saved): {e}")
+        # The workspace being left is saved now (a pending save was only
+        # stopped above); what a refused save could not write goes to a
+        # rescue file, as at close, and is said.
+        self._save_or_rescue_leaving_workspace()
 
         print(f"[WORKSPACE-SWITCH] tearing down previous workspace before "
               f"load: prev_patch={getattr(self, 'loaded_patch_name', None)!r}")
@@ -4305,6 +4421,49 @@ class TrainingAnnotationController:
                       "rebuilds from new workspace config)")
         except Exception as e:
             print(f"[WARN] workspace-switch segmenter reset failed: {e}")
+
+    def _save_or_rescue_leaving_workspace(self) -> None:
+        if not (getattr(self, "working_dir", "") or "").strip():
+            return
+        target = self._step2_write_target()
+        if target is None:
+            # no run: nothing is saved; a drawing made meanwhile goes
+            self._drop_pending_drawings()
+            return
+        try:
+            result = self._save_internal_state()
+        except Exception as exc:      # noqa: BLE001 -- said; the switch goes on
+            print(f"[WORKSPACE-SWITCH] the save of the workspace being left "
+                  f"failed ({type(exc).__name__}: {exc})")
+            return
+        from ..ui import _step2_text as _T2
+        sentence = ""
+        if self._rescue_needed(result, target):
+            path = self._write_rescue_state()
+            sentence = (_T2.STATE_LEFT_RESCUED.format(path=path) if path
+                        else _T2.STATE_LEFT_LOST)
+        if self._drop_pending_drawings():
+            sentence = (sentence + " " if sentence else "") + \
+                _T2.STATE_LEFT_DRAWING_LOST
+        if sentence:
+            print(f"[WORKSPACE-SWITCH] {sentence}")
+            self._append_ui_log(f"[WORKSPACE-SWITCH] {sentence}")
+            self._tell_step2(_T2.STATE_NOT_SAVED_TITLE, sentence)
+
+    def _drop_pending_drawings(self) -> bool:
+        """Drop the drawings still waiting to be written (they belong to the
+        workspace being left and are keyed by slice name only).  True when
+        there were any."""
+        pending = getattr(self, "_curating_persist_pending", None)
+        failed = (self.__dict__.get("_pair_write_failures") or {}).get(
+            str(getattr(self, "working_dir", "") or ""))
+        if not pending and not failed:
+            self._forget_drawings()
+            return False
+        print(f"[WORKSPACE-SWITCH] {len(pending or {}) or len(failed or {})} "
+              f"drawing(s) that could not be saved are not kept")
+        self._forget_drawings()
+        return True
 
     def _set_workspace_path_quiet(self, path):
         """Point this step at `path` -- the first half of the quiet load.
@@ -4487,15 +4646,18 @@ class TrainingAnnotationController:
         * Layout is UNKNOWN or NEW (not LEGACY/MIXED — those need migration)
         * Zero runs exist in `runs/` dir
 
-        User can cancel — they can still click [+ New Run] later.  If they
-        try to take an action that requires an active run (e.g., Accept),
-        the persist-path safety net in `_persist_curated_training_pair`
-        auto-bootstraps a 'default' run as a fallback.
+        User can cancel — they can still click [+ New Run] later.  Until a
+        run exists Step 2 writes nothing in the folder (no run is made
+        behind the user's back; `_step2_write_target`).
         """
         try:
             from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
             from packages.epicycle_io.step2_run_manifest import list_run_ids
             ws = workspace_path
+            # A run list Step 2 cannot read is not "no runs yet": no New Run
+            # dialog opens by itself there (the run row says why).
+            if self._step2_write_target() in ("unreadable", "locked"):
+                return
             layout_v = _step2_paths.detect_layout_version(ws)
             if layout_v not in (
                 _step2_paths.LAYOUT_VERSION_UNKNOWN,
@@ -4513,8 +4675,8 @@ class TrainingAnnotationController:
             # Show a brief intro dialog explaining why we're asking, then
             # open New Run.
             self._show_first_run_intro_dialog(ws)
-            # Open the New Run dialog.  If user cancels, persist-path
-            # safety net catches them later.
+            # Open the New Run dialog.  If the user cancels, nothing is
+            # written until a run exists.
             self._on_new_run_button_clicked()
         except Exception as e:
             pass
@@ -4573,62 +4735,6 @@ class TrainingAnnotationController:
             dlg.exec_()
         except Exception as e:
             pass
-
-    def _auto_bootstrap_default_run_if_fresh(self, workspace_path):
-        """Auto-create a 'default' run on fresh workspaces.
-
-        User-reported 2026-05-24: a brand-new workspace (no migration,
-        no existing state) had New Run grayed out + no way to start
-        Step 2 work.  Mirror the migration's "create default run"
-        behavior for fresh workspaces so every workspace always has
-        at least one active run.
-
-        No-op if:
-        * State JSON already exists (existing v3 workspace)
-        * Legacy data exists (migration will handle it)
-        * Any run dirs already exist on disk
-        """
-        try:
-            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-            from napari_epicycle.hitl_training_annotation._run_management import (
-                create_run_on_disk, add_run_to_state_json,
-            )
-            ws = workspace_path
-            # Skip if already has any Step 2 state
-            if _step2_paths.is_new_layout_state(ws):
-                return
-            layout_v = _step2_paths.detect_layout_version(ws)
-            if layout_v != _step2_paths.LAYOUT_VERSION_UNKNOWN:
-                # LEGACY / MIXED → migration handles it; NEW → we already
-                # have state.  Only UNKNOWN means truly fresh.
-                return
-            # Check if any run dirs already exist (defensive)
-            existing = _step2_paths.list_run_ids if hasattr(
-                _step2_paths, "list_run_ids"
-            ) else None
-            from packages.epicycle_io.step2_run_manifest import list_run_ids
-            runs_root = _step2_paths.step2_runs_root(ws)
-            if runs_root.is_dir() and list_run_ids(runs_root):
-                return  # Some run dirs already exist; don't clobber
-
-            # Create the default run + activate it
-            create_run_on_disk(
-                ws, _step2_paths.DEFAULT_RUN_ID,
-                display_name="Default",
-                target="",
-                description=(
-                    "Auto-created on fresh workspace load.  Rename via "
-                    "the Manage Runs panel, or create additional runs "
-                    "via the [+ New Run] button."
-                ),
-            )
-            add_run_to_state_json(
-                ws, _step2_paths.DEFAULT_RUN_ID, activate=True,
-            )
-        except Exception as e:
-            pass
-            # Non-fatal — user can still manually click [+ New Run]
-            # (it's enabled on fresh workspaces by the picker refresh)
 
     def _maybe_prompt_step2_migration(self, workspace_path):
         """Show the Step 2 directory restructure migration prompt if the
@@ -5607,7 +5713,8 @@ class TrainingAnnotationController:
             _atomic_write_json(save_path, config)
             print(f"Training config saved to {save_path}")
             self._apply_model_source_selection(emit_log=False)
-            self._save_internal_state()  # Optional: persist updated current_config
+            # Optional: persist updated current_config
+            self._say_direct_save(self._save_internal_state(), "after Save Config")
 
     # Load and set previous training configuations
     def _sync_training_controls_from_config(self):
@@ -5847,7 +5954,9 @@ class TrainingAnnotationController:
         if not getattr(self, "working_dir", None):
             self._append_ui_log("[HISTORY] no workspace loaded — open one first.")
             return
-        run_id = getattr(self, "active_run_id", None) or "default"
+        if not self._require_run("History"):
+            return
+        run_id = str(getattr(self, "active_run_id", "") or "")
         try:
             from napari_epicycle.hitl_training_annotation._training_history_dialog import (
                 TrainingHistoryDialog,
@@ -7047,6 +7156,8 @@ class TrainingAnnotationController:
 
     def _launch_multiview_annotator(self):
         self._ensure_runtime_defaults()
+        if not self._require_run(self._step2_word("CUR_BTN_OPEN")):
+            return
         self._ensure_llm_removal_callback()
         ui = getattr(self, "ui", None)
         # Open acts on the LOADED patch
@@ -7088,7 +7199,7 @@ class TrainingAnnotationController:
             # loaded) and tailors the message.
             no_patch_loaded = not str(getattr(self, "loaded_patch_name", "") or "")
             patches_available = len(self._available_patch_ids() or [])
-            run_id = getattr(self, "active_run_id", "default")
+            run_id = str(getattr(self, "active_run_id", "") or "")
 
             if no_patch_loaded:
                 if patches_available:
@@ -7208,6 +7319,8 @@ class TrainingAnnotationController:
 
     def _create_empty_mask_seed(self):
         self._ensure_runtime_defaults()
+        if not self._require_run("Empty mask"):
+            return
         self._exit_refine_mode()
         slice_label, input_stack = self._collect_current_slice_input()
         if slice_label is None or input_stack is None:
@@ -7249,6 +7362,8 @@ class TrainingAnnotationController:
     # Run segmentation
     def _run_segmentation(self):
         self._ensure_runtime_defaults()
+        if not self._require_run("Predict"):
+            return
         """
         Segments the currently viewed 2D slice from all active image layers in the viewer.
         A single slice label is tracked in the QWidget list, e.g., 'patch2_XY_Z100'.
@@ -7271,6 +7386,11 @@ class TrainingAnnotationController:
 
         # Auto-adjust channels for single-channel input.
         self._adjust_channels_for_input(input_stack)
+
+        # What a refused save of the prediction puts back: the record before
+        # the guard below may demote it, and the caches before the
+        # prediction lands in them.
+        _prior_record = self._sample_record_before(slice_label)
 
         # Guard: warn if the slice is already curated OR carries hand edits
         # (main panel path).
@@ -7379,10 +7499,18 @@ class TrainingAnnotationController:
         # Persist predicted mask to disk so it survives napari restart.
         # This allows direct Accept on predicted slices after reload.
         _persisted_predicted = False
+        _refused_predicted = False
         try:
             persisted = self._persist_curated_training_pair(slice_label)
             if persisted:
                 _persisted_predicted = True
+            elif self._pair_refused(persisted):
+                # The prediction stays on screen; the record goes back to
+                # what it was, so nothing claims a saved pair.
+                self._undo_refused_pair(slice_label, _prior_record)
+                self._resegment_prior_status = None
+                self._say_pair_refused("Predict", [slice_label])
+                _refused_predicted = True
         except Exception as exc:
             print(f"[ERROR] predicted pair persist failed for {slice_label!r}: "
                   f"{type(exc).__name__}: {exc} "
@@ -7404,7 +7532,11 @@ class TrainingAnnotationController:
         # the next save trigger (Accept, Stage, Train); closing napari
         # before any of those drops them.
         self._schedule_state_save()
-        self._append_ui_log(f"[SEGMENT] Prediction for {slice_label} applied to volume.")
+        if _refused_predicted:
+            self._append_ui_log(f"[SEGMENT] Prediction for {slice_label} is on "
+                                f"screen only; it was not saved.")
+        else:
+            self._append_ui_log(f"[SEGMENT] Prediction for {slice_label} applied to volume.")
 
     # View selected segmentation for a selected slice
     def _view_selected_results(self):
@@ -7613,12 +7745,15 @@ class TrainingAnnotationController:
         slice, stores in segmentation_manager, persists to disk, and
         marks as accepted.
         """
+        if not self._require_run(self._step2_word("CUR_BTN_ACCEPT")):
+            return
         selected = self._parse_all_selected_sample_ids()
         if not selected:
             self._append_ui_log("[WARN] No slice selected to accept.")
             return
 
         accepted_count = 0
+        refused = []
         for slice_label in selected:
             view_name = self._infer_view_from_label(slice_label)
             s_idx = self._infer_slice_index(slice_label)
@@ -7647,6 +7782,9 @@ class TrainingAnnotationController:
                 self._append_ui_log(f"[WARN] Slice {slice_label} has empty mask — skipped.")
                 continue
 
+            # What a refused write puts back (taken before the caches change).
+            prior = self._sample_record_before(slice_label)
+
             # Store in segmentation_manager.
             self.segmentation_manager.data_masks[slice_label] = mask2d.astype(np.int32)
 
@@ -7669,15 +7807,21 @@ class TrainingAnnotationController:
 
             accepted_voxels = int(np.sum(mask2d > 0))
             next_label = int(mask2d.max())
+
+            self._touch_sample(slice_label, status="accepted", view=view_name)
+            if self._pair_refused(self._persist_curated_training_pair(slice_label)):
+                self._undo_refused_pair(slice_label, prior)
+                refused.append(slice_label)
+                continue
+            # The session log lists only accepts that were written.
             self.curation_sessions.record_accept(
                 slice_label=slice_label,
                 label_id=int(next_label),
                 voxel_count=accepted_voxels,
             )
-
-            self._touch_sample(slice_label, status="accepted", view=view_name)
-            self._persist_curated_training_pair(slice_label)
             accepted_count += 1
+        if refused:
+            self._say_pair_refused(self._step2_word("CUR_BTN_ACCEPT"), refused)
         self._sync_data_to_add_list()
         self._refresh_sample_queue()
         self._refresh_round_status()
@@ -7713,6 +7857,9 @@ class TrainingAnnotationController:
         2D input image, registers both in segmentation_manager, and marks the
         sample as 'accepted'.
         """
+        if not self._require_run(self._step2_word("CUR_BTN_ACCEPT")):
+            return {"ok": False, "message": self._no_run_sentence(),
+                    "refusal": "no-run"}
         plane = str(orientation or "").upper()
         if plane not in {"XY", "XZ", "YZ"}:
             return {"ok": False, "message": f"Unsupported orientation: {orientation}"}
@@ -7801,6 +7948,9 @@ class TrainingAnnotationController:
             return {"ok": False, "message": f"No image data for {slice_label}."}
         input_stack = np.stack(collected_channels, axis=0)
 
+        # What a refused write puts back (taken before the caches change).
+        prior = self._sample_record_before(slice_label)
+
         # --- Register in segmentation manager (always update with latest data) ---
         self.segmentation_manager.data_names[slice_label] = True
         self.segmentation_manager.data_inputs[slice_label] = input_stack
@@ -7827,6 +7977,16 @@ class TrainingAnnotationController:
             view_name = self._infer_view_from_label(slice_label)
             self._touch_sample(slice_label, status="accepted", view=view_name)
             persisted = self._persist_curated_training_pair(slice_label)
+        if self._pair_refused(persisted):
+            self._undo_refused_pair(slice_label, prior)
+            self._say_pair_refused(self._step2_word("CUR_BTN_ACCEPT"),
+                                   [slice_label])
+            return {
+                "ok": False,
+                "message": f"{slice_label} was not saved, so it was not accepted.",
+                "slice_label": slice_label,
+                "refusal": self._last_pair_refusal,
+            }
         self._sync_data_to_add_list()
         self._refresh_sample_queue()
         self._refresh_round_status()
@@ -8433,6 +8593,8 @@ class TrainingAnnotationController:
         except Exception as exc:
             self._append_ui_log(f"[TRAIN] Working directory pre-flight check failed: {exc}")
             return
+        if not self._require_run(self._step2_word("TRAIN_BTN_TEXT")):
+            return
         # Auto-collect config from UI before every training run.
         self.current_config = self._collect_training_config()
         if not self.current_config:
@@ -8468,12 +8630,42 @@ class TrainingAnnotationController:
         #   2. Stop the state-save timer AGAIN (after the curating
         #      flush re-armed it) so it doesn't fire mid-training.
         try:
-            self._flush_pending_state_timers()
+            if self._flush_pending_state_timers() is False:
+                # a drawing that could not be saved: nothing is trained on a
+                # pair that is not on disk
+                from ..ui import _step2_text as _T2
+                error = {
+                    "folder": _T2.DRAWING_CAUSE_FOLDER,
+                    "no-run": _T2.DRAWING_CAUSE_NO_RUN,
+                }.get(str(getattr(self, "_last_pair_refusal", "") or ""),
+                      _T2.DRAWING_CAUSE_OTHER)
+                sentence = _T2.TRAIN_DRAWING_NOT_SAVED.format(error=error)
+                print(f"[TRAIN] {sentence}")
+                self._append_ui_log(f"[TRAIN] {sentence}")
+                self._tell_step2(_T2.TRAIN_SAVE_REFUSED_TITLE, sentence)
+                return
             try:
-                self._save_internal_state()
-                print("[TRAIN-SAFETY] F2.1 explicit state save after flush")
+                _pre_train = self._save_internal_state()
+                if _pre_train != "refused":   # a refusal: the one line below
+                    self._say_direct_save(_pre_train, "before training")
             except Exception as exc:
-                print(f"[TRAIN-SAFETY] F2.1 explicit save FAILED (non-fatal): {exc}")
+                # a save that raised wrote nothing: the same as a refusal
+                self._last_save_error = f"{type(exc).__name__}: {exc}"
+                _pre_train = "refused"
+            if _pre_train == "refused":
+                # A round trained on a state that cannot be saved would live
+                # only in memory: a later session would repeat its round
+                # number and write over its model.  Nothing starts.
+                from ..ui import _step2_text as _T2
+                error = str(getattr(self, "_last_save_error", "") or "")
+                sentence = _T2.TRAIN_SAVE_REFUSED.format(error=error)
+                print(f"[TRAIN] {sentence}")
+                self._append_ui_log(f"[TRAIN] {sentence}")
+                self._tell_step2(_T2.TRAIN_SAVE_REFUSED_TITLE, sentence)
+                _t = getattr(self, "_state_save_timer", None)
+                if _t is not None and hasattr(_t, "isActive") and _t.isActive():
+                    _t.stop()
+                return
             # The curating-persist flush calls _schedule_state_save at
             # the end → re-arms the timer.  Stop it again.
             _state_timer = getattr(self, "_state_save_timer", None)
@@ -8624,9 +8816,12 @@ class TrainingAnnotationController:
         # (the `_switch_run_guard` HARD-BLOCK should prevent this, but
         # defense-in-depth pairs with the C1 working_dir snapshot), the
         # worker uses the snapshot run rather than the live attribute.
-        active_run_snapshot = str(
-            getattr(self, "active_run_id", "default") or "default"
-        )
+        active_run_snapshot = str(getattr(self, "active_run_id", "") or "")
+        # Where this round may write, decided ONCE here on the main thread
+        # ("run" / "legacy" / anything else = refuse).  The worker never
+        # re-reads the layout from disk: a passing file-system hiccup there
+        # would otherwise send a run's round into the old layout.
+        write_target_snapshot = self._step2_write_target()
         # Commit 5 audit Audit-2/5 MEDIUM #1 fix: same risk class as
         # M-B but for the loaded patch name.  Read at `_run_training_work
         # :5141` as `dataset_id` (used in artifact filenames/manifests).
@@ -8661,6 +8856,7 @@ class TrainingAnnotationController:
             config_snapshot=config_snapshot,
             working_dir_snapshot=working_dir_snapshot,
             active_run_snapshot=active_run_snapshot,
+            write_target_snapshot=write_target_snapshot,
             selected_view_snapshot=selected_view_snapshot,
             current_round_by_view_snapshot=current_round_by_view_snapshot,
             loaded_patch_snapshot=loaded_patch_snapshot,
@@ -8731,8 +8927,11 @@ class TrainingAnnotationController:
         # survives to the next session — detected at controller init
         # and surfaced as a warning so the user knows partial state
         # may be on disk.
+        # Only for a round that will run: a launch with no run to write into
+        # is refused by the worker at once and must leave no file behind.
         try:
-            self._write_training_in_progress_marker(round_id=round_id)
+            if write_target_snapshot in ("run", "legacy"):
+                self._write_training_in_progress_marker(round_id=round_id)
         except Exception as exc:
             print(f"[TRAIN-SAFETY] F1.5 marker write FAILED (non-fatal): {exc}")
 
@@ -8889,6 +9088,23 @@ class TrainingAnnotationController:
                 f"{[str(o.get('archive_path')) for o in manual_recover]}"
             )
 
+    @staticmethod
+    def _no_run_folder_for_training(run_id, write_target=None) -> str:
+        """The refusal a training round raises when it has no run folder to
+        write into (no run, an unreadable run list, or the run's folder could
+        not be worked out)."""
+        run_id = str(run_id or "").strip()
+        if write_target == "unreadable":
+            from ..ui import _step2_text as _T2
+            return _T2.TRAIN_NO_RUN_LIST
+        if not run_id:
+            return ("Training found no run in this project, so nothing was "
+                    "trained. Your staged slices are unchanged; make a run "
+                    "with New Run, then press Train again.")
+        return (f"Training could not find this run's folder "
+                f"(artifacts/step2/runs/{run_id}), so nothing was trained. "
+                f"Your staged slices are unchanged; press Train to try again.")
+
     def _run_training_work(
         self,
         *,
@@ -8902,6 +9118,7 @@ class TrainingAnnotationController:
         config_snapshot,
         working_dir_snapshot,
         active_run_snapshot=None,
+        write_target_snapshot=None,
         loaded_patch_snapshot=None,
         selected_view_snapshot=None,
         current_round_by_view_snapshot=None,
@@ -8928,9 +9145,17 @@ class TrainingAnnotationController:
         # rounds/round_NN/ so they don't accumulate in legacy training_data/
         # post-migration.
         round_data_root_override = None
+        # The round writes where the main thread said at launch
+        # (`write_target_snapshot`): "run" -> the run's folders, "legacy" ->
+        # the old layout of an old-layout folder; anything else, or a run
+        # folder that cannot be worked out, refuses -- nothing is trained
+        # and nothing is written anywhere else.
+        if write_target_snapshot not in ("run", "legacy"):
+            raise RuntimeError(self._no_run_folder_for_training(
+                active_run_snapshot, write_target_snapshot))
         try:
             from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-            if _step2_paths.is_new_layout_state(working_dir_snapshot):
+            if write_target_snapshot == "run":
                 # M-B: use launch-time snapshot.  Commit 6 audit hardening:
                 # the previous `if snap else live` fallback was unreachable
                 # in production (launcher always provides non-empty) but
@@ -8965,8 +9190,9 @@ class TrainingAnnotationController:
                       f"copies to NEW layout: {round_data_root_override} "
                       f"(bucket={bucket} round_idx={round_idx} from snapshots)")
         except Exception as _e:
-            print(f"[STEP2-TRAIN] new-layout path resolution failed "
-                  f"({type(_e).__name__}: {_e}), using legacy training_data/")
+            raise RuntimeError(
+                self._no_run_folder_for_training(active_run_snapshot)
+            ) from _e
 
         # Commit 5 audit Audit-2/5 MEDIUM #1 fix: use snapshot (captured
         # at launch) instead of live `self.loaded_patch_name` so a mid-
@@ -9057,7 +9283,7 @@ class TrainingAnnotationController:
                     from packages.epicycle_io.step2_run_manifest import (
                         read_run_manifest,
                     )
-                    if _step2_paths.is_new_layout_state(working_dir_snapshot):
+                    if write_target_snapshot == "run":
                         # M-B: require launch-time snapshot (Commit 6
                         # audit hardening — see launcher-site comment).
                         if not active_run_snapshot:
@@ -9160,9 +9386,10 @@ class TrainingAnnotationController:
             _bucket_for_view = None
             _active_run = None
             _round_idx = None
+            _folder_diag = None
             try:
                 from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-                if _step2_paths.is_new_layout_state(working_dir_snapshot):
+                if write_target_snapshot == "run":
                     _bucket_for_view = "lateral" if str(view_type).lower() in ("xy", "spatial", "lateral") else "axial"
                     # M-B: require launch-time snapshot (Commit 6
                     # audit hardening — see launcher-site comment).
@@ -9204,15 +9431,29 @@ class TrainingAnnotationController:
                     # inherit this prefix automatically via Cellpose's
                     # `{model_name}_{suffix}` convention.
                     weights_filename = f"{_active_run}_{_bucket_for_view}_round_{_round_idx:02d}"
-                    print(f"[STEP2-TRAIN] Phase 6c routing view={view_type!r} "
-                          f"-> bucket={_bucket_for_view} | "
-                          f"round_idx={_round_idx} (per-bucket) | "
-                          f"save_path={save_path_override} | "
-                          f"weights_filename={weights_filename!r} | "
-                          f"predictions_dir={predictions_dir_override}")
+                    _folder_diag = (
+                        f"[STEP2-TRAIN] Phase 6c routing view={view_type!r} "
+                        f"-> bucket={_bucket_for_view} | "
+                        f"round_idx={_round_idx} (per-bucket) | "
+                        f"save_path={save_path_override} | "
+                        f"weights_filename={weights_filename!r} | "
+                        f"predictions_dir={predictions_dir_override}")
             except Exception as _e:
-                print(f"[STEP2-TRAIN] Phase 6c path resolution failed "
-                      f"({type(_e).__name__}: {_e}); falling back to legacy")
+                # The run's model folder could not be worked out: this view
+                # is not trained (never sent to the old models/ folder); the
+                # other bucket still trains and the slices stay staged.
+                print(f"[STEP2-TRAIN] run model folder for view={view_type!r} "
+                      f"could not be worked out ({type(_e).__name__}: {_e}); "
+                      f"this view is not trained")
+                round_backend["failed_views"].append({
+                    "view_type": view_type,
+                    "stage": "folder",
+                    "error": (f"this run's model folder (artifacts/step2/runs/"
+                              f"{active_run_snapshot}) could not be found"),
+                })
+                continue
+            if _folder_diag:
+                print(_folder_diag)
 
             try:
                 result = self.training_manager.run_training(
@@ -9348,20 +9589,16 @@ class TrainingAnnotationController:
         # switched workspace).  The training pipeline already routed
         # outputs based on the start-of-train workspace; the legacy
         # JSON-write gate must use the SAME decision.
-        try:
-            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-            _is_new_layout_snapshot = bool(
-                _step2_paths.is_new_layout_state(working_dir_snapshot)
-            )
-        except Exception:
-            _is_new_layout_snapshot = False
+        # Both come from the main-thread snapshot taken at launch, never
+        # from a fresh disk read.
         return {
             "samples": samples,
             "round_losses": round_losses,
             "round_checkpoints": round_checkpoints,
             "round_inference": round_inference,
             "round_backend": round_backend,
-            "is_new_layout": _is_new_layout_snapshot,
+            "is_new_layout": write_target_snapshot == "run",
+            "write_target": write_target_snapshot,
             # Release-hardening #6: staged labels that actually produced a
             # training pair (see `_on_training_finished`'s commit gate).
             "used_slice_labels": list(used_slice_labels),
@@ -10079,9 +10316,10 @@ class TrainingAnnotationController:
         """
         pending = getattr(self, "_curating_persist_pending", None)
         if not isinstance(pending, dict) or not pending:
-            return
+            return True
         items = list(pending.items())
         any_saved = False
+        all_written = True
         for slice_label, (sl, vw, idx) in items:
             try:
                 labels_layer_name = self._work_labels_layer_name_for_view(view_name=vw)
@@ -10102,8 +10340,16 @@ class TrainingAnnotationController:
                 # offload the TIFF write to the background writer so the UI
                 # never blocks.  Hard barriers flush it before train/switch/close.
                 result = self._persist_curated_training_pair(sl, async_write=True)
+                if self._pair_refused(result):
+                    self._say_pair_refused("drawing", [sl], box=False)
+                    # kept: the next flush (or the first run) writes it
+                    all_written = False
+                    continue
                 if result:
                     any_saved = True
+                    # kept until its background write is known to be good
+                    self.__dict__.setdefault("_drawings_in_flight", {})[
+                        slice_label] = (sl, vw, idx)
                     # Step 2 look (brick A, D24): the real write -- the
                     # picture re-draws 1.5 s after the LAST one
                     _w = getattr(getattr(self, "ui", None),
@@ -10115,6 +10361,10 @@ class TrainingAnnotationController:
                             pass
                 pending.pop(slice_label, None)
             except Exception as exc:
+                print(f"[STEP2-WRITE] {slice_label}: the drawing could not "
+                      f"be saved ({type(exc).__name__}: {exc}); kept to try "
+                      f"again")
+                all_written = False
                 continue
         if any_saved:
             try:
@@ -10130,6 +10380,7 @@ class TrainingAnnotationController:
                 self._refresh_run_picker()
             except Exception as e:
                 pass
+        return all_written
 
     def _ensure_llm_removal_callback(self):
         """One-time setup: register callback for trash-can layer deletion.
@@ -10317,9 +10568,24 @@ class TrainingAnnotationController:
             except Exception:
                 pass
         try:
-            self._save_internal_state()
-        except Exception:
-            pass
+            # A refused save (the run's step2_state.json could not be
+            # written) or a run list Step 2 cannot read leaves the state in
+            # memory; at close that memory is about to go, so it is written
+            # to a rescue file instead.
+            _close_target = self._step2_write_target()
+            _close_result = self._save_internal_state()
+            if self._rescue_needed(_close_result, _close_target) or (
+                    _close_result == "unreadable"
+                    and self._rescue_worth_writing()):
+                self._write_rescue_state()
+            elif _close_result == "unreadable":
+                print("[STATE-SAVE] closing on a run list Step 2 cannot use: "
+                      "nothing was done here, no rescue file")
+            elif _close_result == "no-run" and (self.working_dir or ""):
+                print("[STATE-SAVE] closing with no run: nothing saved")
+        except Exception as exc:      # noqa: BLE001 -- napari is closing
+            print(f"[STATE-SAVE] the save at close failed "
+                  f"({type(exc).__name__}: {exc})")
         # Brick D: join the patch-load thread.  It only holds a TIFF read
         # (measured 10 ms on real lab patches, linear in file size), so a
         # short bounded wait is enough; abandoning it would let a worker
@@ -10708,16 +10974,12 @@ class TrainingAnnotationController:
         # finished-signal, the two callsites must agree.  Fall back to
         # the fresh read for back-compat with placeholder/legacy paths
         # that don't populate the snapshot key.
-        if "is_new_layout" in result:
-            _on_new_layout = bool(result.get("is_new_layout"))
-        else:
-            try:
-                from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-                _on_new_layout = _step2_paths.is_new_layout_state(self.working_dir)
-            except Exception:
-                _on_new_layout = False
-        if _on_new_layout:
-            print(f"[STEP2-TRAIN] new layout: skipping legacy "
+        # The old layout's JSONs are written only for a round the main
+        # thread launched on an old-layout folder (`write_target` ==
+        # "legacy"); a run, or a result without that answer, writes none.
+        _write_target = result.get("write_target")
+        if _write_target != "legacy":
+            print(f"[STEP2-TRAIN] write target {_write_target!r}: no legacy "
                   f"artifacts/models + artifacts/inference JSON writes "
                   f"(schema 2.0 manifest in model_dir is canonical)")
         else:
@@ -10920,7 +11182,7 @@ class TrainingAnnotationController:
 
         # Persist state immediately after round increment so it's consistent on crash.
         try:
-            self._save_internal_state()
+            self._say_direct_save(self._save_internal_state(), "after training")
         except Exception as exc:
             self._append_ui_log(f"[WARN] State save after training failed: {exc}")
 
@@ -10991,19 +11253,6 @@ class TrainingAnnotationController:
             self._clear_training_in_progress_marker()
         except Exception:
             pass
-
-    def _quarantine_corrupt_state_file(self, path, error=None):
-        """Move a corrupt JSON state file aside (release-hardening #3).
-
-        Returns the quarantine path or None.  Best-effort: a failure here
-        must never block the save that is about to rewrite the file.
-        """
-        try:
-            return _quarantine_corrupt_file(path)
-        except Exception as _e:
-            print(f"[STATE-SAVE] quarantine of {path} failed "
-                  f"({type(_e).__name__}: {_e})")
-            return None
 
     def _report_failed_views(self, round_backend, successful_buckets=None):
         """Surface per-view training/inference failures (defect #2).
@@ -11324,30 +11573,210 @@ class TrainingAnnotationController:
         self._state_save_timer.start(delay_ms)
 
     def _debounced_state_save(self):
+        """Save, then print one console line chosen by what the save did.
+
+        A save refused because there is no run prints once per workspace per
+        session; a save that failed prints once per distinct error (the
+        timer fires every 500 ms, so repeating it would bury the console).
+        """
         try:
-            self._save_internal_state()
-            n_records = len(getattr(self, "sample_records", {}))
-            # Log the actual destination filename so debug logs are
-            # accurate (was misleadingly hardcoded "hitl_state.json"
-            # even when actually writing to step2_state.json post-
-            # migration).  User-reported 2026-05-23.
-            try:
-                from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-                _state_name = (
-                    _step2_paths.STEP2_STATE_FILENAME
-                    if _step2_paths.is_new_layout_state(self.working_dir)
-                    else _step2_paths.LEGACY_STATE_FILENAME
-                )
-            except Exception:
-                _state_name = "hitl_state.json"
-            print(f"[STATE-SAVE] saved {_state_name} | {n_records} sample records | working_dir={self.working_dir}")
+            result = self._save_internal_state()
         except Exception as exc:
             print(f"[WARN] Debounced state save failed: {exc}")
+            return
+        if result == "no-run":
+            seen = self.__dict__.setdefault("_no_run_save_logged", set())
+            ws = str(self.working_dir or "")
+            if ws not in seen:
+                seen.add(ws)
+                print("[STATE-SAVE] no run yet: nothing saved")
+                self._append_ui_log(f"[STATE-SAVE] {self._no_run_sentence()}")
+            return
+        if result == "unreadable":
+            seen = self.__dict__.setdefault("_unreadable_save_logged", set())
+            ws = str(self.working_dir or "")
+            if ws not in seen:
+                seen.add(ws)
+                print(f"[STATE-SAVE] {self._unreadable_console_line()}")
+                self._append_ui_log(
+                    f"[STATE-SAVE] {self._no_run_sentence('unreadable')}")
+            return
+        if result == "refused":
+            error = str(getattr(self, "_last_save_error", "") or "")
+            seen = self.__dict__.setdefault("_save_errors_logged", set())
+            _key = (str(self.working_dir or ""), error)
+            if _key not in seen:
+                seen.add(_key)
+                print(f"[STATE-SAVE] could not save step2_state.json ({error}); "
+                      "nothing was moved elsewhere, your work is still open "
+                      "and the next change tries again")
+                from ..ui import _step2_text as _T2
+                self._append_ui_log(f"[STATE-SAVE] {_T2.STATE_NOT_SAVED} ({error})")
+                self._tell_step2(_T2.STATE_NOT_SAVED_TITLE, _T2.STATE_NOT_SAVED)
+            return
+        if result in ("saved-v3", "saved-legacy"):
+            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+            _state_name = (_step2_paths.STEP2_STATE_FILENAME if result == "saved-v3"
+                           else _step2_paths.LEGACY_STATE_FILENAME)
+            n_records = len(getattr(self, "sample_records", {}))
+            print(f"[STATE-SAVE] saved {_state_name} | {n_records} sample records | working_dir={self.working_dir}")
+
+    def _say_direct_save(self, result, when: str) -> None:
+        """A save called directly (not the debounced one): the console says
+        what it did, and a save that wrote nothing says so in the log."""
+        if result in ("saved-v3", "saved-legacy"):
+            print(f"[STATE-SAVE] saved {when}")
+            return
+        from ..ui import _step2_text as _T2
+        if result == "refused":
+            error = str(getattr(self, "_last_save_error", "") or "")
+            print(f"[STATE-SAVE] could not save {when} ({error}); the state "
+                  "stays in memory")
+            self._append_ui_log(f"[STATE-SAVE] {_T2.STATE_NOT_SAVED} ({error})")
+        elif result == "unreadable":
+            print(f"[STATE-SAVE] nothing saved {when}: "
+                  f"{self._unreadable_console_line()}")
+            self._append_ui_log(
+                f"[STATE-SAVE] {self._no_run_sentence('unreadable')}")
+        else:
+            print(f"[STATE-SAVE] nothing saved {when}: no run yet")
+
+    def _unreadable_kind(self) -> str:
+        """Why a folder's run list cannot be used: ``"corrupt"``
+        (step2_state.json is there but is not a run list), ``"mixed"``
+        (old-layout data beside a folder of runs and no list) or
+        ``"runs-only"`` (run folders and no list)."""
+        try:
+            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+            ws = (getattr(self, "working_dir", "") or "").strip()
+            if _step2_paths.is_new_layout_state(ws):
+                return "corrupt"
+            if (_step2_paths.detect_layout_version(ws)
+                    == _step2_paths.LAYOUT_VERSION_MIXED):
+                return "mixed"
+        except Exception:      # noqa: BLE001 -- the plainest reading
+            pass
+        return "runs-only"
+
+    def _set_aside_unreadable_run_list(self):
+        """Keep one byte copy of an unreadable step2_state.json beside it
+        (an identical copy already there is reused).  Returns the copy."""
+        if self._unreadable_kind() != "corrupt":
+            return None
+        try:
+            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+            from napari_epicycle.hitl_training_annotation._run_management import (
+                copy_unreadable_state_aside,
+            )
+            copy = copy_unreadable_state_aside(
+                _step2_paths.state_json_path(self.working_dir))
+        except Exception:      # noqa: BLE001 -- the file itself is untouched
+            copy = None
+        copies = self.__dict__.setdefault("_unreadable_copies", {})
+        copies[str(getattr(self, "working_dir", "") or "")] = copy
+        return copy
+
+    def _unreadable_console_line(self) -> str:
+        kind = self._unreadable_kind()
+        if kind == "corrupt":
+            copies = getattr(self, "_unreadable_copies", None) or {}
+            ws = str(getattr(self, "working_dir", "") or "")
+            if ws not in copies:
+                return ("the run list file (step2_state.json) could not be "
+                        "read; nothing saved; a copy is set aside at the "
+                        "first save")
+            copy = copies[ws]
+            where = (f"a copy was set aside at {copy}" if copy
+                     else "a copy could not be set aside")
+            return (f"the run list file (step2_state.json) could not be read; "
+                    f"{where}; nothing saved")
+        if kind == "mixed":
+            return ("old-layout Step 2 data beside a folder of runs and no run "
+                    "list: nothing saved (Browse offers the migration)")
+        return "run folders but no run list (step2_state.json): nothing saved"
+
+    @staticmethod
+    def _state_fingerprint(state) -> str:
+        return json.dumps(state, sort_keys=True, default=str)
+
+    def _note_saved_state(self, state) -> None:
+        """Remember what this workspace's last successful save wrote."""
+        ws = str(getattr(self, "working_dir", "") or "")
+        saved = self.__dict__.setdefault("_last_saved_states", {})
+        saved[ws] = self._state_fingerprint(state)
+        # a later "no run" / "cannot use the run list" here is a new event
+        for name in ("_no_run_save_logged", "_unreadable_save_logged"):
+            said = self.__dict__.get(name)
+            if isinstance(said, set):
+                said.discard(ws)
+
+    def _rescue_worth_writing(self) -> bool:
+        """Is the state a save could not write worth a rescue file?  Yes when
+        it holds slices, or differs from this workspace's last successful
+        save; a session that did nothing on a run list Step 2 cannot use
+        leaves no file."""
+        state = getattr(self, "_refused_state", None)
+        if not isinstance(state, dict):
+            return False
+        if state.get("sample_records"):
+            return True
+        last = (getattr(self, "_last_saved_states", None) or {}).get(
+            str(getattr(self, "working_dir", "") or ""))
+        return last is not None and last != self._state_fingerprint(state)
+
+    def _rescue_needed(self, result, target) -> bool:
+        """After a save that did not write: is a rescue file due?  Yes for a
+        refused save of a run or an old-layout folder; for a project whose
+        run list cannot be used (or was locked at load) only when slices
+        were worked on there."""
+        if result not in ("refused", "unreadable"):
+            return False
+        if target in ("run", "legacy"):
+            return result == "refused"
+        state = getattr(self, "_refused_state", None)
+        return isinstance(state, dict) and bool(state.get("sample_records"))
+
+    def _write_rescue_state(self):
+        """At close, put the state a refused save could not write into
+        ``artifacts/step2/rescue/<timestamp>.json`` (never a layout marker).
+
+        Returns the rescue path, or None when there was nothing to rescue or
+        the rescue write failed (the console says which).
+        """
+        state = getattr(self, "_refused_state", None)
+        if not isinstance(state, dict):
+            return None
+        try:
+            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            path = _step2_paths.step2_root(self.working_dir) / "rescue" / f"{ts}.json"
+            payload = dict(state)
+            payload["rescue_active_run_id"] = str(getattr(self, "active_run_id", "") or "")
+            payload["rescue_error"] = str(getattr(self, "_last_save_error", "") or "")
+            _atomic_write_json(path, payload)
+        except Exception as exc:      # noqa: BLE001 -- napari is closing
+            print(f"[STATE-SAVE] could not save at close, and the rescue copy "
+                  f"failed too ({type(exc).__name__}: {exc}); this session's "
+                  "unsaved changes are lost")
+            return None
+        print(f"[STATE-SAVE] could not save at close; your state is in {path}")
+        return path
 
     def _save_internal_state(self):
+        """Save Step 2's state where ``_step2_write_target`` allows.
+
+        Returns ``"saved-v3"`` (the active run's entry in step2_state.json),
+        ``"saved-legacy"`` (hitl_state.json of an old-layout folder),
+        ``"no-run"`` (no active run: nothing is written), ``"unreadable"``
+        (a run list Step 2 cannot read, or run folders with no list: nothing
+        is written, a copy of an unreadable list is set aside once, and the
+        state is kept for the close-time rescue) or ``"refused"`` (the run's
+        save failed; nothing is written anywhere else and the state stays in
+        memory).
+        """
         self._ensure_runtime_defaults()
         if not self.working_dir:
-            return
+            return "no-run"
         # 2026-05-27 widget→config refresh — pull current widget values
         # into self.current_config BEFORE writing the state JSON.
         # Pre-fix: training widgets only flowed to cfg when user clicked
@@ -11356,26 +11785,13 @@ class TrainingAnnotationController:
         # every UI change.  Now the save path snapshots widgets every
         # time, so persisted state always reflects what the user sees.
         self._refresh_current_config_from_widgets()
-        # Audit-fix 2026-05-24: guard against saving phantom state for a
-        # run that doesn't actually exist on disk.  Happens when
-        # workspace is fresh + `active_run_id` defaulted to "default"
-        # via the peek fallback BUT no `runs/default/` dir exists.  In
-        # that case the previous save behavior would create a phantom
-        # `runs.default` entry in step2_state.json, polluting the
-        # multi-run list.
-        try:
-            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-            active = getattr(self, "active_run_id", _step2_paths.DEFAULT_RUN_ID)
-            runs_root = _step2_paths.step2_runs_root(self.working_dir)
-            if runs_root.is_dir():
-                run_dir = runs_root / (active or _step2_paths.DEFAULT_RUN_ID)
-                if not run_dir.is_dir():
-                    print(f"[STATE-SAVE] skipping — active_run_id "
-                          f"{active!r} has no run dir on disk (likely "
-                          f"a fresh workspace fallback default)")
-                    return
-        except Exception:
-            pass  # any failure → fall through + attempt the save normally
+        # One rule for every Step 2 writer: no active run (a fresh folder, a
+        # run whose folder is gone) or a run list that cannot be read means
+        # NOTHING is written -- never a phantom run entry, never the old
+        # layout's hitl_state.json.
+        target = self._step2_write_target()
+        if target not in ("run", "legacy", "unreadable", "locked"):
+            return "no-run"
         self._ensure_curation_checkpoint_state()
         state = {
             "schema_version": 2,
@@ -11408,17 +11824,31 @@ class TrainingAnnotationController:
             "loaded_patch_name": str(getattr(self, "loaded_patch_name", "") or ""),
         }
         state = self._relativize_state(state)
+        if target == "locked":
+            # The run list could not be opened: nothing is written, the state
+            # is kept (the close-time rescue), the next change tries again.
+            from ..ui import _step2_text as _T2
+            self._refused_state = state
+            self._last_save_error = _T2.RUN_LIST_LOCKED
+            return "refused"
+        if target == "unreadable":
+            # Nothing is written beside a run list Step 2 cannot read; what is
+            # in memory is kept for the rescue file at close.
+            self._refused_state = state
+            self._last_save_error = self._no_run_sentence("unreadable")
+            self._set_aside_unreadable_run_list()
+            return "unreadable"
 
-        # Step 2 directory restructure (Phase 3): if workspace has been
-        # migrated to v3, write to step2_state.json in v3-wrapped shape
-        # alongside (or instead of) the legacy save.  Otherwise legacy
-        # service writes hitl_state.json.
+        # A run: write the run's entry of step2_state.json (v3 shape).  An
+        # old-layout folder: the legacy service writes hitl_state.json.  The
+        # choice is the predicate's, made above; a failure in the run's save
+        # is a refusal (the state stays in memory), never a legacy write.
         try:
             from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
             from napari_epicycle.hitl_training_annotation._migrate_step2_layout import (
                 wrap_state_schema_v2_to_v3,
             )
-            if _step2_paths.is_new_layout_state(self.working_dir):
+            if target == "run":
                 # Wrap the flat v2-shaped state into v3 + write to step2_state.json
                 #
                 # CRITICAL (audit-found 2026-05-23): pass active_run_id so the
@@ -11448,7 +11878,8 @@ class TrainingAnnotationController:
                         # this merge, saving while active on run X would drop
                         # every other run's entry from the file.  Audit fix
                         # 2026-05-23 (Phase 8a).
-                        existing_runs = existing.get("runs") or {}
+                        existing_runs = (existing.get("runs") or {}
+                                         if isinstance(existing, dict) else None)
                         if isinstance(existing_runs, dict):
                             for _other_run_id, _other_run_state in existing_runs.items():
                                 if _other_run_id != current_active_run and isinstance(_other_run_state, dict):
@@ -11480,42 +11911,23 @@ class TrainingAnnotationController:
                         # IS the new active and should win.
                         v3["active_run_id"] = current_active_run
                     except (OSError, _json.JSONDecodeError, ValueError) as _corrupt_err:
-                        # Corrupt existing v3 file: WARN LOUDLY (audit fix
-                        # 2026-05-23).  User edits to display_name / target
-                        # will be lost.  Don't fail the save — partial state
-                        # is worse than overwrite — but make sure the user
-                        # sees this.
-                        #
-                        # Release-hardening #3 (2026-09-07): QUARANTINE the
-                        # bad file as `<name>.corrupt-<ts>` first.  Pre-fix
-                        # the fresh-defaults write destroyed the only copy
-                        # of state that could still be hand-recovered (it
-                        # carries every OTHER run's entry).
-                        _quarantined = self._quarantine_corrupt_state_file(
-                            v3_path, _corrupt_err
-                        )
-                        # 1b#5: say what is ACTUALLY lost.  The file we are
-                        # about to write carries only the ACTIVE run — every
-                        # OTHER run's entry (and any edited display_name /
-                        # target) came from the file we could not read.
-                        _msg = (
-                            f"[STATE-SAVE] WARNING: existing step2_state.json "
-                            f"is corrupt ({type(_corrupt_err).__name__}: "
-                            f"{_corrupt_err}); writing fresh defaults for the "
-                            f"active run {current_active_run!r} only.  Every "
-                            f"OTHER run's entry is NOT in the new file."
-                        )
-                        if _quarantined is not None:
-                            _msg += (f"  Recover them from the quarantined "
-                                     f"copy at {_quarantined}.")
-                        else:
-                            _msg += ("  The corrupt file could NOT be "
-                                     "quarantined — it has been overwritten.")
-                        print(_msg)
-                        try:
-                            self._append_ui_log(_msg)
-                        except Exception:
-                            pass
+                        # The run list could not be read back just now (a
+                        # lock held by a virus scanner, a sync tool or a
+                        # backup; or the file went bad after the check).  A
+                        # file carrying only the active run must NEVER be
+                        # written over it: every other run's entry lives in
+                        # that file.  The save is refused (the state stays
+                        # in memory) and the next change tries again.
+                        raise RuntimeError(
+                            f"step2_state.json could not be read back "
+                            f"({type(_corrupt_err).__name__}: {_corrupt_err}); "
+                            f"it was left as it is"
+                        ) from _corrupt_err
+                    if not (isinstance(existing, dict)
+                            and isinstance(existing.get("runs"), dict)):
+                        raise RuntimeError(
+                            "step2_state.json is not a run list any more; it "
+                            "was left as it is")
                 _atomic_write_json(v3_path, v3)
 
                 # Also write per-bucket round_metadata.json + selected_indices.json
@@ -11536,18 +11948,31 @@ class TrainingAnnotationController:
 
                 # Don't also call the legacy persistence service — would
                 # write a stale hitl_state.json alongside step2_state.json.
-                return
+                self._refused_state = None
+                self._note_saved_state(state)
+                self._forget_said_refusals("_save_errors_logged")
+                return "saved-v3"
         except Exception as _e:
-            print(f"[STATE-SAVE] v3 save attempt failed ({type(_e).__name__}: {_e}), "
-                  f"falling back to legacy persistence service")
+            self._last_save_error = f"{type(_e).__name__}: {_e}"
+            self._refused_state = state
+            return "refused"
 
-        self.persistence.save_hitl_state(
-            working_dir=self.working_dir,
-            state_dict=state,
-            current_round=self.current_round,
-            current_config=self.current_config,
-            training_data_by_round=self.training_data_by_round,
-        )
+        try:
+            self.persistence.save_hitl_state(
+                working_dir=self.working_dir,
+                state_dict=state,
+                current_round=self.current_round,
+                current_config=self.current_config,
+                training_data_by_round=self.training_data_by_round,
+            )
+        except Exception as _e:
+            self._last_save_error = f"{type(_e).__name__}: {_e}"
+            self._refused_state = state
+            return "refused"
+        self._refused_state = None
+        self._note_saved_state(state)
+        self._forget_said_refusals("_save_errors_logged")
+        return "saved-legacy"
 
 
     def _write_per_bucket_metadata_for_active_run(self, active_run_id: str) -> None:
@@ -11718,16 +12143,351 @@ class TrainingAnnotationController:
     # All emit [STEP2-RUN] console diagnostics for traceability.
     # ------------------------------------------------------------------
 
+    def _step2_write_target(self):
+        """Where may Step 2 write in this workspace right now?
+
+        ``"run"``        -- the active run has its folder: the new layout.
+        ``"legacy"``     -- the folder holds old-layout Step 2 data and no
+                            run list: the old layout, until it is migrated.
+        ``"unreadable"`` -- a run list (or a runs folder) is there but cannot
+                            be read: write nothing, never overwrite it.
+        ``"locked"``     -- the run list could not be opened when the project
+                            was opened (a lock): every write is refused, and
+                            each check tries to open it again.
+        ``None``         -- no workspace, or no active run (a fresh folder):
+                            write nothing.
+
+        Reads the disk on every call (never a remembered answer); only the
+        parse of ``step2_state.json`` is remembered, keyed by its size and
+        modification time.  Any error answers ``None``: an error never means
+        the old layout.
+        """
+        try:
+            ws = (getattr(self, "working_dir", "") or "").strip()
+            if not ws:
+                return None
+            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+            if ws in (getattr(self, "_run_list_locked", None) or set()):
+                if not self._run_list_opens_again(ws):
+                    return "locked"
+            if _step2_paths.is_new_layout_state(ws):
+                if not self._step2_state_file_readable(
+                    _step2_paths.state_json_path(ws)
+                ):
+                    return "unreadable"
+                rid = str(getattr(self, "active_run_id", "") or "").strip()
+                if rid and _step2_paths.run_root(ws, rid).is_dir():
+                    return "run"
+                return None
+            if _step2_paths.step2_runs_root(ws).is_dir():
+                return "unreadable"
+            if _step2_paths.detect_layout_version(ws) in (
+                _step2_paths.LAYOUT_VERSION_LEGACY,
+                _step2_paths.LAYOUT_VERSION_MIXED,
+            ):
+                return "legacy"
+            return None
+        except Exception as exc:      # noqa: BLE001 -- an error never means "legacy"
+            print(f"[STEP2-WRITE] could not tell where to write "
+                  f"({type(exc).__name__}: {exc}); writing nothing")
+            return None
+
+    def _mark_run_list_locked(self, exc) -> None:
+        """The run list could not be opened at load: say it once (console
+        and log) and refuse every write until it opens again."""
+        ws = str(getattr(self, "working_dir", "") or "")
+        self.__dict__.setdefault("_run_list_locked", set()).add(ws)
+        said = self.__dict__.setdefault("_run_list_lock_said", set())
+        if ws in said:
+            return
+        said.add(ws)
+        from ..ui import _step2_text as _T2
+        print(f"[STATE-LOAD] {_T2.RUN_LIST_LOCKED} "
+              f"({type(exc).__name__}: {exc})")
+        self._append_ui_log(f"[STATE-LOAD] {_T2.RUN_LIST_LOCKED}")
+
+    def _run_list_opens_again(self, ws) -> bool:
+        """A run list locked at load: try it again (never a remembered
+        answer).  When it opens, the project is loaded as if just opened
+        (slices worked on meanwhile are kept) and True is returned."""
+        if getattr(self, "_reloading_after_lock", False):
+            return True
+        try:
+            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+            with open(_step2_paths.state_json_path(ws), "r",
+                      encoding="utf-8") as fh:
+                fh.read(1)
+        except FileNotFoundError:
+            pass                    # gone: the ordinary rules apply
+        except OSError:
+            return False
+        self._run_list_locked.discard(ws)
+        for name in ("_run_list_lock_said",):
+            said = self.__dict__.get(name)
+            if isinstance(said, set):
+                said.discard(ws)
+        print("[STATE-LOAD] the run list opens again; loading the project")
+        before = dict(getattr(self, "sample_records", None) or {})
+        self._reloading_after_lock = True
+        try:
+            self._load_internal_state()
+            records = getattr(self, "sample_records", None)
+            if isinstance(records, dict):
+                for key, value in before.items():
+                    records.setdefault(key, value)
+            for refresh in ("_refresh_run_picker", "_refresh_round_status"):
+                try:
+                    getattr(self, refresh)()
+                except Exception:      # noqa: BLE001 -- cosmetic
+                    pass
+        except Exception as exc:      # noqa: BLE001 -- said; the rules apply
+            print(f"[STATE-LOAD] the reload after the lock failed "
+                  f"({type(exc).__name__}: {exc})")
+        finally:
+            self._reloading_after_lock = False
+        return True
+
+    def _step2_state_file_readable(self, path) -> bool:
+        """True when ``path`` parses as a JSON object whose ``runs`` is a table.
+
+        Only a parse is remembered (keyed by size and modification time).  A
+        file that could not be OPENED just now (a lock held by a backup, a
+        sync tool or a virus scanner right after a write) is not a damaged
+        one: the answer is "readable" and is never remembered, so the write
+        itself tries, fails and is refused for this save only (said once,
+        tried again at the next change); no copy is set aside."""
+        try:
+            st = Path(path).stat()
+        except OSError:
+            return True
+        key = (str(path), st.st_mtime_ns, st.st_size)
+        cached = getattr(self, "_step2_state_parse_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            ok = isinstance(data, dict) and isinstance(data.get("runs"), dict)
+        except OSError as exc:
+            said = self.__dict__.setdefault("_open_failure_said", set())
+            ws = str(getattr(self, "working_dir", "") or "")
+            if ws not in said:
+                said.add(ws)
+                print(f"[STEP2-WRITE] step2_state.json could not be opened "
+                      f"just now ({type(exc).__name__}: {exc}); this save is "
+                      f"tried and the next one reads it again")
+            return True
+        except ValueError:
+            ok = False
+        said = self.__dict__.get("_open_failure_said")
+        if isinstance(said, set):
+            said.discard(str(getattr(self, "working_dir", "") or ""))
+        self._step2_state_parse_cache = (key, ok)
+        return ok
+
+    # -- actions that need a run ----------------------------------------
+    #
+    # A folder with no run gets no Step 2 file, so an action that would write
+    # one (Predict, Accept, Finalize, Train, the annotator, the imports, the
+    # history) first asks `_require_run`.  It says which state the folder is
+    # in, then offers New Run through a seam (`_ask_for_run`) that tests
+    # replace; New Run itself goes through the same handler and the same gate
+    # as the New Run button.  Boxes that only tell go through `_tell_step2`.
+
+    def _no_run_state(self, target=None) -> str:
+        """Why there is no run to write into: ``"no-workspace"``,
+        ``"unreadable"`` (the run list cannot be read), ``"none-active"``
+        (runs exist, none is active) or ``"no-runs"``.  ``target`` is a
+        `_step2_write_target` answer already in hand (read again if None)."""
+        if not (getattr(self, "working_dir", "") or "").strip():
+            return "no-workspace"
+        if target is None:
+            target = self._step2_write_target()
+        if target in ("unreadable", "locked"):
+            return target
+        try:
+            has_runs = bool(self._list_runs_for_ui())
+        except Exception:      # noqa: BLE001 -- the plain sentence is the safe one
+            has_runs = False
+        return "none-active" if has_runs else "no-runs"
+
+    def _no_run_sentence(self, state=None) -> str:
+        """The one sentence each no-run state shows (log, picker, boxes)."""
+        from ..ui import _step2_text as _T2
+        state = state or self._no_run_state()
+        if state == "unreadable":
+            return {
+                "corrupt": _T2.RUN_LIST_UNREADABLE,
+                "mixed": _T2.RUN_LIST_MIXED,
+            }.get(self._unreadable_kind(), _T2.RUN_LIST_MISSING)
+        return {
+            "no-workspace": _T2.RUN_NEED_WORKSPACE,
+            "none-active": _T2.RUN_NONE_ACTIVE,
+            "locked": _T2.RUN_LIST_LOCKED,
+        }.get(state, _T2.MSG_STEP2_NO_RUN)
+
+    def _require_run(self, action: str) -> bool:
+        """True when ``action`` may run: the active run has its folder, or
+        the folder is an old-layout one (it keeps its old-layout writes).
+
+        Otherwise nothing is done: the console and the log say so, the box
+        (`_ask_for_run`) offers New Run when one can be made, and False is
+        returned whatever the answer -- after New Run the user presses
+        ``action`` again.
+        """
+        target = self._step2_write_target()
+        if target in ("run", "legacy"):
+            return True
+        state = self._no_run_state(target)
+        if state == "unreadable":
+            self._set_aside_unreadable_run_list()
+        sentence = self._no_run_sentence(state)
+        print(f"[STEP2-RUN] {action}: "
+              f"{self._NO_RUN_WORDS.get(state, 'no run yet')}")
+        self._append_ui_log(f"[STEP2-RUN] {sentence}")
+        try:
+            wants_new_run = bool(self._ask_for_run(action, sentence, state))
+        except Exception as exc:      # noqa: BLE001 -- the log line is written
+            print(f"[STEP2-RUN] the no-run box could not be shown "
+                  f"({type(exc).__name__}: {exc})")
+            wants_new_run = False
+        if wants_new_run and state in ("no-runs", "none-active"):
+            self._on_new_run_button_clicked()
+        return False
+
+    #: the console's word for each no-run state
+    _NO_RUN_WORDS = {
+        "no-runs": "no run yet",
+        "none-active": "no run is active",
+        "unreadable": "the run list cannot be used",
+        "locked": "the run list could not be opened just now",
+        "no-workspace": "no workspace",
+    }
+
+    def _ask_for_run(self, action: str, sentence: str, state: str) -> bool:
+        """The box of an action that needs a run; True when the user chose
+        New Run.  A seam: tests replace it, so no test builds a real modal.
+
+        Offers New Run only where one can be made (``no-runs`` /
+        ``none-active`` and the New Run button's own gate); an unreadable run
+        list or no workspace gets an OK-only box with its sentence.
+        """
+        if not self._can_show_modal():
+            return False
+        from ..ui import _step2_text as _T2
+        if state in ("no-runs", "none-active") and self._layout_allows_new_run():
+            from napari_epicycle.ui_shell.theme import themed_confirm
+            word = {
+                _T2.CUR_IMPORT_PAIRS_ACTION: _T2.CUR_IMPORT_PAIRS_WORD,
+                _T2.CUR_IMPORT_EXTERNAL_ACTION: _T2.CUR_IMPORT_EXTERNAL_WORD,
+            }.get(action, str(action).rstrip("\u2026").strip())
+            body = (_T2.RUN_ASK_BODY if state == "no-runs"
+                    else _T2.RUN_ASK_BODY_PICK).format(action=word)
+            return bool(themed_confirm(
+                getattr(self, "ui", None),
+                title=(_T2.RUN_ASK_TITLE if state == "no-runs"
+                       else _T2.RUN_ASK_TITLE_PICK),
+                message=body, confirm_text=_T2.RUN_ASK_NEW_RUN,
+                cancel_text=_T2.RUN_ASK_NOT_NOW))
+        title = (_T2.RUN_UNREADABLE_TITLE if state in ("unreadable", "locked")
+                 else _T2.RUN_NEED_WORKSPACE_TITLE if state == "no-workspace"
+                 else _T2.RUN_ASK_TITLE_PICK if state == "none-active"
+                 else _T2.RUN_ASK_TITLE)
+        self._tell_step2(title, sentence)
+        return False
+
+    def _tell_step2(self, title: str, sentence: str) -> None:
+        """An OK-only themed box parented to the Step 2 panel (a seam tests
+        replace).  Skipped where no modal can be shown; callers have always
+        written the log line first."""
+        if not self._can_show_modal():
+            return
+        try:
+            from napari_epicycle.ui_shell.theme import themed_notice
+            themed_notice(getattr(self, "ui", None), str(title), str(sentence))
+        except Exception as exc:      # noqa: BLE001 -- the log line is written
+            print(f"[STEP2] box unavailable ({type(exc).__name__}: {exc}): "
+                  f"{sentence}")
+
+    def _say_pair_refused(self, action: str, slice_labels, *, box: bool = True):
+        """Say that the pair(s) of ``slice_labels`` were not written (their
+        records were already put back).  The log line every time; the box
+        once per cause per workspace per session, naming ``action``.  With
+        ``box=False`` (the per-stroke drawing save) one log line per cause."""
+        from ..ui import _step2_text as _T2
+        labels = [str(x) for x in (slice_labels or []) if x]
+        cause = str(getattr(self, "_last_pair_refusal", "") or "no-run")
+        if cause == "no-run":
+            sentence = self._no_run_sentence()
+        elif box:
+            sentence = _T2.PAIR_NOT_SAVED.format(action=action)
+        else:
+            sentence = _T2.PAIR_NOT_SAVED_DRAWING
+        said = self.__dict__.setdefault("_pair_refusals_said", set())
+        key = (str(getattr(self, "working_dir", "") or ""), cause,
+               "box" if box else "drawing")
+        if not box and key in said:
+            return
+        self._append_ui_log(
+            f"[STEP2-WRITE] {', '.join(labels) or action}: {sentence}")
+        if key in said:
+            return
+        said.add(key)
+        if box:
+            self._tell_step2(_T2.PAIR_NOT_SAVED_TITLE, sentence)
+
+    def _say_new_run_failed(self, handle: str, error: BaseException) -> None:
+        """New Run was accepted but the run was not made (or not switched
+        to): the log line and an OK box, never swallowed."""
+        from ..ui import _step2_text as _T2
+        from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+        from napari_epicycle.hitl_training_annotation._run_management import (
+            RunAlreadyExistsError, Step2StateUnreadableError,
+        )
+        detail = f"{type(error).__name__}: {error}"
+        print(f"[STEP2-RUN] New Run failed for {handle!r}: {detail}")
+        ws = (getattr(self, "working_dir", "") or "").strip()
+        try:
+            layout = _step2_paths.detect_layout_version(ws) if ws else None
+            made = bool(ws and handle
+                        and _step2_paths.run_root(ws, handle).is_dir())
+        except Exception:      # noqa: BLE001 -- the general sentence still applies
+            layout, made = None, False
+        if isinstance(error, _RunListBusyError):
+            sentence = error.sentence
+            if error.detail:
+                self._append_ui_log(f"[STEP2-RUN] New Run: {error.detail}")
+        elif isinstance(error, RunAlreadyExistsError):
+            sentence = _T2.NEW_RUN_EXISTS.format(handle=handle)
+        elif isinstance(error, Step2StateUnreadableError):
+            sentence = self._no_run_sentence("unreadable")
+        elif layout in (_step2_paths.LAYOUT_VERSION_LEGACY,
+                        _step2_paths.LAYOUT_VERSION_MIXED):
+            from napari_epicycle.ui_shell._workspace_facts import (
+                MSG_STEP2_LEGACY_LAYOUT,
+            )
+            sentence = MSG_STEP2_LEGACY_LAYOUT
+        elif made:
+            sentence = _T2.NEW_RUN_SWITCH_FAILED.format(handle=handle,
+                                                        error=detail)
+        else:
+            sentence = _T2.NEW_RUN_FAILED.format(error=detail)
+        self._append_ui_log(f"[STEP2-RUN] {sentence}")
+        self._tell_step2(_T2.NEW_RUN_FAILED_TITLE, sentence)
+
     def _layout_allows_new_run(self) -> bool:
         """Can a new run be created in this workspace right now?
 
         User-reported 2026-05-24: a FRESH workspace (no state JSON, no legacy
         `training_data/`) had New Run greyed out, so nobody could bootstrap
         the first run.  Enable on UNKNOWN (fresh) or NEW (already migrated);
-        disable only on LEGACY / MIXED, which must migrate first (and are
-        auto-prompted to on Browse).
+        disable on LEGACY / MIXED, which must migrate first (and are
+        auto-prompted to on Browse), and on a run list Step 2 cannot read
+        (a new run would be written over it).
         """
         if not (getattr(self, "working_dir", "") or "").strip():
+            return False
+        if self._step2_write_target() in ("unreadable", "locked"):
             return False
         try:
             from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
@@ -11759,6 +12519,14 @@ class TrainingAnnotationController:
         # Block signals during repopulate — setCurrentIndex below would
         # otherwise fire ``activated`` and re-enter the switch handler.
         combo.blockSignals(True)
+        # The picker's own tooltip, kept to put back: a sentence the narrow
+        # box elides is put in the tooltip while the picker shows it.
+        if not hasattr(self, "_run_picker_tooltip") and hasattr(combo, "toolTip"):
+            try:
+                self._run_picker_tooltip = str(combo.toolTip() or "")
+            except Exception:      # noqa: BLE001 -- cosmetic
+                pass
+        tooltip = getattr(self, "_run_picker_tooltip", None)
         try:
             combo.clear()
             summaries = self._list_runs_for_ui()
@@ -11771,23 +12539,31 @@ class TrainingAnnotationController:
                 # leaves a fresh project in.  The wording is
                 # `_workspace_facts.MSG_STEP2_NO_RUN` verbatim, so the picker
                 # and the banner cannot tell the user two different stories
-                # (a test pins the two strings together).
-                if (getattr(self, "working_dir", "") or "").strip():
-                    combo.addItem(
-                        "No run yet \u2014 click New Run to start training.",
-                        "")
-                else:
+                # (a test pins the two strings together).  A run list Step 2
+                # cannot read says so instead, and offers no New Run.
+                from ..ui import _step2_text as _T2
+                if not (getattr(self, "working_dir", "") or "").strip():
                     combo.addItem("(no workspace)", "")
+                elif self._step2_write_target() in ("unreadable", "locked"):
+                    tooltip = self._no_run_sentence()
+                    combo.addItem(tooltip, "")
+                else:
+                    combo.addItem(_T2.MSG_STEP2_NO_RUN, "")
                 combo.setEnabled(False)   # nothing to pick from, yet
                 # New Run is the ONE thing this line asks for, so it must be
                 # pressable -- gated exactly as the populated branch below
                 # gates it (a LEGACY / MIXED workspace still migrates first).
+                # Import pairs / Import external / Manage runs act on a run,
+                # and there is none: they stay greyed until one exists.
                 ready_for_new_run = self._layout_allows_new_run()
-                for btn_name in ("new_run_button", "import_pairs_button",
-                                 "import_external_button", "manage_runs_button"):
+                for btn_name, enabled in (
+                        ("new_run_button", ready_for_new_run),
+                        ("import_pairs_button", False),
+                        ("import_external_button", False),
+                        ("manage_runs_button", False)):
                     btn = getattr(ui, btn_name, None)
                     if btn is not None:
-                        btn.setEnabled(ready_for_new_run)
+                        btn.setEnabled(enabled)
                 return
 
             # Dropdown + New Run / Import / Manage enable logic.
@@ -11810,14 +12586,21 @@ class TrainingAnnotationController:
                 if btn is not None:
                     btn.setEnabled(ready_for_new_run)
 
-            # Add active + non-archived runs first (sorted: active first)
+            # Add active + non-archived runs first (sorted: active first).
+            # The current run is Step 2's own (``active_run_id``, "" when the
+            # run list's active run has no folder), not only the list's flag.
+            current = str(getattr(self, "active_run_id", "") or "")
+
+            def _is_current(s):
+                return bool(s.get("is_active")) and s.get("run_id") == current
+
             active_idx = -1
             non_archived = [s for s in summaries if not s.get("archived")]
-            non_archived.sort(key=lambda s: (not s.get("is_active"), s["run_id"]))
+            non_archived.sort(key=lambda s: (not _is_current(s), s["run_id"]))
             for s in non_archived:
                 label = self._format_run_picker_label(s)
                 combo.addItem(label, s["run_id"])
-                if s.get("is_active"):
+                if _is_current(s):
                     active_idx = combo.count() - 1
 
             # Then archived runs (separator + prefix)
@@ -11830,8 +12613,21 @@ class TrainingAnnotationController:
 
             if active_idx >= 0:
                 combo.setCurrentIndex(active_idx)
+            else:
+                # Runs, but none is current (the list names none, or a run
+                # whose folder is gone): the picker says so, instead of
+                # showing its first run as if it were the current one.
+                from ..ui import _step2_text as _T2
+                combo.insertItem(0, _T2.RUN_PICKER_NONE_ACTIVE, "")
+                combo.setCurrentIndex(0)
+                tooltip = _T2.RUN_PICKER_NONE_ACTIVE
         finally:
             combo.blockSignals(False)
+            if tooltip is not None and hasattr(combo, "setToolTip"):
+                try:
+                    combo.setToolTip(tooltip)
+                except Exception:      # noqa: BLE001 -- cosmetic
+                    pass
             # audit M2: the Run summary's pairs / description read
             # ``_run_summaries_cache``, which this method just rewrote, and
             # every caller refreshes the badges BEFORE the picker -- so
@@ -11876,7 +12672,15 @@ class TrainingAnnotationController:
             return  # placeholder entry
         try:
             self._switch_active_run(slug)
-        except Exception as e:
+        except Exception as e:      # noqa: BLE001 -- said, never swallowed
+            from ..ui import _step2_text as _T2
+            sentence = (e.sentence if isinstance(e, _RunListBusyError)
+                        else _T2.RUN_SWITCH_FAILED.format(
+                            name=self._get_run_display_name(slug) or slug,
+                            error=f"{type(e).__name__}: {e}"))
+            print(f"[STEP2-RUN] {sentence}")
+            self._append_ui_log(f"[STEP2-RUN] {sentence}")
+            self._tell_step2(_T2.RUN_SWITCH_FAILED_TITLE, sentence)
             # Restore dropdown to actual active run
             self._refresh_run_picker()
 
@@ -11887,6 +12691,23 @@ class TrainingAnnotationController:
         run + activates it + refreshes the dropdown.
         """
         if not self.working_dir:
+            return
+        # The button's own gate, also for the "New Run…" of the no-run box:
+        # an old-layout folder migrates first and a run list Step 2 cannot
+        # read is never written over (each says why).
+        if not self._layout_allows_new_run():
+            state = self._no_run_state()
+            if state in ("unreadable", "locked"):
+                sentence = self._no_run_sentence(state)
+            else:
+                from napari_epicycle.ui_shell._workspace_facts import (
+                    MSG_STEP2_LEGACY_LAYOUT,
+                )
+                sentence = MSG_STEP2_LEGACY_LAYOUT
+            print(f"[STEP2-RUN] New Run refused: {sentence}")
+            self._append_ui_log(f"[STEP2-RUN] {sentence}")
+            from ..ui import _step2_text as _T2
+            self._tell_step2(_T2.NEW_RUN_FAILED_TITLE, sentence)
             return
         try:
             from napari_epicycle.hitl_training_annotation._new_run_dialog import (
@@ -11916,6 +12737,10 @@ class TrainingAnnotationController:
             run_model_sources=run_model_sources,
             step3_refined_sources=step3_refined_sources,
             parent=getattr(self, "ui", None),
+            # "Create only" keeps the current run active; with no current
+            # run there is nothing to stay on, so the first run is always
+            # made and switched to.
+            allow_create_only=self._step2_write_target() == "run",
         )
         if not dialog.exec_():
             return
@@ -11936,12 +12761,18 @@ class TrainingAnnotationController:
                 activate=result.get("activate", True),
             )
             self._refresh_run_picker()
-        except Exception as e:
-            pass
+        except Exception as e:      # noqa: BLE001 -- said, never swallowed
+            self._say_new_run_failed(str(result.get("slug", "") or ""), e)
+            try:
+                self._refresh_run_picker()
+            except Exception:      # noqa: BLE001 -- the failure is already said
+                pass
 
     def _on_import_external_clicked(self):
         """Phase 8f — open External Pair Import dialog + execute on accept."""
         if not self.working_dir:
+            return
+        if not self._require_run(self._step2_word("CUR_IMPORT_EXTERNAL_ACTION")):
             return
         from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
         if not _step2_paths.is_new_layout_state(self.working_dir):
@@ -12396,7 +13227,11 @@ class TrainingAnnotationController:
         firing between active_run_id assignment and _load_internal_state
         could write empty-state into NEW run's slot or fire saves against
         the wrong workspace.  Same root cause as Phase 5 audit findings.
+
+        Returns False when a pending drawing could not be written (it stays
+        pending), True otherwise.
         """
+        drawing_saved = True
         try:
             timer = getattr(self, "_state_save_timer", None)
             if timer is not None and hasattr(timer, "isActive") and timer.isActive():
@@ -12412,9 +13247,12 @@ class TrainingAnnotationController:
             flush_method = getattr(self, "_flush_curating_persist_pending", None)
             if flush_method is not None:
                 try:
-                    flush_method()
+                    if flush_method() is False:
+                        drawing_saved = False
                 except Exception as e:
-                    pass
+                    print(f"[STEP2-WRITE] the drawing flush failed "
+                          f"({type(e).__name__}: {e})")
+                    drawing_saved = False
         except Exception as e:
             pass
         # Stage 2 barrier: the curating-persist drain above ENQUEUES async TIFF
@@ -12430,10 +13268,51 @@ class TrainingAnnotationController:
                 writer.flush()
             except Exception:
                 pass
+        # background writes that failed: said where the user looks, and they
+        # count as a drawing that could not be saved
+        # A failed one goes back into the pending drawings, so it is written
+        # again at the next flush and every barrier (a switch, Train) stops
+        # until it is written or dropped ("Switch anyway").
+        failures = (self.__dict__.get("_pair_write_failures") or {}).get(
+            str(getattr(self, "working_dir", "") or "")) or {}
+        if failures:
+            from ..ui import _step2_text as _T2
+            pending = self.__dict__.setdefault("_curating_persist_pending", {})
+            in_flight = self.__dict__.get("_drawings_in_flight") or {}
+            for (slice_label, _key), (path, error) in list(failures.items()):
+                self._append_ui_log(
+                    f"[STEP2-WRITE] {slice_label}: {_T2.PAIR_NOT_SAVED_DRAWING}"
+                    f" ({type(error).__name__}: {error})")
+                entry = in_flight.get(slice_label)
+                if entry is not None and isinstance(pending, dict):
+                    pending.setdefault(slice_label, entry)
+            self._last_pair_refusal = "folder"
+            drawing_saved = False
+        in_flight = self.__dict__.get("_drawings_in_flight")
+        if isinstance(in_flight, dict):
+            failed_labels = {label for label, _key in failures}
+            for label in [k for k in in_flight if k not in failed_labels]:
+                in_flight.pop(label, None)
+        return drawing_saved
+
+    def _forget_drawings(self) -> None:
+        """Drop the drawings waiting to be written and the background writes
+        that failed, for this workspace ("Switch anyway", leaving it)."""
+        pending = getattr(self, "_curating_persist_pending", None)
+        if isinstance(pending, dict):
+            pending.clear()
+        in_flight = self.__dict__.get("_drawings_in_flight")
+        if isinstance(in_flight, dict):
+            in_flight.clear()
+        failures = self.__dict__.get("_pair_write_failures")
+        if isinstance(failures, dict):
+            failures.pop(str(getattr(self, "working_dir", "") or ""), None)
 
     def _on_import_pairs_clicked(self):
         """Phase 8d — open Import Pairs dialog + execute import on accept."""
         if not self.working_dir:
+            return
+        if not self._require_run(self._step2_word("CUR_IMPORT_PAIRS_ACTION")):
             return
         from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
         if not _step2_paths.is_new_layout_state(self.working_dir):
@@ -12760,6 +13639,11 @@ class TrainingAnnotationController:
             from napari_epicycle.hitl_training_annotation._run_management import (
                 list_run_summaries,
             )
+            # A run list Step 2 cannot read (a corrupt step2_state.json, or
+            # runs/ with no state file): list nothing -- no synthetic
+            # "Default (legacy layout)" row and nothing to pick or name.
+            if self._step2_write_target() in ("unreadable", "locked"):
+                return []
             if not _step2_paths.is_new_layout_state(self.working_dir):
                 if (_step2_paths.detect_layout_version(self.working_dir)
                         == _step2_paths.LAYOUT_VERSION_UNKNOWN):
@@ -12834,10 +13718,35 @@ class TrainingAnnotationController:
             )
 
         from napari_epicycle.hitl_training_annotation._run_management import (
+            Step2StateUnreadableError,
             add_run_to_state_json,
             create_run_on_disk,
         )
+        # A run list Step 2 cannot read (or run folders with no list) is
+        # refused BEFORE the run's folder is made: no orphan folder, and the
+        # list is never written over.
+        if self._step2_write_target() == "unreadable":
+            self._set_aside_unreadable_run_list()
+            raise Step2StateUnreadableError(self._no_run_sentence("unreadable"))
+        if self._step2_write_target() == "locked":
+            raise _RunListBusyError(self._no_run_sentence("locked"))
 
+        # With no current run (a new folder, or the active run's folder is
+        # gone) the run list is written with the new run active, so it never
+        # names an active run that does not exist.  Asked BEFORE the run's
+        # folder is made (a runs/ folder with no run list reads unreadable).
+        # Such a run is always switched to (also for "Create only"), so the
+        # run list and Step 2 name the same current run.
+        first_run = self._step2_write_target() is None
+        if first_run:
+            activate = True
+        # the folders this call may create, outermost first, and whether each
+        # was there before: a failed run list write takes back only these
+        _made_here = [
+            p for p in (Path(self.working_dir) / "artifacts",
+                        _step2_paths.step2_root(self.working_dir),
+                        _step2_paths.step2_runs_root(self.working_dir))
+            if not p.exists()]
         manifest = create_run_on_disk(
             self.working_dir,
             slug,
@@ -12853,15 +13762,34 @@ class TrainingAnnotationController:
         # state's Model section is pre-populated from the dialog choice.
         # ``target`` is the run's bucket (lateral/axial) — needed for fork
         # mode's checkpoint resolution.
-        add_run_to_state_json(
-            self.working_dir,
-            slug,
-            activate=False,
-            init_spec=init_spec,
-            target_bucket=target or None,
-        )
+        try:
+            add_run_to_state_json(
+                self.working_dir,
+                slug,
+                activate=first_run,
+                init_spec=init_spec,
+                target_bucket=target or None,
+            )
+        except OSError as exc:
+            # The run list could not be written just now (a lock): the run's
+            # folder, made a moment ago, is removed so nothing is left
+            # unlisted, and the user is asked to try again.
+            import shutil
+            try:
+                shutil.rmtree(_step2_paths.run_root(self.working_dir, slug))
+                for folder in reversed(_made_here):
+                    if folder.is_dir() and not any(folder.iterdir()):
+                        folder.rmdir()
+            except Exception as rm_exc:      # noqa: BLE001 -- said below
+                print(f"[STEP2-RUN] the folder of {slug!r} could not be "
+                      f"removed ({rm_exc})")
+            from ..ui import _step2_text as _T2
+            raise _RunListBusyError(
+                _T2.NEW_RUN_LIST_LOCKED,
+                f"{type(exc).__name__}: {exc}") from exc
 
         if activate:
+            self._run_just_made = slug if first_run else ""
             self._switch_active_run(slug)
         return manifest
 
@@ -12888,8 +13816,23 @@ class TrainingAnnotationController:
         from napari_epicycle.hitl_training_annotation._run_management import (
             set_active_run_in_state_json,
         )
-        old_run_id = getattr(self, "active_run_id", "default")
+        # "" = no current run (a fresh folder): never a made-up "default",
+        # which would make a first run called "default" look already active.
+        old_run_id = str(getattr(self, "active_run_id", "") or "")
         if slug == old_run_id:
+            return
+        if not self._switch_target_usable(slug):
+            return
+        if not self._run_list_opens_now():
+            from ..ui import _step2_text as _T2
+            print(f"[STEP2-RUN] switch to {slug!r} cancelled: the run list "
+                  f"could not be opened just now")
+            self._append_ui_log(f"[STEP2-RUN] {_T2.RUN_LIST_LOCKED}")
+            self._tell_step2(_T2.RUN_SWITCH_FAILED_TITLE, _T2.RUN_LIST_LOCKED)
+            try:
+                self._refresh_run_picker()
+            except Exception:      # noqa: BLE001 -- the refusal is said
+                pass
             return
 
         # Re-entry guard: ignore a second run switch while one is in flight.
@@ -12897,6 +13840,41 @@ class TrainingAnnotationController:
         # otherwise.
         if getattr(self, "_run_switch_in_flight", False):
             return
+
+        # The first run of a folder (no current run): there is no old run to
+        # save, to name in a question or to clear off the screen.  When the
+        # run has nothing of its own yet (it was just made), the open patch,
+        # its view and its slice stay, and the settings made before the run
+        # existed go into it.  A run that already has a patch or slices of
+        # its own is loaded as on any switch.
+        # Only for the run New Run has just made: picking an EXISTING run
+        # while none is active is a switch like any other (its own patch and
+        # slices load), asked first when something on screen would be lost.
+        no_current_run = not old_run_id
+        just_made = no_current_run and (
+            str(getattr(self, "_run_just_made", "") or "") == slug)
+        self._run_just_made = ""
+        first_activation = just_made
+        # A run New Run has just made has nothing of its own by construction:
+        # no read of the run list decides it (a lock on that read must never
+        # turn the first run into a switch that clears the screen).
+        keeps_screen = first_activation
+        if no_current_run and not just_made and self._has_work_without_run():
+            from ..ui import _step2_text as _T2
+            if not self._confirm_leave_no_run(
+                    self._get_run_display_name(slug) or slug):
+                print(f"[STEP2-RUN] switch to {slug!r} not made: the slices "
+                      f"on screen belong to no run")
+                try:
+                    self._refresh_run_picker()
+                except Exception:      # noqa: BLE001 -- cosmetic
+                    pass
+                return
+            # the user chose to lose them: no drawing of theirs is written
+            # into the picked run later
+            pending = getattr(self, "_curating_persist_pending", None)
+            if isinstance(pending, dict):
+                pending.clear()
 
         # Safety check (Phase 8a polish, user bug-report 2026-05-23):
         # * Training in flight → HARD BLOCK
@@ -12931,7 +13909,9 @@ class TrainingAnnotationController:
             except Exception:
                 pass
             return
-        elif safety == SwitchSafety.NEEDS_CONFIRMATION:
+        elif safety == SwitchSafety.NEEDS_CONFIRMATION and not no_current_run:
+            # (with no current run there is no old run to name: the no-run
+            # question above was asked instead, when something would be lost)
             try:
                 from napari_epicycle.hitl_training_annotation._switch_run_dialog import (
                     show_switch_confirm,
@@ -12956,36 +13936,107 @@ class TrainingAnnotationController:
         self._run_switch_in_flight = True
         # Brick D: the switch is synchronous — flush, save, close the
         # annotator, rewrite state, reload, and (usually) reload a patch.
-        self._begin_busy(f"[STEP2-RUN] Switching to '{_new_dn}' ...")
+        from ..ui import _step2_text as _T2
+        self._begin_busy("[STEP2-RUN] " + (
+            _T2.RUN_MAKING if just_made else _T2.RUN_SWITCHING
+        ).format(name=_new_dn))
         try:
             # Audit-found CRITICAL 2026-05-23 (state-machine): flush pending
             # state-save + curating-persist timers BEFORE any context change.
             # A queued timer firing AFTER active_run_id mutation would write
             # stale state into NEW run's slot.  Mirror of shutdown() pattern.
-            self._flush_pending_state_timers()
-            # Brick D fix (2026-09-07): invalidate any patch load still in
-            # flight, so the OLD run's patch cannot land after the switch.
-            self._patch_load_token = int(getattr(self, "_patch_load_token", 0)) + 1
-            # Remember if the 2D annotator was open BEFORE the switch so we
-            # can auto-reopen it on the new run if the new run has a saved
-            # patch context (user-feedback 2026-05-23: "is it even worth to
-            # close the subviewer at all during switch").  Close + auto-
-            # reopen gives clean teardown hygiene without the user noticing.
-            from napari_epicycle.hitl_training_annotation._switch_run_guard import (
-                _annotator_dock_open as _was_annotator_open,
-            )
-            annotator_was_open = _was_annotator_open(getattr(self, "viewer", None))
-            # 1. Flush current run's state to runs[old_id]
-            self._save_internal_state()
-            # 1a. Close the 2D annotator dock if open (we got confirmation
-            #     above).  Done BEFORE state mutation so the dock's teardown
-            #     hooks see the still-valid old run context.
-            self._close_step2_annotator_dock_safely()
-            # 1b. Clear stale patch layers from the napari viewer (image +
-            #     work_labels_*).  Switch reloads cleanly to the new run.
-            self._clear_patch_viewer_layers_safely()
-            # 2. Update active_run_id in step2_state.json
-            set_active_run_in_state_json(self.working_dir, slug)
+            self._switch_old_patch = str(getattr(self, "loaded_patch_name", "") or "")
+            _drawing_saved = self._flush_pending_state_timers()
+            if _drawing_saved is False and not first_activation and not (
+                    no_current_run
+                    and getattr(self, "_last_pair_refusal", "") == "no-run"):
+                # The question promised "your drawing is saved first": a
+                # drawing that could not be written cancels the switch
+                # before anything is closed or cleared.
+                from ..ui import _step2_text as _T2
+                error = {
+                    "folder": _T2.DRAWING_CAUSE_FOLDER,
+                    "no-run": _T2.DRAWING_CAUSE_NO_RUN,
+                }.get(str(getattr(self, "_last_pair_refusal", "") or ""),
+                      _T2.DRAWING_CAUSE_OTHER)
+                sentence = _T2.RUN_SWITCH_DRAWING_FAILED.format(error=error)
+                self._append_ui_log(f"[STEP2-RUN] {sentence}")
+                if not self._ask_switch_anyway(sentence):
+                    print(f"[STEP2-RUN] switch to {slug!r} cancelled: a "
+                          f"drawing could not be saved")
+                    try:
+                        self._refresh_run_picker()
+                    except Exception:      # noqa: BLE001 -- the refusal is said
+                        pass
+                    return
+                # the user chose to switch: the drawing that cannot be saved
+                # is dropped (it would otherwise cancel every switch)
+                print(f"[STEP2-RUN] switching to {slug!r}; the drawing that "
+                      f"could not be saved is dropped")
+                self._forget_drawings()
+            # 1. Flush current run's state to runs[old_id] -- FIRST, before
+            #    anything is closed, cleared or rewritten: a save that did
+            #    not go through cancels the switch, so the old run's unsaved
+            #    edits are never replaced by the new run's state.  A first
+            #    run has no old run to save.
+            _pre_switch = "" if first_activation else self._save_internal_state()
+            if _pre_switch == "refused":
+                from ..ui import _step2_text as _T2
+                error = str(getattr(self, "_last_save_error", "") or "")
+                sentence = _T2.RUN_SWITCH_SAVE_FAILED.format(error=error)
+                print(f"[STEP2-RUN] switch to {slug!r} cancelled: the current "
+                      f"run could not be saved ({error})")
+                self._append_ui_log(f"[STEP2-RUN] {sentence}")
+                self._tell_step2(_T2.RUN_SWITCH_FAILED_TITLE, sentence)
+                try:
+                    self._refresh_run_picker()
+                except Exception:      # noqa: BLE001 -- the refusal is said
+                    pass
+                return
+            if keeps_screen:
+                # The first run keeps what is on screen: the open patch's
+                # load is not cancelled, nothing is closed or cleared, and
+                # the settings made before the run are written into it now,
+                # so the reload below loads them (and shows them) instead of
+                # the run's empty ones.
+                annotator_was_open = False
+                self._carry_into_first_run(slug, self._first_run_settings())
+            else:
+                # Brick D fix (2026-09-07): invalidate any patch load still in
+                # flight, so the OLD run's patch cannot land after the switch.
+                self._patch_load_token = int(getattr(self, "_patch_load_token", 0)) + 1
+                # Remember if the 2D annotator was open BEFORE the switch so we
+                # can auto-reopen it on the new run if the new run has a saved
+                # patch context (user-feedback 2026-05-23: "is it even worth to
+                # close the subviewer at all during switch").  Close + auto-
+                # reopen gives clean teardown hygiene without the user noticing.
+                from napari_epicycle.hitl_training_annotation._switch_run_guard import (
+                    _annotator_dock_open as _was_annotator_open,
+                )
+                annotator_was_open = _was_annotator_open(getattr(self, "viewer", None))
+                # (1. the old run's save ran first, above.)
+                # 1a. Close the 2D annotator dock if open (we got confirmation
+                #     above).  Done BEFORE state mutation so the dock's teardown
+                #     hooks see the still-valid old run context.
+                self._close_step2_annotator_dock_safely()
+                # 1b. Clear stale patch layers from the napari viewer (image +
+                #     work_labels_*).  Switch reloads cleanly to the new run.
+                self._clear_patch_viewer_layers_safely()
+            # 2. Update active_run_id in step2_state.json (the run New Run
+            #    just made was written active already)
+            _needs_activate = (not just_made) or (
+                getattr(self, "_run_just_made_inactive", "") == slug)
+            if _needs_activate:
+                try:
+                    set_active_run_in_state_json(self.working_dir, slug)
+                except OSError as _lock_exc:
+                    self._undo_switch_after_lock(old_run_id, slug)
+                    from ..ui import _step2_text as _T2
+                    raise _RunListBusyError(
+                        _T2.RUN_LIST_LOCKED,
+                        f"{type(_lock_exc).__name__}: {_lock_exc}"
+                    ) from _lock_exc
+                self._run_just_made_inactive = ""
             # 3. Update controller's runtime field BEFORE _load_internal_state
             #    so the peek branch finds the right value.
             self.active_run_id = slug
@@ -13010,14 +14061,16 @@ class TrainingAnnotationController:
             #     run has a different saved stack path,
             #     `_load_internal_state` will overwrite it via the
             #     `if saved_stack:` guard below.
-            self.loaded_patch_name = ""
-            # Also reset patch-label UI if present
-            try:
-                lbl = getattr(self.ui, "loaded_patch_label", None)
-                if lbl is not None and hasattr(lbl, "setText"):
-                    lbl.setText("")
-            except Exception:
-                pass
+            #     (A first run keeps the open patch: its name stays.)
+            if not keeps_screen:
+                self.loaded_patch_name = ""
+                # Also reset patch-label UI if present
+                try:
+                    lbl = getattr(self.ui, "loaded_patch_label", None)
+                    if lbl is not None and hasattr(lbl, "setText"):
+                        lbl.setText("")
+                except Exception:
+                    pass
             # 4a. Loss plot: clear OLD run's points BEFORE the reload so
             #     `_load_internal_state`'s call to load_round_history can
             #     populate the plot with the new run's curves on a clean
@@ -13041,7 +14094,12 @@ class TrainingAnnotationController:
             #    runs[slug] into the flat controller fields.  Loss plot
             #    gets populated via load_round_history inside this call
             #    (only when self.losses_by_round is non-empty).
-            self._load_internal_state()
+            try:
+                self._load_internal_state()
+            except _RunListBusyError:
+                self._undo_switch_after_lock(old_run_id, slug,
+                                             first_run=keeps_screen)
+                raise
             # 5. Refresh UI surfaces that mirror state — same set the workspace
             #    load flow refreshes after _load_internal_state.
             try:
@@ -13079,7 +14137,21 @@ class TrainingAnnotationController:
             # saved patch exactly the same way a run switch does.
             new_stack = self._effective_stack_path()
             new_patch = str(getattr(self, "loaded_patch_name", "") or "")
-            self._auto_reload_saved_patch()
+            if keeps_screen:
+                # The patch is still open (never reloaded); the drawings kept
+                # while there was no run are written into it, and the run's
+                # first save records it with the carried settings.
+                try:
+                    self._flush_curating_persist_pending()
+                except Exception as exc:      # noqa: BLE001 -- kept pending
+                    print(f"[STEP2-RUN] the drawings kept before the run "
+                          f"could not be written yet ({exc})")
+                _first_save = self._save_internal_state()
+                if _first_save != "saved-v3":
+                    self._say_direct_save(_first_save,
+                                          f"the first save of {slug!r}")
+            else:
+                self._auto_reload_saved_patch()
 
             # If annotator was open before switch, auto-reopen it on the
             # new run (requires the patch was auto-loaded above — checked
@@ -13118,6 +14190,224 @@ class TrainingAnnotationController:
         finally:
             self._run_switch_in_flight = False
             self._end_busy()
+
+    def _switch_target_usable(self, slug) -> bool:
+        """Can ``slug`` be switched to?  Checked before any question, dock
+        close or layer clear: a run list Step 2 cannot read, or a run whose
+        folder is gone, is said and refused (the screen is left as it is)."""
+        from ..ui import _step2_text as _T2
+        from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+        _target = self._step2_write_target()
+        if _target in ("unreadable", "locked"):
+            sentence = self._no_run_sentence(_target)
+        else:
+            try:
+                if _step2_paths.run_root(self.working_dir, slug).is_dir():
+                    return True
+            except Exception:      # noqa: BLE001 -- an invalid id has no folder
+                pass
+            sentence = _T2.RUN_FOLDER_GONE.format(
+                name=self._get_run_display_name(slug) or slug)
+        print(f"[STEP2-RUN] switch to {slug!r} refused: {sentence}")
+        self._append_ui_log(f"[STEP2-RUN] {sentence}")
+        self._tell_step2(_T2.RUN_SWITCH_FAILED_TITLE, sentence)
+        try:
+            self._refresh_run_picker()
+        except Exception:      # noqa: BLE001 -- the refusal is said
+            pass
+        return False
+
+    def _undo_switch_after_lock(self, old_run_id, slug, *,
+                                first_run=False) -> None:
+        """The reload of a switch hit a lock: the old run is the active one
+        again, in memory and (when the list opens) on disk; nothing of the
+        new run was loaded, and the old run's patch comes back.
+
+        ``first_run``: the switch to a run New Run has just made, which kept
+        the screen.  Nothing was cleared, so nothing is reloaded; the run
+        stays listed with no run active (memory and disk agree) and keeps its
+        "just made" mark, so picking it later still takes what is on screen.
+        """
+        self.active_run_id = old_run_id
+        if first_run:
+            self._run_just_made = slug
+            # the run list is set back to no active run below: the later pick
+            # writes it active again
+            self._run_just_made_inactive = slug
+            print(f"[STEP2-RUN] the switch to the new run {slug!r} could not "
+                  f"be finished (the run list could not be opened); the "
+                  f"screen is kept, pick {slug!r} when it opens")
+            try:
+                from napari_epicycle.hitl_training_annotation._run_management import (
+                    clear_active_run_in_state_json,
+                )
+                clear_active_run_in_state_json(self.working_dir)
+            except Exception as exc:      # noqa: BLE001 -- the load's rule holds
+                print(f"[STEP2-RUN] the run list still names {slug!r} "
+                      f"({type(exc).__name__}: {exc}); it is loaded as the "
+                      f"active run next time")
+            return
+        self.loaded_patch_name = str(getattr(self, "_switch_old_patch", "") or "")
+        print(f"[STEP2-RUN] switch to {slug!r} undone: the run list could "
+              f"not be opened; {old_run_id or 'no run'!r} stays active")
+        if old_run_id:
+            try:
+                from napari_epicycle.hitl_training_annotation._run_management import (
+                    set_active_run_in_state_json,
+                )
+                set_active_run_in_state_json(self.working_dir, old_run_id)
+            except Exception as exc:      # noqa: BLE001 -- said; the load's rule holds
+                print(f"[STEP2-RUN] the run list still names {slug!r} "
+                      f"({type(exc).__name__}: {exc})")
+        try:
+            self._auto_reload_saved_patch()
+        except Exception:      # noqa: BLE001 -- the patch list is still there
+            pass
+
+    def _run_list_opens_now(self) -> bool:
+        """Can the run list be opened right now?  (A missing file is fine:
+        the ordinary rules apply.)  Never remembered."""
+        try:
+            from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+            with open(_step2_paths.state_json_path(self.working_dir), "r",
+                      encoding="utf-8") as fh:
+                fh.read(1)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _ask_switch_anyway(self, sentence: str) -> bool:
+        """The switch was cancelled by a drawing that could not be saved:
+        Cancel (the default) or "Switch anyway (the drawing is lost)".  True
+        to switch.  A seam: tests replace it; with no screen to ask on, the
+        box only tells and nothing is switched."""
+        from ..ui import _step2_text as _T2
+        if not self._can_show_modal():
+            self._tell_step2(_T2.RUN_SWITCH_FAILED_TITLE, sentence)
+            return False
+        from napari_epicycle.ui_shell.theme import themed_confirm
+        return bool(themed_confirm(
+            getattr(self, "ui", None), title=_T2.RUN_SWITCH_FAILED_TITLE,
+            message=sentence, confirm_text=_T2.RUN_SWITCH_ANYWAY,
+            cancel_text=_T2.CANCEL_BTN_TEXT, default="cancel"))
+
+    def _has_work_without_run(self) -> bool:
+        """Slices or a drawing on screen while no run is active (an open
+        patch alone is not lost: it switches as before)."""
+        return bool(getattr(self, "sample_records", None)
+                    or getattr(self, "_curating_persist_pending", None))
+
+    def _confirm_leave_no_run(self, name: str) -> bool:
+        """Picking an existing run while none is active: the slices on
+        screen belong to no run and are not kept.  True to switch.  A seam:
+        tests replace it; with no screen to ask on, nothing is switched."""
+        from ..ui import _step2_text as _T2
+        if not self._can_show_modal():
+            self._append_ui_log(
+                f"[STEP2-RUN] {_T2.RUN_SWITCH_NO_RUN_UNASKED.format(name=name)}")
+            return False
+        from napari_epicycle.ui_shell.theme import themed_confirm
+        return bool(themed_confirm(
+            getattr(self, "ui", None),
+            title=_T2.RUN_SWITCH_NO_RUN_TITLE.format(name=name),
+            message=_T2.RUN_SWITCH_NO_RUN_BODY,
+            confirm_text=_T2.RUN_SWITCH_NO_RUN_GO,
+            cancel_text=_T2.CANCEL_BTN_TEXT,
+            default="cancel"))
+
+    # -- the first run of a folder ---------------------------------------
+    #
+    # With no current run, the settings on screen (channels, epochs, learning
+    # rate, a loaded config, the model source, the view) belong to no run.
+    # Making the first run must not throw them away: they are written into
+    # the new run's entry before the switch reloads it, so the reload shows
+    # them.  A model the New Run dialog chose is already in the entry and
+    # wins.
+
+    def _first_run_settings(self) -> dict:
+        """The settings on screen, read from the widgets now, for a first run."""
+        self._refresh_current_config_from_widgets()
+        cfg = getattr(self, "current_config", None)
+        mode = getattr(self, "training_mode", "cumulative")
+        # The slices worked on before the run existed (a drawn slice, its
+        # "curating" row) were never written anywhere: they go into the run,
+        # so the Accept the no-run box asked for finds them again.
+        records = self._relativize_state(
+            {"sample_records": dict(getattr(self, "sample_records", None) or {})}
+        )["sample_records"]
+        return {
+            "current_config": dict(cfg) if isinstance(cfg, dict) else {},
+            "sample_records": records,
+            "curation_model_source_mode": str(
+                getattr(self, "curation_model_source_mode", "auto") or "auto"),
+            "imported_curation_model_path": str(
+                getattr(self, "imported_curation_model_path", "") or ""),
+            "curation_pretrained_model_type": str(
+                getattr(self, "curation_pretrained_model_type", "cyto3")
+                or "cyto3"),
+            "selected_view": getattr(self, "selected_view", "XY"),
+            "view_target": getattr(self, "view_target", "lateral"),
+            "axial_plane": getattr(self, "axial_plane", "XZ"),
+            "training_mode": mode,
+            "training_mode_by_bucket": self._coerce_training_mode_by_bucket(
+                getattr(self, "training_mode_by_bucket", None), fallback=mode),
+            "auto_update_model_after_training": bool(
+                self._get_auto_update_model_checked()),
+        }
+
+    #: the Model section of a run's entry as a new run without a dialog
+    #: choice has it
+    _MODEL_SECTION_DEFAULTS = {
+        "curation_model_source_mode": "auto",
+        "imported_curation_model_path": "",
+        "curation_pretrained_model_type": "cyto3",
+    }
+
+    def _carry_into_first_run(self, slug, settings) -> None:
+        """Write ``settings`` into ``slug``'s entry of the run list.
+
+        The entry's own non-empty config values win (the dialog's starting
+        checkpoint); the Model section is carried only while the entry still
+        has the defaults in all three of its fields (the dialog chose no
+        model).  Raises when the run list cannot be read or has no entry
+        for ``slug``: nothing has been changed then.
+        """
+        from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
+        path = _step2_paths.state_json_path(self.working_dir)
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        runs = data.get("runs") if isinstance(data, dict) else None
+        entry = runs.get(slug) if isinstance(runs, dict) else None
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"the run list has no entry for {slug!r}")
+        own_cfg = entry.get("current_config")
+        own_cfg = own_cfg if isinstance(own_cfg, dict) else {}
+        dialog_chose_model = any(
+            str(entry.get(k, d) or "") != d
+            for k, d in self._MODEL_SECTION_DEFAULTS.items())
+        cfg = dict(settings.get("current_config") or {})
+        if dialog_chose_model:
+            # the dialog's choice is the starting point too: a checkpoint the
+            # widget held for another model is not carried
+            cfg.pop("starting_checkpoint", None)
+        cfg.update({k: v for k, v in own_cfg.items()
+                    if v is not None and str(v).strip() != ""})
+        entry["current_config"] = cfg
+        for key, value in settings.items():
+            if key == "current_config":
+                continue
+            if key in self._MODEL_SECTION_DEFAULTS and dialog_chose_model:
+                continue
+            entry[key] = value
+        _atomic_write_json(path, data)
+        kept = ("kept the open patch and "
+                if str(getattr(self, "loaded_patch_name", "") or "") else "")
+        print(f"[STEP2-RUN] first run {slug!r}: {kept}carried {len(cfg)} "
+              f"setting(s)"
+              + (" (the New Run dialog's model kept)"
+                 if dialog_chose_model else ""))
 
     def _close_step2_annotator_dock_safely(self):
         """Close the EpiCycle 2D Training Annotator dock if it's mounted.
@@ -13202,6 +14492,15 @@ class TrainingAnnotationController:
         # method (and every subsequent path-helper call) uses the correct
         # run.  Without this peek, self.active_run_id stays at the previous
         # workspace's value when switching workspaces.  Audit fix 2026-05-23.
+        #
+        # The active run id is "" unless a run really is active: a v3 file's
+        # id counts only while its run folder exists (an aborted first run, a
+        # removed run or a hand-deleted folder leave none); an old-layout
+        # folder without a v3 file keeps the old single run "default"; a
+        # fresh folder has no run.  "" makes every Step 2 writer write
+        # nothing (`_step2_write_target`).
+        _run_id = ""
+        _v3_without_active_run = False
         try:
             from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
             import json as _json
@@ -13210,27 +14509,72 @@ class TrainingAnnotationController:
                 try:
                     with open(v3_state_path, "r", encoding="utf-8") as _f:
                         _v3_peek = _json.load(_f)
-                    if isinstance(_v3_peek, dict):
-                        _peeked = _v3_peek.get("active_run_id")
-                        if _peeked:
-                            self.active_run_id = str(_peeked)
-                except (OSError, _json.JSONDecodeError, ValueError):
-                    pass  # corrupted v3 will be re-attempted below
-            # If no active_run_id set (legacy workspace, or v3 missing the
-            # field), default to "default".
-            if not getattr(self, "active_run_id", None):
-                self.active_run_id = _step2_paths.DEFAULT_RUN_ID
-        except Exception:
-            # Defensive: if _paths import fails, fall through and use
-            # whatever the controller had.  Save path also defaults gracefully.
+                    _peeked = (str(_v3_peek.get("active_run_id") or "").strip()
+                               if isinstance(_v3_peek, dict) else "")
+                    if _peeked and _step2_paths.run_root(
+                        self.working_dir, _peeked
+                    ).is_dir():
+                        _run_id = _peeked
+                except OSError as _lock_exc:
+                    # Could not be OPENED (a lock held by another program):
+                    # not a damaged file.  In a run switch the switch is
+                    # undone (the old run stays active); at a project open
+                    # every write is refused and the next check reads it
+                    # again (`_step2_write_target`).  Never "no active run".
+                    if getattr(self, "_run_switch_in_flight", False):
+                        from ..ui import _step2_text as _T2
+                        raise _RunListBusyError(
+                            _T2.RUN_LIST_LOCKED,
+                            f"{type(_lock_exc).__name__}: {_lock_exc}"
+                        ) from _lock_exc
+                    self._mark_run_list_locked(_lock_exc)
+                except ValueError:
+                    pass  # an unreadable file: no active run
+                _v3_without_active_run = not _run_id
+            elif self._step2_write_target() == "legacy":
+                # (old-layout data beside a folder of runs and no run list is
+                # unreadable, not the old single run)
+                _run_id = _step2_paths.DEFAULT_RUN_ID
+        except _RunListBusyError:
+            raise
+        except Exception as exc:      # noqa: BLE001 -- no run is the safe answer
+            print(f"[STATE-LOAD] could not read the active run "
+                  f"({type(exc).__name__}: {exc}); no run is active")
+        self.active_run_id = _run_id
+        try:
+            if self._step2_write_target() == "unreadable":
+                print(f"[STATE-LOAD] {self._unreadable_console_line()}")
+                self._append_ui_log(
+                    f"[STATE-LOAD] {self._no_run_sentence('unreadable')}")
+        except Exception:      # noqa: BLE001 -- a line only
             pass
 
         try:
             from napari_epicycle.hitl_training_annotation import _paths as _step2_paths
-            v3_state = _step2_paths.load_step2_state_flat(
-                self.working_dir,
-                active_run_id=getattr(self, "active_run_id", _step2_paths.DEFAULT_RUN_ID),
-            )
+            # No active run in a v3 folder: load no run's records (the v3
+            # reader would fall back to the "default" entry) and no stray
+            # hitl_state.json either (below).
+            try:
+                v3_state = None if _v3_without_active_run else _step2_paths.load_step2_state_flat(
+                    self.working_dir,
+                    active_run_id=getattr(self, "active_run_id", _step2_paths.DEFAULT_RUN_ID),
+                    raise_os_errors=True,
+                )
+            except OSError as _lock_exc:
+                # The run's records could not be read just now (a lock).  In
+                # a run switch the switch is undone; at a project open no
+                # run's records are loaded and every write is refused until
+                # the file opens again -- never "this run is empty".
+                if getattr(self, "_run_switch_in_flight", False):
+                    from ..ui import _step2_text as _T2
+                    raise _RunListBusyError(
+                        _T2.RUN_LIST_LOCKED,
+                        f"{type(_lock_exc).__name__}: {_lock_exc}"
+                    ) from _lock_exc
+                self._mark_run_list_locked(_lock_exc)
+                self.active_run_id = ""
+                _v3_without_active_run = True
+                v3_state = None
             if v3_state is not None and v3_state.get("schema_version", 0) >= 3:
                 _loaded_run = getattr(self, "active_run_id", _step2_paths.DEFAULT_RUN_ID)
                 print(f"[STATE-LOAD] using v3 step2_state.json "
@@ -13244,12 +14588,14 @@ class TrainingAnnotationController:
                 # is OK for now.  Phase 4 will route round_metadata loads
                 # through _paths.round_metadata_path properly.
                 round_metadata = None
+        except _RunListBusyError:
+            raise
         except Exception as e:
             print(f"[STATE-LOAD] v3 load attempt failed ({type(e).__name__}: {e}), "
                   f"falling back to legacy service")
             state = None
 
-        if state is None:
+        if state is None and not _v3_without_active_run:
             # Legacy path — v2 hitl_state.json via the persistence service
             state, round_metadata = self.persistence.load_hitl_state(self.working_dir)
         print(f"[STATE-LOAD] working_dir={self.working_dir} | state_found={state is not None} | "

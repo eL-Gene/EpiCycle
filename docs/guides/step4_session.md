@@ -50,7 +50,7 @@ Each row reads, left to right:
 - **a picture** of the middle slice (128 px square). It is made in the background, so the panel never waits for it. Until it is ready you see a plain grey square. The picture is kept on disk, so next time it appears at once. Once a stack has 3D cells, they are drawn over the picture: each cell in the colour the viewer gives it, as a soft fill with a thin outline.
 - **the name,** and at the right the **status word** in its colour (see *Status words and colours*).
 - **a dim second line:** the axis order (for example ZCYX), the size (Z × Y × X), the number of channels and, once it has 3D cells, how many cells.
-- **a third line, the voxel size** and its source. For example: "1.00 × 0.33 × 0.33 µm (from Step 1)", "0.80 × 0.25 × 0.25 µm (from the file)" or "0.80 × 0.25 × 0.25 µm (set by you)". With no voxel size, the amber word "voxels". To set it, use the row's **⋯** menu or right-click the row and choose Set spacing…; there is no button on the row itself.
+- **a third line, the voxel size** and its source. For example: "1.00 × 0.33 × 0.33 µm (from Step 1)", "0.80 × 0.25 × 0.25 µm (from the file)" or "0.80 × 0.25 × 0.25 µm (set by you)". With no voxel size, the amber word "voxels". To set it, use the row's **⋯** menu or right-click the row and choose Set spacing…; there is no button on the row itself. A size from Step 1 whose Z the image file did not give is in amber, for example "Z assumed · 0.33 × 0.33 × 0.33 µm (from Step 1)"; set the Z step on the source in Step 1, or here with Set spacing…. If Z really equals the pixel size, press Enter in the Z box of the source in Step 1 to confirm it, and the amber mark goes.
 - on a measured stack, a **line of counts**: a coloured dot, a number and the word for good, bad and unmarked cells, as the stack's saved table says. They change when the table on disk changes (a Measure, a Save, a Finalize), not while you mark cells in the Workbench.
 - sometimes an **amber warning line** (see *Warnings on a row*).
 - an **eye**, "Show or hide this stack in the viewer.", and a **⋯** menu.
@@ -67,6 +67,7 @@ At the right of the buttons under the list, a count says how many stacks are tic
 
 - "Channels don’t fit this model: it needs 2, this stack has 1." The model chosen in Segment was trained on more channels than this stack has. The tick is grey: the stack cannot run with this model. Pick another model in Segment, or leave the stack out.
 - The amber word "voxels" on the voxel-size line (no warning line): Step 4 found no voxel size for this stack. It still runs; see *Voxel sizes* below.
+- An amber voxel-size line starting with **Z assumed** (no warning line): the stack has Step 1's voxel size, but the image file gave no Z step, so Z was filled in (the pixel size, or ImageJ's default of 1 µm). It runs; hover over the line to read how to set or confirm Z.
 - "Another stack already has this name." Two different files share a name (or differ only by .tif and .tiff). Step 4 keeps its records by file name, so only one can be used. The other is listed but cannot be ticked. Rename one of the files.
 - "The stack file changed since it was predicted." The file on disk is not the one Segment predicted, for example because you trimmed the patch in Step 1. Segment will not reconstruct it until you predict it again. Step 1 also warns you, before a Trim or a Delete, that Step 4 uses the patch.
 
@@ -79,9 +80,9 @@ A voxel size turns pixel counts into micrometres. Everything Step 4 measures (vo
 Step 4 looks for the voxel size in this order, and the row says which source it used:
 
 1. **(set by you)**: a value you typed in Set spacing…. Step 4 never replaces it.
-2. **(from Step 1)**: the voxel size you gave the source in Step 1. If Step 1's preprocessing resized the source, Step 4 uses the resized size.
+2. **(from Step 1)**: the voxel size of the source in Step 1, read from the image file or typed there. If Step 1's preprocessing resized the source, Step 4 uses the resized size. When the file gave no Z step the line starts with **Z assumed**, in amber.
 3. **(from the file)**: the size written inside the TIFF file itself.
-4. **voxels** (amber): none of the above. Nothing is refused: the stack runs and is measured, with every number in voxels.
+4. **voxels** (amber): none of the above. Nothing is refused: the stack runs and is measured, with every number in voxels. A file whose header gives a pixel size over 50 µm (almost always a print resolution, not a microscope's) ends up here too: Step 1 does not record such a value either, so type the real values on the source in Step 1, or here with Set spacing….
 
 A voxel size of 1 × 1 × 1 counts as none. That is what a file says when nobody recorded its size.
 

@@ -744,6 +744,13 @@ class TestTrainGateWithPaintedRows:
         c._training_thread = None
         c.logs = []
         c._append_ui_log = c.logs.append
+        # The folder has a run: Train asks for one first, and that question
+        # is a real modal under this real widget.
+        from napari_epicycle.hitl_training_annotation import (
+            _run_management as RM)
+        RM.create_run_on_disk(tmp_path, "pilot", display_name="pilot")
+        RM.add_run_to_state_json(tmp_path, "pilot", activate=True)
+        c.active_run_id = "pilot"
         return c
 
     def test_no_staged_slices_still_stops_training(self, qapp, tmp_path):
